@@ -19,7 +19,9 @@
     "tsBuildInfoFile": "./dist/tsconfig.tsbuildinfo"
   },
   "include": [
+    "app/**/*.ts",
     "app/**/*.tsx",
+    "src/**/*.ts",
     "src/**/*.tsx",
     "test/**/*.ts"
   ],

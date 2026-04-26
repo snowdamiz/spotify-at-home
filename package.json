@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "build": "npm run build -w @tunely/shared && npm run build -w @tunely/api && npm run build -w @tunely/app",
+    "dev": "concurrently -n api,app -c blue,green \"npm run dev:api\" \"npm run dev:app\"",
     "dev:api": "npm run dev -w @tunely/api",
     "dev:app": "npm run web -w @tunely/app",
     "lint": "eslint .",
@@ -22,6 +23,7 @@
     "@types/react-dom": "^19.0.4",
     "@typescript-eslint/eslint-plugin": "^8.31.0",
     "@typescript-eslint/parser": "^8.31.0",
+    "concurrently": "^9.1.2",
     "eslint": "^9.25.1",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.31.0",
