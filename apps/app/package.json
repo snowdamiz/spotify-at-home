@@ -1,0 +1,28 @@
+{
+  "name": "@tunely/app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "expo-router/entry",
+  "scripts": {
+    "build": "expo export --platform web --output-dir dist",
+    "start": "expo start",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "web": "expo start --web"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "^5.0.4",
+    "@tunely/shared": "0.0.0",
+    "expo": "^53.0.0",
+    "expo-constants": "~17.1.4",
+    "expo-linking": "~7.1.4",
+    "expo-router": "~5.1.11",
+    "expo-status-bar": "~2.2.3",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "react-native": "0.79.6",
+    "react-native-safe-area-context": "5.4.0",
+    "react-native-screens": "~4.11.1",
+    "react-native-web": "^0.20.0"
+  }
+}
