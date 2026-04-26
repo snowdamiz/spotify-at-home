@@ -39,9 +39,22 @@ export interface Playlist {
   updatedAt: Date;
 }
 
+export interface PlaylistSummary extends Playlist {
+  songCount: number;
+}
+
 export interface PlaylistSong extends Song {
   position: number;
   addedAt: Date;
+}
+
+export interface PlaybackState {
+  userId: string;
+  songId: string | null;
+  positionMs: number;
+  shuffleEnabled: boolean;
+  repeatMode: RepeatMode;
+  updatedAt: Date | null;
 }
 
 export class SQLiteUserRepository {
@@ -175,6 +188,209 @@ export class SQLiteSongRepository {
       .map(mapSong);
   }
 
+  listReadySongsForUser(userId: string) {
+    return this.db
+      .prepare(
+        `
+          SELECT *
+          FROM songs
+          WHERE user_id = ? AND import_status = 'ready'
+          ORDER BY created_at DESC, id ASC
+        `
+      )
+      .all(userId)
+      .map(mapSong);
+  }
+
+  listRecentReadySongsForUser(userId: string, limit = 10) {
+    return this.db
+      .prepare(
+        `
+          SELECT *
+          FROM songs
+          WHERE user_id = ? AND import_status = 'ready'
+          ORDER BY created_at DESC, id ASC
+          LIMIT ?
+        `
+      )
+      .all(userId, limit)
+      .map(mapSong);
+  }
+
+  countReadySongsForUser(userId: string) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM songs
+          WHERE user_id = ? AND import_status = 'ready'
+        `
+      )
+      .get(userId) as { count?: number | bigint } | undefined;
+
+    return Number(row?.count ?? 0);
+  }
+
+  searchReadySongsForUser(input: { userId: string; query: string; limit?: number; offset?: number }) {
+    const pattern = likePattern(input.query);
+
+    return this.db
+      .prepare(
+        `
+          SELECT *
+          FROM songs
+          WHERE user_id = ?
+            AND import_status = 'ready'
+            AND (
+              title LIKE ? ESCAPE '\\'
+              OR artist LIKE ? ESCAPE '\\'
+              OR album LIKE ? ESCAPE '\\'
+            )
+          ORDER BY created_at DESC, id ASC
+          LIMIT ? OFFSET ?
+        `
+      )
+      .all(input.userId, pattern, pattern, pattern, input.limit ?? 25, input.offset ?? 0)
+      .map(mapSong);
+  }
+
+  sumReadySongBytesForUser(userId: string) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COALESCE(SUM(size_bytes), 0) AS total
+          FROM songs
+          WHERE user_id = ? AND import_status = 'ready'
+        `
+      )
+      .get(userId) as { total?: number | bigint } | undefined;
+
+    return Number(row?.total ?? 0);
+  }
+
+  markSongReady(input: {
+    userId: string;
+    songId: string;
+    checksum: string;
+    storagePath: string;
+    now?: Date;
+  }) {
+    const now = input.now ?? new Date();
+
+    this.db.exec("BEGIN;");
+
+    try {
+      const result = this.db
+        .prepare(
+          `
+            UPDATE songs
+            SET checksum = ?,
+                storage_path = ?,
+                import_status = 'ready',
+                updated_at = ?
+            WHERE user_id = ? AND id = ?
+          `
+        )
+        .run(input.checksum, input.storagePath, toSqlDate(now), input.userId, input.songId);
+
+      this.db
+        .prepare(
+          `
+            UPDATE import_jobs
+            SET status = 'ready', error_code = NULL, updated_at = ?
+            WHERE user_id = ? AND song_id = ?
+          `
+        )
+        .run(toSqlDate(now), input.userId, input.songId);
+      this.db.exec("COMMIT;");
+
+      return Number(result.changes) > 0;
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  markSongImportFailed(input: {
+    userId: string;
+    songId: string;
+    errorCode: string;
+    now?: Date;
+  }) {
+    const now = input.now ?? new Date();
+
+    this.db.exec("BEGIN;");
+
+    try {
+      const result = this.db
+        .prepare(
+          `
+            UPDATE songs
+            SET import_status = 'failed', updated_at = ?
+            WHERE user_id = ? AND id = ?
+          `
+        )
+        .run(toSqlDate(now), input.userId, input.songId);
+
+      this.db
+        .prepare(
+          `
+            UPDATE import_jobs
+            SET status = 'failed', error_code = ?, updated_at = ?
+            WHERE user_id = ? AND song_id = ?
+          `
+        )
+        .run(input.errorCode, toSqlDate(now), input.userId, input.songId);
+      this.db.exec("COMMIT;");
+
+      return Number(result.changes) > 0;
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  updateSongForUser(input: {
+    userId: string;
+    songId: string;
+    title?: string;
+    artist?: string | null;
+    album?: string | null;
+    now?: Date;
+  }) {
+    const existing = this.findSongForUser(input.userId, input.songId);
+
+    if (!existing) {
+      return null;
+    }
+
+    const updated = {
+      title: input.title ?? existing.title,
+      artist: input.artist === undefined ? existing.artist : input.artist,
+      album: input.album === undefined ? existing.album : input.album,
+      updatedAt: input.now ?? new Date()
+    };
+
+    this.db
+      .prepare(
+        `
+          UPDATE songs
+          SET title = ?, artist = ?, album = ?, updated_at = ?
+          WHERE user_id = ? AND id = ?
+        `
+      )
+      .run(
+        updated.title,
+        updated.artist,
+        updated.album,
+        toSqlDate(updated.updatedAt),
+        input.userId,
+        input.songId
+      );
+
+    return this.findSongForUser(input.userId, input.songId);
+  }
+
   deleteSongForUser(userId: string, songId: string) {
     const result = this.db.prepare("DELETE FROM songs WHERE user_id = ? AND id = ?").run(userId, songId);
 
@@ -190,6 +406,73 @@ export class SQLiteSongRepository {
         `
       )
       .run(input.userId, input.songId, toSqlDate(input.now ?? new Date()));
+  }
+
+  unlikeSong(input: { userId: string; songId: string }) {
+    this.db
+      .prepare(
+        `
+          DELETE FROM likes
+          WHERE user_id = ? AND song_id = ?
+        `
+      )
+      .run(input.userId, input.songId);
+  }
+
+  listLikedSongsForUser(userId: string, limit = 25) {
+    return this.db
+      .prepare(
+        `
+          SELECT s.*
+          FROM likes l
+          INNER JOIN songs s ON s.id = l.song_id
+          WHERE l.user_id = ? AND s.user_id = ? AND s.import_status = 'ready'
+          ORDER BY l.created_at DESC, s.id ASC
+          LIMIT ?
+        `
+      )
+      .all(userId, userId, limit)
+      .map(mapSong);
+  }
+
+  countLikedSongsForUser(userId: string) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM likes l
+          INNER JOIN songs s ON s.id = l.song_id
+          WHERE l.user_id = ? AND s.user_id = ? AND s.import_status = 'ready'
+        `
+      )
+      .get(userId, userId) as { count?: number | bigint } | undefined;
+
+    return Number(row?.count ?? 0);
+  }
+
+  getPlaybackStateForUser(userId: string): PlaybackState {
+    const row = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM playback_state
+          WHERE user_id = ?
+        `
+      )
+      .get(userId);
+
+    if (!row) {
+      return {
+        userId,
+        songId: null,
+        positionMs: 0,
+        shuffleEnabled: false,
+        repeatMode: "off",
+        updatedAt: null
+      };
+    }
+
+    return mapPlaybackState(row);
   }
 
   setPlaybackState(input: {
@@ -223,6 +506,17 @@ export class SQLiteSongRepository {
         input.repeatMode ?? "off",
         toSqlDate(input.now ?? new Date())
       );
+  }
+
+  clearPlaybackStateForUser(userId: string, now = new Date()) {
+    this.setPlaybackState({
+      userId,
+      songId: null,
+      positionMs: 0,
+      shuffleEnabled: false,
+      repeatMode: "off",
+      now
+    });
   }
 
   createImportJob(input: {
@@ -261,6 +555,74 @@ export class SQLiteSongRepository {
 
 export class SQLitePlaylistRepository {
   constructor(private readonly db: SqliteDatabase) {}
+
+  findPlaylistForUser(userId: string, playlistId: string) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM playlists
+          WHERE user_id = ? AND id = ?
+        `
+      )
+      .get(userId, playlistId);
+
+    return row ? mapPlaylist(row) : null;
+  }
+
+  listPlaylistsForUser(userId: string, limit = 25) {
+    return this.db
+      .prepare(
+        `
+          SELECT p.*, COUNT(ps.song_id) AS song_count
+          FROM playlists p
+          LEFT JOIN playlist_songs ps ON ps.playlist_id = p.id
+          WHERE p.user_id = ?
+          GROUP BY p.id
+          ORDER BY p.updated_at DESC, p.id ASC
+          LIMIT ?
+        `
+      )
+      .all(userId, limit)
+      .map(mapPlaylistSummary);
+  }
+
+  countPlaylistsForUser(userId: string) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM playlists
+          WHERE user_id = ?
+        `
+      )
+      .get(userId) as { count?: number | bigint } | undefined;
+
+    return Number(row?.count ?? 0);
+  }
+
+  searchPlaylistsForUser(input: { userId: string; query: string; limit?: number; offset?: number }) {
+    const pattern = likePattern(input.query);
+
+    return this.db
+      .prepare(
+        `
+          SELECT p.*, COUNT(ps.song_id) AS song_count
+          FROM playlists p
+          LEFT JOIN playlist_songs ps ON ps.playlist_id = p.id
+          WHERE p.user_id = ?
+            AND (
+              p.name LIKE ? ESCAPE '\\'
+              OR p.description LIKE ? ESCAPE '\\'
+            )
+          GROUP BY p.id
+          ORDER BY p.updated_at DESC, p.id ASC
+          LIMIT ? OFFSET ?
+        `
+      )
+      .all(input.userId, pattern, pattern, input.limit ?? 25, input.offset ?? 0)
+      .map(mapPlaylistSummary);
+  }
 
   createPlaylist(input: {
     id?: string;
@@ -303,22 +665,86 @@ export class SQLitePlaylistRepository {
     return playlist;
   }
 
-  addSong(input: { userId: string; playlistId: string; songId: string; position: number; now?: Date }) {
+  updatePlaylistForUser(input: {
+    userId: string;
+    playlistId: string;
+    name?: string;
+    description?: string | null;
+    color?: string | null;
+    now?: Date;
+  }) {
+    const existing = this.findPlaylistForUser(input.userId, input.playlistId);
+
+    if (!existing) {
+      return null;
+    }
+
+    const updated = {
+      name: input.name ?? existing.name,
+      description: input.description === undefined ? existing.description : input.description,
+      color: input.color === undefined ? existing.color : input.color,
+      updatedAt: input.now ?? new Date()
+    };
+
+    this.db
+      .prepare(
+        `
+          UPDATE playlists
+          SET name = ?, description = ?, color = ?, updated_at = ?
+          WHERE user_id = ? AND id = ?
+        `
+      )
+      .run(
+        updated.name,
+        updated.description,
+        updated.color,
+        toSqlDate(updated.updatedAt),
+        input.userId,
+        input.playlistId
+      );
+
+    return this.findPlaylistForUser(input.userId, input.playlistId);
+  }
+
+  deletePlaylistForUser(userId: string, playlistId: string) {
+    const result = this.db
+      .prepare(
+        `
+          DELETE FROM playlists
+          WHERE user_id = ? AND id = ?
+        `
+      )
+      .run(userId, playlistId);
+
+    return Number(result.changes) > 0;
+  }
+
+  addSong(input: { userId: string; playlistId: string; songId: string; position?: number; now?: Date }) {
     const ownedPair = this.db
       .prepare(
         `
           SELECT
             EXISTS(SELECT 1 FROM playlists WHERE user_id = ? AND id = ?) AS owns_playlist,
-            EXISTS(SELECT 1 FROM songs WHERE user_id = ? AND id = ?) AS owns_song
+            EXISTS(
+              SELECT 1
+              FROM songs
+              WHERE user_id = ? AND id = ? AND import_status = 'ready'
+            ) AS owns_song,
+            COALESCE(
+              (SELECT MAX(position) + 1 FROM playlist_songs WHERE playlist_id = ?),
+              0
+            ) AS next_position
         `
       )
-      .get(input.userId, input.playlistId, input.userId, input.songId) as
-      | { owns_playlist: number; owns_song: number }
+      .get(input.userId, input.playlistId, input.userId, input.songId, input.playlistId) as
+      | { next_position: number; owns_playlist: number; owns_song: number }
       | undefined;
 
     if (!ownedPair?.owns_playlist || !ownedPair.owns_song) {
       throw new Error("Playlist and song must belong to the same user");
     }
+
+    const position = input.position ?? Number(ownedPair.next_position);
 
     this.db
       .prepare(
@@ -330,7 +756,110 @@ export class SQLitePlaylistRepository {
             added_at = excluded.added_at
         `
       )
-      .run(input.playlistId, input.songId, input.position, toSqlDate(input.now ?? new Date()));
+      .run(input.playlistId, input.songId, position, toSqlDate(input.now ?? new Date()));
+
+    this.db
+      .prepare(
+        `
+          UPDATE playlists
+          SET updated_at = ?
+          WHERE user_id = ? AND id = ?
+        `
+      )
+      .run(toSqlDate(input.now ?? new Date()), input.userId, input.playlistId);
+  }
+
+  removeSong(input: { userId: string; playlistId: string; songId: string; now?: Date }) {
+    const playlist = this.findPlaylistForUser(input.userId, input.playlistId);
+
+    if (!playlist) {
+      return false;
+    }
+
+    this.db
+      .prepare(
+        `
+          DELETE FROM playlist_songs
+          WHERE playlist_id = ? AND song_id = ?
+        `
+      )
+      .run(input.playlistId, input.songId);
+
+    this.db
+      .prepare(
+        `
+          UPDATE playlists
+          SET updated_at = ?
+          WHERE user_id = ? AND id = ?
+        `
+      )
+      .run(toSqlDate(input.now ?? new Date()), input.userId, input.playlistId);
+
+    return true;
+  }
+
+  reorderSongs(input: { userId: string; playlistId: string; songIds: string[]; now?: Date }) {
+    const currentSongs = this.listSongs({
+      userId: input.userId,
+      playlistId: input.playlistId
+    });
+    const currentIds = currentSongs.map((song) => song.id);
+
+    if (
+      currentIds.length !== input.songIds.length ||
+      new Set(currentIds).size !== new Set(input.songIds).size ||
+      input.songIds.some((songId) => !currentIds.includes(songId))
+    ) {
+      return null;
+    }
+
+    this.db.exec("BEGIN;");
+
+    try {
+      input.songIds.forEach((songId, index) => {
+        this.db
+          .prepare(
+            `
+              UPDATE playlist_songs
+              SET position = ?
+              WHERE playlist_id = ? AND song_id = ?
+            `
+          )
+          .run(100000 + index, input.playlistId, songId);
+      });
+
+      input.songIds.forEach((songId, index) => {
+        this.db
+          .prepare(
+            `
+              UPDATE playlist_songs
+              SET position = ?
+              WHERE playlist_id = ? AND song_id = ?
+            `
+          )
+          .run(index, input.playlistId, songId);
+      });
+
+      this.db
+        .prepare(
+          `
+            UPDATE playlists
+            SET updated_at = ?
+            WHERE user_id = ? AND id = ?
+          `
+        )
+        .run(toSqlDate(input.now ?? new Date()), input.userId, input.playlistId);
+
+      this.db.exec("COMMIT;");
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+
+    return this.listSongs({
+      userId: input.userId,
+      playlistId: input.playlistId
+    });
   }
 
   listSongs(input: { userId: string; playlistId: string }) {
@@ -361,6 +890,25 @@ export class SQLitePlaylistRepository {
   }
 }
 
+function mapPlaylist(row: Record<string, unknown>): Playlist {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    name: String(row.name),
+    description: nullableString(row.description),
+    color: nullableString(row.color),
+    createdAt: fromSqlDate(row.created_at),
+    updatedAt: fromSqlDate(row.updated_at)
+  };
+}
+
+function mapPlaylistSummary(row: Record<string, unknown>): PlaylistSummary {
+  return {
+    ...mapPlaylist(row),
+    songCount: Number(row.song_count ?? 0)
+  };
+}
+
 function mapSong(row: Record<string, unknown>): Song {
   return {
     id: String(row.id),
@@ -379,6 +927,17 @@ function mapSong(row: Record<string, unknown>): Song {
   };
 }
 
+function mapPlaybackState(row: Record<string, unknown>): PlaybackState {
+  return {
+    userId: String(row.user_id),
+    songId: nullableString(row.song_id),
+    positionMs: Number(row.position_ms),
+    shuffleEnabled: Boolean(row.shuffle_enabled),
+    repeatMode: row.repeat_mode as RepeatMode,
+    updatedAt: row.updated_at ? fromSqlDate(row.updated_at) : null
+  };
+}
+
 function nullableString(value: unknown) {
   return value === null || value === undefined ? null : String(value);
 }
@@ -393,4 +952,8 @@ function toSqlDate(date: Date) {
 
 function fromSqlDate(value: unknown) {
   return new Date(String(value));
+}
+
+function likePattern(query: string) {
+  return `%${query.trim().replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
 }

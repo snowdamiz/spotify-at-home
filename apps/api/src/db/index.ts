@@ -10,4 +10,12 @@ export {
   SQLiteSongRepository,
   SQLiteUserRepository
 } from "./repositories.js";
-export type { ImportStatus, LibraryUser, Playlist, PlaylistSong, RepeatMode, Song } from "./repositories.js";
+export type {
+  ImportStatus,
+  LibraryUser,
+  Playlist,
+  PlaylistSong,
+  PlaylistSummary,
+  RepeatMode,
+  Song
+} from "./repositories.js";

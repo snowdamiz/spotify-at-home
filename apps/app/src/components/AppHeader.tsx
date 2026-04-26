@@ -1,6 +1,8 @@
 import { Link } from "expo-router";
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { APP_NAME } from "@tunely/shared";
+import { useAuth } from "../auth/AuthProvider";
+import { startGoogleSignIn } from "../auth/session";
 import { BrandMark } from "./BrandMark";
 import { ImportButton } from "./ImportButton";
 import { colors, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
@@ -12,6 +14,7 @@ type AppHeaderProps = {
 export function AppHeader({ compact = false }: AppHeaderProps) {
   const { width } = useWindowDimensions();
   const isWide = width >= WEB_SIDEBAR_BREAKPOINT;
+  const { user } = useAuth();
 
   return (
     <View style={StyleSheet.flatten([styles.header, isWide ? styles.desktopHeader : null])}>
@@ -21,6 +24,17 @@ export function AppHeader({ compact = false }: AppHeaderProps) {
       </View>
       <View style={styles.actions}>
         {!compact ? <ImportButton compact={false} /> : null}
+        {user ? (
+          <View style={styles.accountPill}>
+            <Text numberOfLines={1} style={styles.accountText}>
+              {user.displayName ?? user.email}
+            </Text>
+          </View>
+        ) : (
+          <Pressable accessibilityRole="button" onPress={startGoogleSignIn} style={styles.loginButton}>
+            <Text style={styles.loginText}>Log in</Text>
+          </Pressable>
+        )}
         <Link href="/settings" asChild>
           <Pressable accessibilityLabel="Open settings" style={styles.iconButton}>
             <Text style={styles.iconText}>⚙</Text>
@@ -32,6 +46,19 @@ export function AppHeader({ compact = false }: AppHeaderProps) {
 }
 
 const styles = StyleSheet.create({
+  accountPill: {
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 1,
+    maxWidth: 180,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm
+  },
+  accountText: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: "700"
+  },
   actions: {
     alignItems: "center",
     flexDirection: "row",
@@ -62,6 +89,18 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: 24,
     lineHeight: 28
+  },
+  loginButton: {
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm
+  },
+  loginText: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: "800"
   },
   desktopName: {
     fontSize: 22

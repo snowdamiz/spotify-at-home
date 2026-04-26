@@ -1,10 +1,10 @@
 import type { PropsWithChildren } from "react";
 import { Link } from "expo-router";
 import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
-import { mockPlaylists } from "../data/mockCatalog";
+import { playlistSubtitle } from "../library/songsApi";
+import { useLibrarySummary } from "../library/useSongs";
 import { colors, radius, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
 import { MiniPlayer } from "./MiniPlayer";
-import { PlaylistArtwork } from "./PlaylistArtwork";
 
 type RouteKey = "home" | "search" | "library";
 
@@ -38,6 +38,9 @@ export function AppShell({ activeRoute = "home", children, miniPlayerTrackId }: 
 }
 
 function Sidebar({ activeRoute }: { activeRoute: RouteKey }) {
+  const library = useLibrarySummary();
+  const summary = library.summary;
+
   return (
     <View style={styles.sidebar}>
       <View style={styles.navPanel}>
@@ -53,15 +56,53 @@ function Sidebar({ activeRoute }: { activeRoute: RouteKey }) {
           </Pressable>
         </View>
         <Text style={styles.sidebarSection}>PLAYLISTS</Text>
-        {mockPlaylists.slice(0, 5).map((playlist) => (
+        <Link href="/playlist/imported-songs" asChild>
+          <Pressable style={styles.sidebarPlaylist}>
+            <View style={styles.sidebarSongArt}>
+              <Text style={styles.sidebarSongArtText}>♪</Text>
+            </View>
+            <View style={styles.sidebarPlaylistText}>
+              <Text numberOfLines={1} style={styles.sidebarPlaylistTitle}>
+                Imported Songs
+              </Text>
+              <Text style={styles.sidebarPlaylistType}>
+                {library.status === "authenticated"
+                  ? `${summary.counts.songs} songs`
+                  : library.status === "loading"
+                    ? "Loading"
+                    : "Sign in required"}
+              </Text>
+            </View>
+          </Pressable>
+        </Link>
+        <Link href="/playlist/liked-songs" asChild>
+          <Pressable style={styles.sidebarPlaylist}>
+            <View style={styles.sidebarSongArt}>
+              <Text style={styles.sidebarSongArtText}>♥</Text>
+            </View>
+            <View style={styles.sidebarPlaylistText}>
+              <Text numberOfLines={1} style={styles.sidebarPlaylistTitle}>
+                Liked Songs
+              </Text>
+              <Text numberOfLines={1} style={styles.sidebarPlaylistType}>
+                {summary.counts.likedSongs} songs
+              </Text>
+            </View>
+          </Pressable>
+        </Link>
+        {summary.playlists.slice(0, 4).map((playlist) => (
           <Link href={`/playlist/${playlist.id}`} asChild key={playlist.id}>
             <Pressable style={styles.sidebarPlaylist}>
-              <PlaylistArtwork playlist={playlist} size={48} />
+              <View style={StyleSheet.flatten([styles.sidebarSongArt, playlist.color ? { backgroundColor: playlist.color } : null])}>
+                <Text style={styles.sidebarSongArtText}>{playlist.name.slice(0, 1).toUpperCase()}</Text>
+              </View>
               <View style={styles.sidebarPlaylistText}>
                 <Text numberOfLines={1} style={styles.sidebarPlaylistTitle}>
-                  {playlist.title}
+                  {playlist.name}
                 </Text>
-                <Text style={styles.sidebarPlaylistType}>Playlist</Text>
+                <Text numberOfLines={1} style={styles.sidebarPlaylistType}>
+                  {playlistSubtitle(playlist)}
+                </Text>
               </View>
             </Pressable>
           </Link>
@@ -220,6 +261,19 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     marginBottom: spacing.md,
     textTransform: "uppercase"
+  },
+  sidebarSongArt: {
+    alignItems: "center",
+    backgroundColor: colors.cardRaised,
+    borderRadius: radius.sm,
+    height: 48,
+    justifyContent: "center",
+    width: 48
+  },
+  sidebarSongArtText: {
+    color: colors.green,
+    fontSize: 22,
+    fontWeight: "900"
   },
   wideContent: {
     padding: spacing.lg

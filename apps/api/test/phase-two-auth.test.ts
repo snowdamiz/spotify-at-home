@@ -90,6 +90,52 @@ describe("Phase 2 auth routes", () => {
     expect(redirectUrl.searchParams.get("code_challenge_method")).toBe("S256");
   });
 
+  it("reports the active Google OAuth config without exposing the secret", async () => {
+    const app = createApiApp({
+      auth: {
+        ...authConfig,
+        googleOAuthClient: createGoogleClient()
+      }
+    });
+    apps.add(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/auth/google/config"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      configured: true,
+      clientId: "google-client-id",
+      redirectUri: authConfig.googleRedirectUri,
+      allowedReturnToOrigins: authConfig.allowedReturnToOrigins
+    });
+    expect(JSON.stringify(response.json())).not.toContain(authConfig.googleClientSecret);
+  });
+
+  it("fails before redirecting to Google when OAuth env is not configured", async () => {
+    const app = createApiApp({
+      auth: {
+        googleClientId: "",
+        googleClientSecret: "",
+        googleRedirectUri: ""
+      }
+    });
+    apps.add(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/auth/google/start?mode=web&returnTo=%2F"
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({
+      error: "google_oauth_not_configured",
+      message: "GOOGLE_CLIENT_ID must be set to the OAuth client ID from Google Cloud Console."
+    });
+  });
+
   it("rejects a callback with a missing or mismatched state", async () => {
     const googleOAuthClient = createGoogleClient();
     const app = createApiApp({
@@ -227,6 +273,34 @@ describe("Phase 2 auth routes", () => {
     });
   });
 
+  it("resolves relative and missing web return URLs to the configured app origin", async () => {
+    const app = createApiApp({
+      auth: {
+        ...authConfig,
+        googleOAuthClient: createGoogleClient()
+      }
+    });
+    apps.add(app);
+
+    const relativeStart = await startGoogleAuth(app, "mode=web&returnTo=%2Flibrary");
+    const relativeCallback = await app.inject({
+      method: "GET",
+      url: `/api/auth/google/callback?state=${relativeStart.redirectUrl.searchParams.get("state")}&code=auth-code`
+    });
+
+    expect(relativeCallback.statusCode).toBe(302);
+    expect(relativeCallback.headers.location).toBe("https://tunely.test/library");
+
+    const fallbackStart = await startGoogleAuth(app, "mode=web");
+    const fallbackCallback = await app.inject({
+      method: "GET",
+      url: `/api/auth/google/callback?state=${fallbackStart.redirectUrl.searchParams.get("state")}&code=auth-code`
+    });
+
+    expect(fallbackCallback.statusCode).toBe(302);
+    expect(fallbackCallback.headers.location).toBe("https://tunely.test");
+  });
+
   it("falls back instead of redirecting to an unapproved web return URL", async () => {
     const app = createApiApp({
       auth: {
@@ -244,7 +318,7 @@ describe("Phase 2 auth routes", () => {
     });
 
     expect(callback.statusCode).toBe(302);
-    expect(callback.headers.location).toBe("/");
+    expect(callback.headers.location).toBe("https://tunely.test");
   });
 
   it("rotates refresh tokens and rejects token reuse", async () => {

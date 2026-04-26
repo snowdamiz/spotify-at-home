@@ -1,16 +1,18 @@
-import { useMemo, useState } from "react";
-import { StyleSheet, Text, TextInput, useWindowDimensions, View } from "react-native";
+import { useState } from "react";
+import { Link } from "expo-router";
+import { Pressable, StyleSheet, Text, TextInput, useWindowDimensions, View } from "react-native";
 import { AppHeader } from "../components/AppHeader";
 import { AppShell } from "../components/AppShell";
-import { browseCategories } from "../data/mockCatalog";
-import { filterCatalog } from "../search/filterCatalog";
+import { playlistSubtitle, songSubtitle } from "../library/songsApi";
+import { useLibrarySearch } from "../library/useSongs";
 import { colors, radius, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
 
 export function SearchScreen() {
   const [query, setQuery] = useState("");
   const { width } = useWindowDimensions();
   const isWide = width >= WEB_SIDEBAR_BREAKPOINT;
-  const results = useMemo(() => filterCatalog(query), [query]);
+  const search = useLibrarySearch(query);
+  const resultCount = search.results.playlists.length + search.results.songs.length;
 
   return (
     <AppShell activeRoute="search">
@@ -30,79 +32,77 @@ export function SearchScreen() {
       {query.trim() ? (
         <View style={styles.results}>
           <Text style={StyleSheet.flatten([styles.sectionTitle, isWide ? styles.desktopSectionTitle : null])}>Results</Text>
-          {results.length ? (
-            results.map((result) => (
-              <View key={`${result.kind}-${result.id}`} style={styles.resultRow}>
-                <View style={styles.resultArt}>
-                  <Text style={styles.resultKind}>{result.kind === "playlist" ? "P" : "S"}</Text>
-                </View>
-                <View style={styles.resultText}>
-                  <Text style={styles.resultTitle}>{result.title}</Text>
-                  <Text style={styles.resultSubtitle}>{result.subtitle}</Text>
-                </View>
-              </View>
-            ))
+          {search.status === "loading" ? (
+            <Text style={styles.emptyText}>Searching your server library...</Text>
+          ) : search.status === "anonymous" ? (
+            <Text style={styles.emptyText}>Log in to search imported songs and playlists.</Text>
+          ) : search.status === "error" ? (
+            <Text style={styles.emptyText}>Could not reach the Tunely server.</Text>
+          ) : resultCount ? (
+            <>
+              {search.results.playlists.map((playlist) => (
+                <Link href={`/playlist/${playlist.id}`} asChild key={playlist.id}>
+                  <Pressable style={styles.resultRow}>
+                    <View style={StyleSheet.flatten([styles.resultArt, playlist.color ? { backgroundColor: playlist.color } : null])}>
+                      <Text style={styles.resultKind}>P</Text>
+                    </View>
+                    <View style={styles.resultText}>
+                      <Text style={styles.resultTitle}>{playlist.name}</Text>
+                      <Text style={styles.resultSubtitle}>{playlist.description ?? playlistSubtitle(playlist)}</Text>
+                    </View>
+                  </Pressable>
+                </Link>
+              ))}
+              {search.results.songs.map((song) => (
+                <Link href={`/now-playing?id=${song.id}`} asChild key={song.id}>
+                  <Pressable style={styles.resultRow}>
+                    <View style={styles.resultArt}>
+                      <Text style={styles.resultKind}>S</Text>
+                    </View>
+                    <View style={styles.resultText}>
+                      <Text style={styles.resultTitle}>{song.title}</Text>
+                      <Text style={styles.resultSubtitle}>{songSubtitle(song)}</Text>
+                    </View>
+                  </Pressable>
+                </Link>
+              ))}
+            </>
           ) : (
-            <Text style={styles.emptyText}>No local matches yet</Text>
+            <Text style={styles.emptyText}>No server matches yet</Text>
           )}
         </View>
       ) : (
-        <>
-          <Text style={StyleSheet.flatten([styles.sectionTitle, isWide ? styles.desktopSectionTitle : null])}>Browse all</Text>
-          <View style={StyleSheet.flatten([styles.categories, isWide ? styles.desktopCategories : null])}>
-            {browseCategories.map((category) => (
-              <View key={category.id} style={StyleSheet.flatten([styles.category, isWide ? styles.desktopCategory : null, { backgroundColor: category.colors[0] }])}>
-                <Text style={StyleSheet.flatten([styles.categoryTitle, isWide ? styles.desktopCategoryTitle : null])}>{category.title}</Text>
-                <View style={StyleSheet.flatten([styles.tiltedTile, { backgroundColor: category.colors[1] }])}>
-                  <Text style={styles.categoryInitial}>{category.title.slice(0, 1)}</Text>
-                </View>
+        <View style={styles.results}>
+          <Text style={StyleSheet.flatten([styles.sectionTitle, isWide ? styles.desktopSectionTitle : null])}>Browse your library</Text>
+          <Link href="/library" asChild>
+            <Pressable style={styles.resultRow}>
+              <View style={styles.resultArt}>
+                <Text style={styles.resultKind}>♪</Text>
               </View>
-            ))}
-          </View>
-        </>
+              <View style={styles.resultText}>
+                <Text style={styles.resultTitle}>Imported Songs</Text>
+                <Text style={styles.resultSubtitle}>Search your private songs and playlists</Text>
+              </View>
+            </Pressable>
+          </Link>
+          <Link href="/playlist/liked-songs" asChild>
+            <Pressable style={styles.resultRow}>
+              <View style={styles.resultArt}>
+                <Text style={styles.resultKind}>♥</Text>
+              </View>
+              <View style={styles.resultText}>
+                <Text style={styles.resultTitle}>Liked Songs</Text>
+                <Text style={styles.resultSubtitle}>Your saved favorites</Text>
+              </View>
+            </Pressable>
+          </Link>
+        </View>
       )}
     </AppShell>
   );
 }
 
 const styles = StyleSheet.create({
-  categories: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: spacing.lg
-  },
-  category: {
-    borderRadius: radius.md,
-    flexBasis: 176,
-    flexGrow: 1,
-    height: 132,
-    maxWidth: 340,
-    minWidth: 150,
-    overflow: "hidden",
-    padding: spacing.lg
-  },
-  categoryInitial: {
-    color: colors.text,
-    fontSize: 22,
-    fontWeight: "900"
-  },
-  categoryTitle: {
-    color: colors.text,
-    fontSize: 24,
-    fontWeight: "900"
-  },
-  desktopCategories: {
-    gap: spacing.md
-  },
-  desktopCategory: {
-    flexBasis: 156,
-    height: 104,
-    maxWidth: 240,
-    padding: spacing.md
-  },
-  desktopCategoryTitle: {
-    fontSize: 19
-  },
   desktopInput: {
     fontSize: 17
   },
@@ -186,17 +186,6 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     marginBottom: spacing.lg,
     marginTop: spacing.xl
-  },
-  tiltedTile: {
-    alignItems: "center",
-    borderRadius: radius.md,
-    bottom: -28,
-    height: 82,
-    justifyContent: "center",
-    position: "absolute",
-    right: -18,
-    transform: [{ rotate: "18deg" }],
-    width: 82
   },
   title: {
     color: colors.text,

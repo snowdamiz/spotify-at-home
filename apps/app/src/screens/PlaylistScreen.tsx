@@ -2,40 +2,69 @@ import { Link, useLocalSearchParams } from "expo-router";
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { AppHeader } from "../components/AppHeader";
 import { AppShell } from "../components/AppShell";
-import { PlaylistArtwork } from "../components/PlaylistArtwork";
-import { mockPlaylists, mockSongs } from "../data/mockCatalog";
-import { colors, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
+import { songSubtitle } from "../library/songsApi";
+import { useLibrarySummary, usePlaylist } from "../library/useSongs";
+import { colors, radius, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
 
 export function PlaylistScreen() {
   const { id } = useLocalSearchParams<{ id?: string }>();
   const { width } = useWindowDimensions();
   const isWide = width >= WEB_SIDEBAR_BREAKPOINT;
-  const playlist = mockPlaylists.find((item) => item.id === id) ?? mockPlaylists[0];
-  const songs = mockSongs.filter((song) => song.playlistId === playlist.id);
+  const summaryState = useLibrarySummary();
+  const playlistState = usePlaylist(id && id !== "imported-songs" && id !== "liked-songs" ? id : undefined);
+  const isImportedSongs = id === "imported-songs";
+  const isLikedSongs = id === "liked-songs";
+  const serverPlaylist = playlistState.status === "authenticated" ? playlistState.playlist : null;
+  const title = isImportedSongs
+    ? "Imported Songs"
+    : isLikedSongs
+      ? "Liked Songs"
+      : serverPlaylist?.name ?? "Playlist";
+  const subtitle = isImportedSongs
+    ? "Songs stored privately on your Tunely server"
+    : isLikedSongs
+      ? "Favorites backed by your private likes"
+      : serverPlaylist?.description ?? "Songs arranged in your own order.";
+  const tracks = isImportedSongs
+    ? summaryState.summary.recentSongs
+    : isLikedSongs
+      ? summaryState.summary.likedSongs
+      : serverPlaylist?.songs ?? [];
+  const status = isImportedSongs || isLikedSongs ? summaryState.status : playlistState.status;
 
   return (
     <AppShell>
       <AppHeader />
       <View style={StyleSheet.flatten([styles.hero, isWide ? styles.desktopHero : null])}>
-        <PlaylistArtwork playlist={playlist} size={isWide ? 132 : 180} />
+        <View style={StyleSheet.flatten([styles.artwork, isWide ? styles.desktopArtwork : null])}>
+          <Text style={styles.artworkText}>♪</Text>
+        </View>
         <View style={styles.heroText}>
           <Text style={styles.type}>Playlist</Text>
-          <Text style={StyleSheet.flatten([styles.title, isWide ? styles.desktopTitle : null])}>{playlist.title}</Text>
-          <Text style={styles.subtitle}>{playlist.subtitle}</Text>
+          <Text style={StyleSheet.flatten([styles.title, isWide ? styles.desktopTitle : null])}>{title}</Text>
+          <Text style={styles.subtitle}>{subtitle}</Text>
         </View>
       </View>
       <View style={styles.trackList}>
-        {songs.length ? (
-          songs.map((song) => (
-            <Link href="/now-playing" asChild key={song.id}>
+        {status === "loading" ? (
+          <Text style={styles.emptyText}>Loading songs from the server...</Text>
+        ) : status === "anonymous" ? (
+          <Text style={styles.emptyText}>Log in to view server-backed playlists.</Text>
+        ) : status === "error" ? (
+          <Text style={styles.emptyText}>Could not reach the Tunely server.</Text>
+        ) : status === "not-found" ? (
+          <Text style={styles.emptyText}>This playlist does not exist on the server.</Text>
+        ) : tracks.length ? (
+          tracks.map((song) => (
+            <Link href={`/now-playing?id=${song.id}`} asChild key={song.id}>
               <Pressable style={styles.trackRow}>
                 <Text style={styles.trackTitle}>{song.title}</Text>
-                <Text style={styles.trackArtist}>{song.artist}</Text>
+                <Text style={styles.trackArtist}>{songSubtitle(song)}</Text>
               </Pressable>
             </Link>
           ))
         ) : (
-          <Text style={styles.emptyText}>Import a song to fill this playlist.</Text>
+          <Text style={styles.emptyText}>No songs here yet.</Text>
         )}
       </View>
     </AppShell>
@@ -43,6 +72,19 @@ export function PlaylistScreen() {
 }
 
 const styles = StyleSheet.create({
+  artwork: {
+    alignItems: "center",
+    backgroundColor: colors.greenDark,
+    borderRadius: radius.lg,
+    height: 180,
+    justifyContent: "center",
+    width: 180
+  },
+  artworkText: {
+    color: colors.green,
+    fontSize: 72,
+    fontWeight: "900"
+  },
   emptyText: {
     color: colors.muted,
     fontSize: 18,
@@ -57,6 +99,10 @@ const styles = StyleSheet.create({
   },
   desktopHero: {
     marginTop: spacing.xl
+  },
+  desktopArtwork: {
+    height: 132,
+    width: 132
   },
   desktopTitle: {
     fontSize: 36

@@ -1,6 +1,14 @@
-import { StyleSheet, Text, useWindowDimensions, View } from "react-native";
-import { AppHeader } from "../components/AppHeader";
-import { AppShell } from "../components/AppShell";
+import {
+  Pressable,
+  SafeAreaView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View
+} from "react-native";
+import { APP_NAME } from "@tunely/shared";
+import { startGoogleSignIn } from "../auth/session";
+import { BrandMark } from "../components/BrandMark";
 import { colors, radius, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
 
 export function LoginScreen() {
@@ -8,62 +16,101 @@ export function LoginScreen() {
   const isWide = width >= WEB_SIDEBAR_BREAKPOINT;
 
   return (
-    <AppShell>
-      <AppHeader />
-      <View style={StyleSheet.flatten([styles.panel, isWide ? styles.desktopPanel : null])}>
-        <Text style={StyleSheet.flatten([styles.title, isWide ? styles.desktopTitle : null])}>Log in to Tunely</Text>
-        <Text style={styles.body}>Google sign-in will connect your private library across web, iOS, and Android in the next phase.</Text>
-        <View style={styles.googleButton}>
-          <Text style={styles.googleText}>Continue with Google</Text>
+    <SafeAreaView style={styles.safeArea}>
+      <View style={styles.root}>
+        <View style={StyleSheet.flatten([styles.card, isWide ? styles.cardWide : null])}>
+          <BrandMark size={88} />
+          <Text style={styles.eyebrow}>{APP_NAME}</Text>
+          <Text style={styles.title}>Sign in to continue</Text>
+          <Text style={styles.body}>
+            Connect your Google account to sync your private music library across web, iOS, and Android.
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            onPress={startGoogleSignIn}
+            style={({ pressed }) =>
+              StyleSheet.flatten([styles.googleButton, pressed ? styles.googleButtonPressed : null])
+            }
+          >
+            <Text style={styles.googleText}>Continue with Google</Text>
+          </Pressable>
+          <Text style={styles.footer}>
+            Your library stays on the Tunely server you host.
+          </Text>
         </View>
       </View>
-    </AppShell>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   body: {
     color: colors.muted,
-    fontSize: 18,
-    lineHeight: 26,
-    marginBottom: spacing.xl,
+    fontSize: 16,
+    lineHeight: 22,
+    textAlign: "center"
+  },
+  card: {
+    alignItems: "center",
+    gap: spacing.md,
+    maxWidth: 420,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.xl,
+    width: "100%"
+  },
+  cardWide: {
+    backgroundColor: colors.card,
+    borderRadius: radius.lg,
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.xxl
+  },
+  eyebrow: {
+    color: colors.green,
+    fontSize: 13,
+    fontWeight: "800",
+    letterSpacing: 2,
+    marginTop: spacing.md,
+    textTransform: "uppercase"
+  },
+  footer: {
+    color: colors.mutedStrong,
+    fontSize: 13,
+    marginTop: spacing.sm,
     textAlign: "center"
   },
   googleButton: {
     alignItems: "center",
-    backgroundColor: colors.text,
+    alignSelf: "stretch",
+    backgroundColor: colors.green,
     borderRadius: radius.pill,
-    minHeight: 56,
     justifyContent: "center",
-    paddingHorizontal: spacing.xl
+    marginTop: spacing.md,
+    minHeight: 52,
+    paddingHorizontal: spacing.lg
+  },
+  googleButtonPressed: {
+    opacity: 0.85
   },
   googleText: {
-    color: colors.background,
-    fontSize: 18,
+    color: "#071108",
+    fontSize: 17,
     fontWeight: "800"
   },
-  desktopPanel: {
-    marginTop: spacing.xl,
-    maxWidth: 440
-  },
-  desktopTitle: {
-    fontSize: 28
-  },
-  panel: {
+  root: {
     alignItems: "center",
-    alignSelf: "center",
-    backgroundColor: colors.card,
-    borderRadius: radius.lg,
-    marginTop: spacing.xxl,
-    maxWidth: 520,
-    padding: spacing.xl,
-    width: "100%"
+    backgroundColor: colors.background,
+    flex: 1,
+    justifyContent: "center",
+    padding: spacing.lg
+  },
+  safeArea: {
+    backgroundColor: colors.background,
+    flex: 1
   },
   title: {
     color: colors.text,
-    fontSize: 34,
+    fontSize: 30,
     fontWeight: "900",
-    marginBottom: spacing.md,
     textAlign: "center"
   }
 });

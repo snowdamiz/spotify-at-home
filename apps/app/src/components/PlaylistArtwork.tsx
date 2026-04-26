@@ -1,9 +1,14 @@
 import { StyleSheet, Text, View } from "react-native";
-import type { Playlist } from "../data/mockCatalog";
-import { radius } from "../theme/tokens";
+import { colors, radius } from "../theme/tokens";
 
 type PlaylistArtworkProps = {
-  playlist: Playlist;
+  playlist: {
+    color?: string | null;
+    colors?: string[];
+    initials?: string;
+    name?: string;
+    title?: string;
+  };
   size?: number | `${number}%`;
 };
 
@@ -17,11 +22,14 @@ export function PlaylistArtwork({ playlist, size = 112 }: PlaylistArtworkProps) 
   const showNote = !isPixel || size >= 72;
   const noteSize = isPixel ? Math.max(12, Math.round(size * 0.3)) : 30;
   const noteOffset = isPixel ? Math.max(4, Math.round(size * 0.08)) : 10;
+  const title = playlist.name ?? playlist.title ?? "Playlist";
+  const initials = playlist.initials ?? initialsForTitle(title);
+  const backgroundColor = playlist.color ?? playlist.colors?.[0] ?? colors.greenDark;
 
   return (
-    <View style={StyleSheet.flatten([styles.artwork, { backgroundColor: playlist.colors[0] }, sizeStyle])}>
+    <View style={StyleSheet.flatten([styles.artwork, { backgroundColor }, sizeStyle])}>
       <Text style={StyleSheet.flatten([styles.initials, { fontSize: letterSize, lineHeight: letterSize * 1.05 }])}>
-        {playlist.initials}
+        {initials}
       </Text>
       {showNote ? (
         <Text
@@ -35,6 +43,15 @@ export function PlaylistArtwork({ playlist, size = 112 }: PlaylistArtworkProps) 
       ) : null}
     </View>
   );
+}
+
+function initialsForTitle(title: string) {
+  return title
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part.slice(0, 1).toUpperCase())
+    .join("");
 }
 
 const styles = StyleSheet.create({

@@ -16,6 +16,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "dotenv": "16.4.7",
     "fastify": "^5.3.2"
   },
   "devDependencies": {

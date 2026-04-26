@@ -3,15 +3,29 @@ import { AuthError, AuthService } from "./service.js";
 import type { AuthServiceOptions, IssuedSession } from "./service.js";
 
 export type AuthRoutesOptions = AuthServiceOptions & {
+  authService?: AuthService;
   cookieSecure?: boolean;
   allowedReturnToOrigins?: string[];
 };
 
 export function registerAuthRoutes(app: FastifyInstance, options: AuthRoutesOptions) {
-  const authService = new AuthService(options);
+  const authService = options.authService ?? new AuthService(options);
   const cookieSecure = options.cookieSecure ?? process.env.NODE_ENV === "production";
 
+  app.get("/api/auth/google/config", async () => {
+    return googleAuthConfigSummary(options);
+  });
+
   app.get("/api/auth/google/start", async (request, reply) => {
+    const configError = googleAuthConfigError(options);
+
+    if (configError) {
+      return reply.code(500).send({
+        error: "google_oauth_not_configured",
+        message: configError
+      });
+    }
+
     const query = asRecord(request.query);
     const mode = query.mode === "mobile" ? "mobile" : "web";
     const returnTo = normalizeReturnTo(
@@ -132,7 +146,7 @@ function clearSessionCookies(reply: FastifyReply, secure: boolean) {
   ]);
 }
 
-function readAccessToken(request: FastifyRequest) {
+export function readAccessToken(request: FastifyRequest) {
   const authorization = headerValue(request.headers.authorization);
 
   if (authorization?.startsWith("Bearer ")) {
@@ -205,7 +219,7 @@ function normalizeReturnTo(
   mode: "web" | "mobile",
   allowedOrigins: string[]
 ) {
-  const fallback = mode === "mobile" ? "tunely://auth/callback" : "/";
+  const fallback = mode === "mobile" ? "tunely://auth/callback" : (allowedOrigins[0] ?? "/");
 
   if (!returnTo) {
     return fallback;
@@ -216,7 +230,7 @@ function normalizeReturnTo(
   }
 
   if (returnTo.startsWith("/") && !returnTo.startsWith("//")) {
-    return returnTo;
+    return resolveWebReturnPath(returnTo, fallback);
   }
 
   try {
@@ -227,10 +241,71 @@ function normalizeReturnTo(
   }
 }
 
+function resolveWebReturnPath(path: string, fallback: string) {
+  try {
+    return new URL(path, fallback).toString();
+  } catch {
+    return path;
+  }
+}
+
 function asRecord(value: unknown) {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
 function headerValue(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value ?? null;
+}
+
+function googleAuthConfigSummary(options: AuthRoutesOptions) {
+  return {
+    configured: !googleAuthConfigError(options),
+    clientId: maskClientId(options.googleClientId),
+    redirectUri: options.googleRedirectUri,
+    allowedReturnToOrigins: options.allowedReturnToOrigins ?? []
+  };
+}
+
+function googleAuthConfigError(options: AuthRoutesOptions) {
+  if (
+    !isConfiguredValue(options.googleClientId) ||
+    options.googleClientId === "local-google-client-id"
+  ) {
+    return "GOOGLE_CLIENT_ID must be set to the OAuth client ID from Google Cloud Console.";
+  }
+
+  if (
+    !isConfiguredValue(options.googleClientSecret) ||
+    options.googleClientSecret === "local-google-client-secret"
+  ) {
+    return "GOOGLE_CLIENT_SECRET must be set to the OAuth client secret from Google Cloud Console.";
+  }
+
+  if (!isConfiguredValue(options.googleRedirectUri)) {
+    return "GOOGLE_REDIRECT_URI must be set to the exact authorized redirect URI from Google Cloud Console.";
+  }
+
+  try {
+    new URL(options.googleRedirectUri);
+  } catch {
+    return "GOOGLE_REDIRECT_URI must be an absolute URL.";
+  }
+
+  return null;
+}
+
+function isConfiguredValue(value: string) {
+  return Boolean(value.trim()) && !value.startsWith("replace-with-");
+}
+
+function maskClientId(clientId: string) {
+  if (!clientId) {
+    return "";
+  }
+
+  if (clientId.length <= 24) {
+    return clientId;
+  }
+
+  return `${clientId.slice(0, 12)}...${clientId.slice(-12)}`;
 }

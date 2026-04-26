@@ -3,6 +3,7 @@ import { fileURLToPath, URL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { APP_NAME } from "@tunely/shared";
 import { createMockPlayerStore } from "@tunely/app/player/playerStore";
+import { filterSongs } from "@tunely/app/library/songsApi";
 import { filterCatalog } from "@tunely/app/search/filterCatalog";
 
 const appRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -20,8 +21,8 @@ describe("Phase 1 UI shell", () => {
     expect(homeScreenSource).toContain("AppHeader");
     expect(homeScreenSource).toContain("Good afternoon");
     expect(homeScreenSource).toContain('variant="import"');
-    expect(homeScreenSource).toContain("PlaylistShortcut");
-    expect(homeScreenSource).toContain("mockPlaylists");
+    expect(homeScreenSource).toContain("useSongs");
+    expect(homeScreenSource).toContain("/now-playing?id=");
     expect(APP_NAME).toBe("Tunely");
     expect(appRoot).toContain("apps/app/");
   });
@@ -46,7 +47,8 @@ describe("Phase 1 UI shell", () => {
     expect(emptyPanelSource).toContain("No songs yet");
     expect(librarySource).toContain("EmptyLibraryPanel");
     expect(librarySource).toContain("ImportButton");
-    expect(librarySource).toContain("mockLibrarySongs.length === 0");
+    expect(librarySource).toContain("useSongs");
+    expect(librarySource).toContain("/now-playing?id=");
   });
 
   it("filters songs and playlists by local query text", () => {
@@ -59,6 +61,39 @@ describe("Phase 1 UI shell", () => {
     ]);
 
     expect(filterCatalog("")).toEqual([]);
+  });
+
+  it("filters imported server songs by title, artist, and album", () => {
+    const songs = [
+      {
+        id: "server-song-a",
+        title: "Private Moon",
+        artist: "Ada",
+        album: null,
+        durationMs: null,
+        mimeType: "audio/mpeg",
+        sizeBytes: 10,
+        importStatus: "ready" as const,
+        createdAt: "2026-04-26T00:00:00.000Z",
+        updatedAt: "2026-04-26T00:00:00.000Z"
+      },
+      {
+        id: "server-song-b",
+        title: "Engine Room",
+        artist: null,
+        album: "Analytical",
+        durationMs: null,
+        mimeType: "audio/mpeg",
+        sizeBytes: 10,
+        importStatus: "ready" as const,
+        createdAt: "2026-04-26T00:00:00.000Z",
+        updatedAt: "2026-04-26T00:00:00.000Z"
+      }
+    ];
+
+    expect(filterSongs(songs, "moon").map((song) => song.id)).toEqual(["server-song-a"]);
+    expect(filterSongs(songs, "analytical").map((song) => song.id)).toEqual(["server-song-b"]);
+    expect(filterSongs(songs, "")).toEqual([]);
   });
 
   it("models an empty and selected mini-player state", () => {

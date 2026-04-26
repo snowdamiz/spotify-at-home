@@ -1,11 +1,12 @@
 import { Link } from "expo-router";
 import { Pressable, StyleSheet, Text, useWindowDimensions } from "react-native";
-import type { Playlist } from "../data/mockCatalog";
+import type { ServerPlaylist } from "../library/songsApi";
+import { playlistSubtitle } from "../library/songsApi";
 import { colors, radius, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
 import { PlaylistArtwork } from "./PlaylistArtwork";
 
 type PlaylistCardProps = {
-  playlist: Playlist;
+  playlist: ServerPlaylist;
 };
 
 export function PlaylistCard({ playlist }: PlaylistCardProps) {
@@ -17,10 +18,10 @@ export function PlaylistCard({ playlist }: PlaylistCardProps) {
       <Pressable style={StyleSheet.flatten([styles.card, isWide ? styles.desktopCard : null])}>
         <PlaylistArtwork playlist={playlist} size="100%" />
         <Text numberOfLines={1} style={StyleSheet.flatten([styles.title, isWide ? styles.desktopTitle : null])}>
-          {playlist.title}
+          {playlist.name}
         </Text>
         <Text numberOfLines={2} style={StyleSheet.flatten([styles.subtitle, isWide ? styles.desktopSubtitle : null])}>
-          {playlist.subtitle}
+          {playlist.description ?? playlistSubtitle(playlist)}
         </Text>
       </Pressable>
     </Link>

@@ -1,4 +1,5 @@
 import { randomToken } from "./crypto.js";
+import type { SqliteDatabase } from "../db/connection.js";
 
 export interface OAuthState {
   state: string;
@@ -289,4 +290,338 @@ export class InMemoryAuthRepository implements AuthRepository {
 
     return exchange;
   }
+}
+
+export class SQLiteAuthRepository implements AuthRepository {
+  constructor(private readonly db: SqliteDatabase) {}
+
+  async upsertUserFromGoogle(input: {
+    providerSubject: string;
+    email: string;
+    displayName: string | null;
+    avatarUrl: string | null;
+    now: Date;
+  }) {
+    const account = this.db
+      .prepare("SELECT * FROM oauth_accounts WHERE provider = ? AND provider_subject = ?")
+      .get("google", input.providerSubject) as Record<string, unknown> | undefined;
+
+    if (account) {
+      this.db
+        .prepare(
+          `
+            UPDATE users
+            SET email = ?, display_name = ?, avatar_url = ?, updated_at = ?
+            WHERE id = ?
+          `
+        )
+        .run(
+          input.email,
+          input.displayName,
+          input.avatarUrl,
+          toSqlDate(input.now),
+          String(account.user_id)
+        );
+      this.db
+        .prepare("UPDATE oauth_accounts SET email = ? WHERE id = ?")
+        .run(input.email, String(account.id));
+
+      const user = await this.findUserById(String(account.user_id));
+
+      if (!user) {
+        throw new Error("OAuth account points to a missing user");
+      }
+
+      return user;
+    }
+
+    const user: User = {
+      id: randomToken(16),
+      email: input.email,
+      displayName: input.displayName,
+      avatarUrl: input.avatarUrl,
+      createdAt: input.now,
+      updatedAt: input.now
+    };
+
+    this.db.exec("BEGIN;");
+
+    try {
+      this.db
+        .prepare(
+          `
+            INSERT INTO users (id, email, display_name, avatar_url, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `
+        )
+        .run(
+          user.id,
+          user.email,
+          user.displayName,
+          user.avatarUrl,
+          toSqlDate(user.createdAt),
+          toSqlDate(user.updatedAt)
+        );
+      this.db
+        .prepare(
+          `
+            INSERT INTO oauth_accounts (id, user_id, provider, provider_subject, email, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `
+        )
+        .run(
+          randomToken(16),
+          user.id,
+          "google",
+          input.providerSubject,
+          input.email,
+          toSqlDate(input.now)
+        );
+      this.db.exec("COMMIT;");
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+
+    return user;
+  }
+
+  async findUserById(userId: string) {
+    const row = this.db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as
+      | Record<string, unknown>
+      | undefined;
+
+    return row ? mapUser(row) : null;
+  }
+
+  async createSession(input: {
+    userId: string;
+    accessTokenHash: string;
+    refreshTokenHash: string;
+    userAgent: string | null;
+    ipAddress: string | null;
+    expiresAt: Date;
+    now: Date;
+  }) {
+    const session: Session = {
+      id: randomToken(16),
+      userId: input.userId,
+      accessTokenHash: input.accessTokenHash,
+      refreshTokenHash: input.refreshTokenHash,
+      userAgent: input.userAgent,
+      ipAddress: input.ipAddress,
+      expiresAt: input.expiresAt,
+      revokedAt: null,
+      createdAt: input.now,
+      updatedAt: input.now
+    };
+
+    this.db
+      .prepare(
+        `
+          INSERT INTO sessions (
+            id, user_id, access_token_hash, refresh_token_hash, user_agent, ip_address,
+            expires_at, revoked_at, created_at, updated_at, rotated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `
+      )
+      .run(
+        session.id,
+        session.userId,
+        session.accessTokenHash,
+        session.refreshTokenHash,
+        session.userAgent,
+        session.ipAddress,
+        toSqlDate(session.expiresAt),
+        null,
+        toSqlDate(session.createdAt),
+        toSqlDate(session.updatedAt),
+        null
+      );
+
+    return session;
+  }
+
+  async findSessionByAccessTokenHash(accessTokenHash: string, now: Date) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM sessions
+          WHERE access_token_hash = ? AND revoked_at IS NULL AND expires_at > ?
+        `
+      )
+      .get(accessTokenHash, toSqlDate(now)) as Record<string, unknown> | undefined;
+
+    return row ? mapSession(row) : null;
+  }
+
+  async rotateRefreshToken(input: {
+    currentRefreshTokenHash: string;
+    nextAccessTokenHash: string;
+    nextRefreshTokenHash: string;
+    expiresAt: Date;
+    now: Date;
+  }) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM sessions
+          WHERE refresh_token_hash = ? AND revoked_at IS NULL AND expires_at > ?
+        `
+      )
+      .get(input.currentRefreshTokenHash, toSqlDate(input.now)) as Record<string, unknown> | undefined;
+
+    if (!row) {
+      return null;
+    }
+
+    this.db
+      .prepare(
+        `
+          UPDATE sessions
+          SET access_token_hash = ?,
+              refresh_token_hash = ?,
+              expires_at = ?,
+              updated_at = ?,
+              rotated_at = ?
+          WHERE id = ?
+        `
+      )
+      .run(
+        input.nextAccessTokenHash,
+        input.nextRefreshTokenHash,
+        toSqlDate(input.expiresAt),
+        toSqlDate(input.now),
+        toSqlDate(input.now),
+        String(row.id)
+      );
+
+    const updated = this.db.prepare("SELECT * FROM sessions WHERE id = ?").get(String(row.id)) as
+      | Record<string, unknown>
+      | undefined;
+
+    return updated ? mapSession(updated) : null;
+  }
+
+  async revokeSessionByAccessTokenHash(accessTokenHash: string, now: Date) {
+    const result = this.db
+      .prepare(
+        `
+          UPDATE sessions
+          SET revoked_at = ?, updated_at = ?
+          WHERE access_token_hash = ? AND revoked_at IS NULL
+        `
+      )
+      .run(toSqlDate(now), toSqlDate(now), accessTokenHash);
+
+    return Number(result.changes) > 0;
+  }
+
+  async revokeSessionByRefreshTokenHash(refreshTokenHash: string, now: Date) {
+    const result = this.db
+      .prepare(
+        `
+          UPDATE sessions
+          SET revoked_at = ?, updated_at = ?
+          WHERE refresh_token_hash = ? AND revoked_at IS NULL
+        `
+      )
+      .run(toSqlDate(now), toSqlDate(now), refreshTokenHash);
+
+    return Number(result.changes) > 0;
+  }
+
+  async savePendingSessionExchange(exchange: PendingSessionExchange) {
+    this.db
+      .prepare(
+        `
+          INSERT INTO pending_session_exchanges (
+            code_hash, user_id, user_agent, ip_address, expires_at, consumed_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?)
+        `
+      )
+      .run(
+        exchange.codeHash,
+        exchange.userId,
+        exchange.userAgent,
+        exchange.ipAddress,
+        toSqlDate(exchange.expiresAt),
+        exchange.consumedAt ? toSqlDate(exchange.consumedAt) : null
+      );
+  }
+
+  async consumePendingSessionExchange(codeHash: string, now: Date) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM pending_session_exchanges
+          WHERE code_hash = ? AND consumed_at IS NULL AND expires_at > ?
+        `
+      )
+      .get(codeHash, toSqlDate(now)) as Record<string, unknown> | undefined;
+
+    if (!row) {
+      return null;
+    }
+
+    this.db
+      .prepare("UPDATE pending_session_exchanges SET consumed_at = ? WHERE code_hash = ?")
+      .run(toSqlDate(now), codeHash);
+
+    return mapPendingSessionExchange(row);
+  }
+}
+
+function mapUser(row: Record<string, unknown>): User {
+  return {
+    id: String(row.id),
+    email: String(row.email),
+    displayName: nullableString(row.display_name),
+    avatarUrl: nullableString(row.avatar_url),
+    createdAt: fromSqlDate(row.created_at),
+    updatedAt: fromSqlDate(row.updated_at)
+  };
+}
+
+function mapSession(row: Record<string, unknown>): Session {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    accessTokenHash: String(row.access_token_hash),
+    refreshTokenHash: String(row.refresh_token_hash),
+    userAgent: nullableString(row.user_agent),
+    ipAddress: nullableString(row.ip_address),
+    expiresAt: fromSqlDate(row.expires_at),
+    revokedAt: row.revoked_at ? fromSqlDate(row.revoked_at) : null,
+    createdAt: fromSqlDate(row.created_at),
+    updatedAt: fromSqlDate(row.updated_at)
+  };
+}
+
+function mapPendingSessionExchange(row: Record<string, unknown>): PendingSessionExchange {
+  return {
+    codeHash: String(row.code_hash),
+    userId: String(row.user_id),
+    userAgent: nullableString(row.user_agent),
+    ipAddress: nullableString(row.ip_address),
+    expiresAt: fromSqlDate(row.expires_at),
+    consumedAt: row.consumed_at ? fromSqlDate(row.consumed_at) : null
+  };
+}
+
+function nullableString(value: unknown) {
+  return value === null || value === undefined ? null : String(value);
+}
+
+function toSqlDate(date: Date) {
+  return date.toISOString();
+}
+
+function fromSqlDate(value: unknown) {
+  return new Date(String(value));
 }

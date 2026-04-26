@@ -1,12 +1,12 @@
 import { Link } from "expo-router";
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
-import type { Playlist } from "../data/mockCatalog";
+import type { ServerPlaylist } from "../library/songsApi";
 import { colors, radius, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
 import { ImportButton } from "./ImportButton";
 import { PlaylistArtwork } from "./PlaylistArtwork";
 
 type PlaylistShortcutProps = {
-  playlist?: Playlist;
+  playlist?: ServerPlaylist;
   variant?: "import" | "playlist";
 };
 
@@ -37,7 +37,7 @@ export function PlaylistShortcut({ playlist, variant = "playlist" }: PlaylistSho
       <Pressable style={StyleSheet.flatten([styles.shortcut, isWide ? styles.desktopShortcut : null])}>
         <PlaylistArtwork playlist={playlist} size={artworkSize} />
         <Text numberOfLines={1} style={StyleSheet.flatten([styles.title, isWide ? styles.desktopTitle : null])}>
-          {playlist.title}
+          {playlist.name}
         </Text>
       </Pressable>
     </Link>
