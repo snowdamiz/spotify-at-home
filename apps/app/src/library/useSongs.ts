@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
 import {
   emptyLibrarySummary,
+  defaultImportPolicy,
+  fetchImportPolicy,
   fetchLibrarySummary,
   fetchPlaylist,
   fetchSongs,
   searchLibrary,
   type LibrarySearchResults,
   type LibrarySummary,
+  type ServerImportPolicy,
   type ServerPlaylistDetail,
   type ServerSong
 } from "./songsApi";
@@ -67,6 +70,40 @@ export function useLibrarySummary(): LibrarySummaryState {
       .catch(() => {
         if (mounted) {
           setState({ status: "error", summary: emptyLibrarySummary() });
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  return state;
+}
+
+export type ImportPolicyState =
+  | { status: "loading"; policy: ServerImportPolicy }
+  | { status: "ready"; policy: ServerImportPolicy }
+  | { status: "error"; policy: ServerImportPolicy };
+
+export function useImportPolicy(): ImportPolicyState {
+  const [state, setState] = useState<ImportPolicyState>({
+    policy: defaultImportPolicy(),
+    status: "loading"
+  });
+
+  useEffect(() => {
+    let mounted = true;
+
+    fetchImportPolicy()
+      .then((policy) => {
+        if (mounted) {
+          setState({ policy, status: "ready" });
+        }
+      })
+      .catch(() => {
+        if (mounted) {
+          setState({ policy: defaultImportPolicy(), status: "error" });
         }
       });
 

@@ -4,6 +4,7 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
   AUDIO_IMPORT_LIMITS,
+  isImportPolicyMode,
   validateAudioImportMetadata,
   type AudioImportValidationError
 } from "@tunely/shared";
@@ -12,6 +13,12 @@ import { randomToken } from "../auth/crypto.js";
 import { AuthError, type AuthService, type PublicUser } from "../auth/service.js";
 import { readAccessToken } from "../auth/routes.js";
 import type { PlaybackState, RepeatMode, SQLiteSongRepository, Song } from "../db/repositories.js";
+import {
+  assertImportPolicyAllowsRequestedMode,
+  ImportPolicyError,
+  readImportPolicyRuntimeConfig,
+  type ImportPolicyRuntimeConfig
+} from "../import-policy/policy.js";
 import { parseRangeHeader } from "./range.js";
 import { LocalAudioStorage, type AudioStorage } from "./storage.js";
 
@@ -22,6 +29,7 @@ export interface SongRoutesOptions {
   storageRoot?: string;
   maxFileSizeBytes?: number;
   userQuotaBytes?: number;
+  importPolicyConfig?: ImportPolicyRuntimeConfig;
 }
 
 interface ImportPayload {
@@ -32,6 +40,7 @@ interface ImportPayload {
   artist?: unknown;
   album?: unknown;
   contentBase64?: unknown;
+  importPolicyMode?: unknown;
 }
 
 export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOptions) {
@@ -40,6 +49,7 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
     new LocalAudioStorage(options.storageRoot ?? process.env.TUNELY_AUDIO_STORAGE_PATH ?? join(process.cwd(), "data", "audio"));
   const maxFileSizeBytes = options.maxFileSizeBytes ?? AUDIO_IMPORT_LIMITS.maxFileSizeBytes;
   const userQuotaBytes = options.userQuotaBytes ?? AUDIO_IMPORT_LIMITS.defaultUserQuotaBytes;
+  const importPolicyConfig = options.importPolicyConfig ?? readImportPolicyRuntimeConfig();
 
   app.post("/api/songs/import", async (request, reply) => {
     const user = await authenticate(request, reply, options.authService);
@@ -49,6 +59,27 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
     }
 
     const body = (request.body && typeof request.body === "object" ? request.body : {}) as ImportPayload;
+
+    if (body.importPolicyMode !== undefined) {
+      if (!isImportPolicyMode(body.importPolicyMode)) {
+        return sendSongError(reply, "invalid_import_policy_mode", "Import policy mode is invalid.", 400);
+      }
+
+      try {
+        assertImportPolicyAllowsRequestedMode({
+          config: importPolicyConfig,
+          requestedMode: body.importPolicyMode,
+          user
+        });
+      } catch (error) {
+        if (error instanceof ImportPolicyError) {
+          return sendSongError(reply, error.code, error.message, error.statusCode);
+        }
+
+        throw error;
+      }
+    }
+
     const metadata = {
       fileName: typeof body.fileName === "string" ? body.fileName : undefined,
       mimeType: typeof body.mimeType === "string" ? body.mimeType : undefined,

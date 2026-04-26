@@ -5,7 +5,7 @@ import { useAuth } from "../auth/AuthProvider";
 import { startGoogleSignIn } from "../auth/session";
 import { BrandMark } from "./BrandMark";
 import { ImportButton } from "./ImportButton";
-import { colors, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
+import { colors, radius, spacing } from "../theme/tokens";
 
 type AppHeaderProps = {
   compact?: boolean;
@@ -13,30 +13,47 @@ type AppHeaderProps = {
 
 export function AppHeader({ compact = false }: AppHeaderProps) {
   const { width } = useWindowDimensions();
-  const isWide = width >= WEB_SIDEBAR_BREAKPOINT;
+  const isWide = width >= 700;
   const { user } = useAuth();
+  const showName = isWide;
 
   return (
-    <View style={StyleSheet.flatten([styles.header, isWide ? styles.desktopHeader : null])}>
+    <View style={styles.header}>
       <View style={styles.brand}>
-        <BrandMark size={isWide ? 40 : compact ? 56 : 64} />
-        <Text style={StyleSheet.flatten([styles.name, isWide ? styles.desktopName : null])}>{APP_NAME}</Text>
+        <BrandMark size={36} />
+        {showName ? (
+          <Text numberOfLines={1} style={styles.name}>
+            {APP_NAME}
+          </Text>
+        ) : null}
       </View>
       <View style={styles.actions}>
-        {!compact ? <ImportButton compact={false} /> : null}
+        {!compact && isWide ? <ImportButton compact={false} /> : null}
         {user ? (
           <View style={styles.accountPill}>
+            <View style={styles.accountDot} />
             <Text numberOfLines={1} style={styles.accountText}>
               {user.displayName ?? user.email}
             </Text>
           </View>
         ) : (
-          <Pressable accessibilityRole="button" onPress={startGoogleSignIn} style={styles.loginButton}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={startGoogleSignIn}
+            style={({ pressed }) =>
+              StyleSheet.flatten([styles.loginButton, pressed ? styles.loginButtonPressed : null])
+            }
+          >
             <Text style={styles.loginText}>Log in</Text>
           </Pressable>
         )}
         <Link href="/settings" asChild>
-          <Pressable accessibilityLabel="Open settings" style={styles.iconButton}>
+          <Pressable
+            accessibilityLabel="Open settings"
+            style={({ pressed }) =>
+              StyleSheet.flatten([styles.iconButton, pressed ? styles.iconButtonPressed : null])
+            }
+          >
             <Text style={styles.iconText}>⚙</Text>
           </Pressable>
         </Link>
@@ -46,69 +63,80 @@ export function AppHeader({ compact = false }: AppHeaderProps) {
 }
 
 const styles = StyleSheet.create({
-  accountPill: {
-    borderColor: colors.border,
+  accountDot: {
+    backgroundColor: colors.green,
     borderRadius: 999,
+    height: 8,
+    width: 8
+  },
+  accountPill: {
+    alignItems: "center",
+    borderColor: colors.border,
+    borderRadius: radius.pill,
     borderWidth: 1,
-    maxWidth: 180,
+    flexDirection: "row",
+    gap: spacing.xs,
+    maxWidth: 200,
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm
+    paddingVertical: 8
   },
   accountText: {
     color: colors.text,
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "700"
   },
   actions: {
     alignItems: "center",
     flexDirection: "row",
-    gap: spacing.sm
+    gap: spacing.xs
   },
   brand: {
     alignItems: "center",
     flexDirection: "row",
     flexShrink: 1,
-    gap: spacing.md
-  },
-  desktopHeader: {
-    minHeight: 56
+    gap: spacing.sm
   },
   header: {
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "space-between",
+    minHeight: 56,
     width: "100%"
   },
   iconButton: {
     alignItems: "center",
-    height: 44,
+    borderRadius: radius.pill,
+    height: 40,
     justifyContent: "center",
-    width: 44
+    width: 40
+  },
+  iconButtonPressed: {
+    backgroundColor: colors.overlay
   },
   iconText: {
     color: colors.muted,
-    fontSize: 24,
-    lineHeight: 28
+    fontSize: 22,
+    lineHeight: 24
   },
   loginButton: {
     borderColor: colors.border,
-    borderRadius: 999,
+    borderRadius: radius.pill,
     borderWidth: 1,
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm
+    paddingVertical: 8
+  },
+  loginButtonPressed: {
+    backgroundColor: colors.overlay
   },
   loginText: {
     color: colors.text,
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "800"
-  },
-  desktopName: {
-    fontSize: 22
   },
   name: {
     color: colors.text,
     flexShrink: 1,
-    fontSize: 28,
+    fontSize: 18,
     fontWeight: "800"
   }
 });

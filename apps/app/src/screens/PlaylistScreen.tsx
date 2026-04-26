@@ -2,6 +2,7 @@ import { Link, useLocalSearchParams } from "expo-router";
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { AppHeader } from "../components/AppHeader";
 import { AppShell } from "../components/AppShell";
+import { PlaylistArtwork } from "../components/PlaylistArtwork";
 import { songSubtitle } from "../library/songsApi";
 import { useLibrarySummary, usePlaylist } from "../library/useSongs";
 import { colors, radius, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
@@ -31,23 +32,37 @@ export function PlaylistScreen() {
       ? summaryState.summary.likedSongs
       : serverPlaylist?.songs ?? [];
   const status = isImportedSongs || isLikedSongs ? summaryState.status : playlistState.status;
+  const artworkColor = isLikedSongs ? "#3d2c69" : isImportedSongs ? colors.greenDark : serverPlaylist?.color ?? colors.greenDark;
+  const artworkInitials = isLikedSongs ? "♥" : isImportedSongs ? "♪" : undefined;
 
   return (
     <AppShell>
       <AppHeader />
       <View style={StyleSheet.flatten([styles.hero, isWide ? styles.desktopHero : null])}>
-        <View style={StyleSheet.flatten([styles.artwork, isWide ? styles.desktopArtwork : null])}>
-          <Text style={styles.artworkText}>♪</Text>
-        </View>
+        <PlaylistArtwork
+          playlist={{
+            color: artworkColor,
+            initials: artworkInitials,
+            name: title
+          }}
+          size={isWide ? 144 : 132}
+        />
         <View style={styles.heroText}>
-          <Text style={styles.type}>Playlist</Text>
-          <Text style={StyleSheet.flatten([styles.title, isWide ? styles.desktopTitle : null])}>{title}</Text>
-          <Text style={styles.subtitle}>{subtitle}</Text>
+          <Text style={styles.eyebrow}>Playlist</Text>
+          <Text style={StyleSheet.flatten([styles.title, isWide ? styles.desktopTitle : null])} numberOfLines={2}>
+            {title}
+          </Text>
+          <Text style={styles.subtitle} numberOfLines={2}>
+            {subtitle}
+          </Text>
+          <Text style={styles.meta}>
+            {tracks.length} {tracks.length === 1 ? "song" : "songs"}
+          </Text>
         </View>
       </View>
       <View style={styles.trackList}>
         {status === "loading" ? (
-          <Text style={styles.emptyText}>Loading songs from the server...</Text>
+          <Text style={styles.emptyText}>Loading songs from the server…</Text>
         ) : status === "anonymous" ? (
           <Text style={styles.emptyText}>Log in to view server-backed playlists.</Text>
         ) : status === "error" ? (
@@ -55,11 +70,24 @@ export function PlaylistScreen() {
         ) : status === "not-found" ? (
           <Text style={styles.emptyText}>This playlist does not exist on the server.</Text>
         ) : tracks.length ? (
-          tracks.map((song) => (
+          tracks.map((song, index) => (
             <Link href={`/now-playing?id=${song.id}`} asChild key={song.id}>
-              <Pressable style={styles.trackRow}>
-                <Text style={styles.trackTitle}>{song.title}</Text>
-                <Text style={styles.trackArtist}>{songSubtitle(song)}</Text>
+              <Pressable
+                accessibilityRole="link"
+                accessibilityLabel={`Play ${song.title}`}
+                style={({ pressed }) =>
+                  StyleSheet.flatten([styles.trackRow, pressed ? styles.trackRowPressed : null])
+                }
+              >
+                <Text style={styles.trackIndex}>{index + 1}</Text>
+                <View style={styles.trackText}>
+                  <Text numberOfLines={1} style={styles.trackTitle}>
+                    {song.title}
+                  </Text>
+                  <Text numberOfLines={1} style={styles.trackArtist}>
+                    {songSubtitle(song)}
+                  </Text>
+                </View>
               </Pressable>
             </Link>
           ))
@@ -72,75 +100,89 @@ export function PlaylistScreen() {
 }
 
 const styles = StyleSheet.create({
-  artwork: {
-    alignItems: "center",
-    backgroundColor: colors.greenDark,
-    borderRadius: radius.lg,
-    height: 180,
-    justifyContent: "center",
-    width: 180
+  desktopHero: {
+    alignItems: "flex-end",
+    marginTop: spacing.lg
   },
-  artworkText: {
-    color: colors.green,
-    fontSize: 72,
-    fontWeight: "900"
+  desktopTitle: {
+    fontSize: 44,
+    lineHeight: 50
   },
   emptyText: {
     color: colors.muted,
-    fontSize: 18,
+    fontSize: 15,
     marginTop: spacing.xl
+  },
+  eyebrow: {
+    color: colors.text,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1.4,
+    textTransform: "uppercase"
   },
   hero: {
-    alignItems: "flex-end",
+    alignItems: "center",
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: spacing.xl,
-    marginTop: spacing.xxl
-  },
-  desktopHero: {
-    marginTop: spacing.xl
-  },
-  desktopArtwork: {
-    height: 132,
-    width: 132
-  },
-  desktopTitle: {
-    fontSize: 36
+    gap: spacing.lg,
+    marginTop: spacing.lg
   },
   heroText: {
     flex: 1,
+    gap: 6,
     minWidth: 220
+  },
+  meta: {
+    color: colors.muted,
+    fontSize: 13,
+    marginTop: 4
   },
   subtitle: {
     color: colors.muted,
-    fontSize: 20
+    fontSize: 14,
+    lineHeight: 20
   },
   title: {
     color: colors.text,
-    fontSize: 48,
-    fontWeight: "900"
+    fontSize: 32,
+    fontWeight: "900",
+    letterSpacing: -0.5,
+    lineHeight: 38
   },
   trackArtist: {
     color: colors.muted,
-    fontSize: 16
+    fontSize: 13,
+    marginTop: 2
+  },
+  trackIndex: {
+    color: colors.muted,
+    fontSize: 13,
+    fontVariant: ["tabular-nums"],
+    minWidth: 22,
+    textAlign: "right"
   },
   trackList: {
-    marginTop: spacing.xxl
+    gap: 2,
+    marginTop: spacing.xl
   },
   trackRow: {
-    borderBottomColor: colors.border,
-    borderBottomWidth: 1,
-    paddingVertical: spacing.md
+    alignItems: "center",
+    borderRadius: radius.sm,
+    flexDirection: "row",
+    gap: spacing.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm
+  },
+  trackRowPressed: {
+    backgroundColor: colors.overlay
+  },
+  trackText: {
+    flex: 1,
+    minWidth: 0
   },
   trackTitle: {
     color: colors.text,
-    fontSize: 18,
-    fontWeight: "800"
-  },
-  type: {
-    color: colors.text,
-    fontSize: 14,
-    fontWeight: "800",
-    textTransform: "uppercase"
+    fontSize: 15,
+    fontWeight: "700"
   }
 });

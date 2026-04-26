@@ -1,6 +1,7 @@
 import { StyleSheet, Text, View } from "react-native";
 import { colors } from "../theme/tokens";
 
+
 type BrandMarkProps = {
   size?: number;
 };
@@ -26,7 +27,7 @@ export function BrandMark({ size = 64 }: BrandMarkProps) {
 
 const styles = StyleSheet.create({
   letter: {
-    color: "#071108",
+    color: colors.greenInk,
     fontWeight: "800"
   },
   mark: {

@@ -1,14 +1,14 @@
-import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useAuth } from "../auth/AuthProvider";
 import { logout, startGoogleSignIn } from "../auth/session";
 import { AppHeader } from "../components/AppHeader";
 import { AppShell } from "../components/AppShell";
-import { colors, radius, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
+import { useImportPolicy } from "../library/useSongs";
+import { colors, radius, spacing } from "../theme/tokens";
 
 export function SettingsScreen() {
-  const { width } = useWindowDimensions();
-  const isWide = width >= WEB_SIDEBAR_BREAKPOINT;
   const { user, setUser } = useAuth();
+  const importPolicy = useImportPolicy();
 
   async function handleLogout() {
     await logout();
@@ -18,7 +18,13 @@ export function SettingsScreen() {
   return (
     <AppShell>
       <AppHeader />
-      <Text style={StyleSheet.flatten([styles.title, isWide ? styles.desktopTitle : null])}>Settings</Text>
+      <Text style={styles.title}>Settings</Text>
+      {importPolicy.policy.mode === "open_test" ? (
+        <View style={styles.testingBanner}>
+          <Text style={styles.testingBadge}>{importPolicy.policy.copy.badge}</Text>
+          <Text style={styles.testingCopy}>{importPolicy.policy.copy.description}</Text>
+        </View>
+      ) : null}
       <View style={styles.panel}>
         <Text style={styles.rowTitle}>Account</Text>
         <Text style={styles.rowBody}>
@@ -27,60 +33,100 @@ export function SettingsScreen() {
         <Pressable
           accessibilityRole="button"
           onPress={user ? handleLogout : startGoogleSignIn}
-          style={styles.accountButton}
+          style={({ pressed }) =>
+            StyleSheet.flatten([
+              styles.accountButton,
+              user ? styles.accountButtonSecondary : null,
+              pressed ? styles.accountButtonPressed : null
+            ])
+          }
         >
-          <Text style={styles.accountButtonText}>{user ? "Log out" : "Continue with Google"}</Text>
+          <Text style={StyleSheet.flatten([styles.accountButtonText, user ? styles.accountButtonTextSecondary : null])}>
+            {user ? "Log out" : "Continue with Google"}
+          </Text>
         </Pressable>
       </View>
       <View style={styles.panel}>
         <Text style={styles.rowTitle}>Storage</Text>
         <Text style={styles.rowBody}>Imported music will sync through your self-hosted Tunely server.</Text>
       </View>
+      <View style={styles.panel}>
+        <Text style={styles.rowTitle}>Import policy</Text>
+        <Text style={styles.rowBody}>{importPolicy.policy.copy.label}</Text>
+      </View>
     </AppShell>
   );
 }
 
 const styles = StyleSheet.create({
+  accountButton: {
+    alignItems: "center",
+    alignSelf: "flex-start",
+    backgroundColor: colors.green,
+    borderRadius: radius.pill,
+    justifyContent: "center",
+    marginTop: spacing.lg,
+    minHeight: 40,
+    paddingHorizontal: spacing.lg
+  },
+  accountButtonPressed: {
+    opacity: 0.85
+  },
+  accountButtonSecondary: {
+    backgroundColor: "transparent",
+    borderColor: colors.border,
+    borderWidth: 1
+  },
+  accountButtonText: {
+    color: colors.greenInk,
+    fontSize: 14,
+    fontWeight: "800"
+  },
+  accountButtonTextSecondary: {
+    color: colors.text
+  },
   panel: {
     backgroundColor: colors.card,
     borderRadius: radius.md,
     marginTop: spacing.md,
     padding: spacing.lg
   },
-  accountButton: {
-    alignItems: "center",
-    alignSelf: "flex-start",
-    backgroundColor: colors.text,
-    borderRadius: radius.pill,
-    marginTop: spacing.lg,
-    minHeight: 44,
-    justifyContent: "center",
-    paddingHorizontal: spacing.lg
-  },
-  accountButtonText: {
-    color: colors.background,
-    fontSize: 15,
-    fontWeight: "800"
-  },
   rowBody: {
     color: colors.muted,
-    fontSize: 17,
-    marginTop: spacing.xs
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 4
   },
   rowTitle: {
     color: colors.text,
-    fontSize: 20,
+    fontSize: 16,
     fontWeight: "800"
+  },
+  testingBadge: {
+    color: colors.greenInk,
+    fontSize: 13,
+    fontWeight: "900",
+    textTransform: "uppercase"
+  },
+  testingBanner: {
+    backgroundColor: colors.green,
+    borderRadius: radius.md,
+    gap: spacing.xs,
+    marginBottom: spacing.md,
+    padding: spacing.md
+  },
+  testingCopy: {
+    color: colors.greenInk,
+    fontSize: 14,
+    fontWeight: "700",
+    lineHeight: 20
   },
   title: {
     color: colors.text,
-    fontSize: 42,
+    fontSize: 28,
     fontWeight: "900",
-    marginBottom: spacing.lg,
-    marginTop: spacing.xxl
-  },
-  desktopTitle: {
-    fontSize: 34,
-    marginTop: spacing.xl
+    letterSpacing: -0.5,
+    marginBottom: spacing.md,
+    marginTop: spacing.lg
   }
 });

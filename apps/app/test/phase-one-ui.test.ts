@@ -51,6 +51,17 @@ describe("Phase 1 UI shell", () => {
     expect(librarySource).toContain("/now-playing?id=");
   });
 
+  it("surfaces the active import policy in settings", async () => {
+    const settingsSource = await readAppFile("src/screens/SettingsScreen.tsx");
+    const songsApiSource = await readAppFile("src/library/songsApi.ts");
+
+    expect(settingsSource).toContain("useImportPolicy");
+    expect(settingsSource).toContain("open_test");
+    expect(settingsSource).toContain("Import policy");
+    expect(songsApiSource).toContain("/api/import-policy");
+    expect(songsApiSource).toContain("getImportPolicyModeCopy");
+  });
+
   it("filters songs and playlists by local query text", () => {
     expect(filterCatalog("deep")).toEqual([
       { id: "playlist-deep-focus", kind: "playlist", title: "Deep Focus", subtitle: "Keep calm and concentrate" }

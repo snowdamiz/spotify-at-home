@@ -13,7 +13,7 @@ type PlaylistShortcutProps = {
 export function PlaylistShortcut({ playlist, variant = "playlist" }: PlaylistShortcutProps) {
   const { width } = useWindowDimensions();
   const isWide = width >= WEB_SIDEBAR_BREAKPOINT;
-  const artworkSize = isWide ? 56 : 72;
+  const artworkSize = isWide ? 56 : 64;
 
   if (variant === "import") {
     return (
@@ -21,7 +21,7 @@ export function PlaylistShortcut({ playlist, variant = "playlist" }: PlaylistSho
         <View style={StyleSheet.flatten([styles.importPane, { height: artworkSize, width: artworkSize }])}>
           <ImportButton compact />
         </View>
-        <Text numberOfLines={1} style={StyleSheet.flatten([styles.title, isWide ? styles.desktopTitle : null])}>
+        <Text numberOfLines={2} style={StyleSheet.flatten([styles.title, isWide ? styles.desktopTitle : null])}>
           Import songs
         </Text>
       </View>
@@ -34,9 +34,19 @@ export function PlaylistShortcut({ playlist, variant = "playlist" }: PlaylistSho
 
   return (
     <Link href={`/playlist/${playlist.id}`} asChild>
-      <Pressable style={StyleSheet.flatten([styles.shortcut, isWide ? styles.desktopShortcut : null])}>
+      <Pressable
+        accessibilityRole="link"
+        accessibilityLabel={playlist.name}
+        style={({ pressed }) =>
+          StyleSheet.flatten([
+            styles.shortcut,
+            isWide ? styles.desktopShortcut : null,
+            pressed ? styles.shortcutPressed : null
+          ])
+        }
+      >
         <PlaylistArtwork playlist={playlist} size={artworkSize} />
-        <Text numberOfLines={1} style={StyleSheet.flatten([styles.title, isWide ? styles.desktopTitle : null])}>
+        <Text numberOfLines={2} style={StyleSheet.flatten([styles.title, isWide ? styles.desktopTitle : null])}>
           {playlist.name}
         </Text>
       </Pressable>
@@ -45,36 +55,37 @@ export function PlaylistShortcut({ playlist, variant = "playlist" }: PlaylistSho
 }
 
 const styles = StyleSheet.create({
+  desktopShortcut: {
+    width: "32%"
+  },
+  desktopTitle: {
+    fontSize: 14
+  },
   importPane: {
     alignItems: "center",
+    alignSelf: "stretch",
     backgroundColor: colors.greenDark,
-    borderBottomLeftRadius: radius.md,
-    borderTopLeftRadius: radius.md,
     justifyContent: "center"
   },
   shortcut: {
     alignItems: "center",
     backgroundColor: colors.cardRaised,
     borderRadius: radius.md,
-    flexBasis: "48%",
     flexDirection: "row",
-    flexGrow: 1,
     gap: spacing.md,
-    minHeight: 72,
+    minHeight: 56,
     overflow: "hidden",
-    paddingRight: spacing.lg
+    paddingRight: spacing.md,
+    width: "100%"
   },
-  desktopShortcut: {
-    flexBasis: "32%",
-    minHeight: 56
-  },
-  desktopTitle: {
-    fontSize: 16
+  shortcutPressed: {
+    backgroundColor: colors.cardHover
   },
   title: {
     color: colors.text,
     flexShrink: 1,
-    fontSize: 20,
-    fontWeight: "800"
+    fontSize: 14,
+    fontWeight: "700",
+    minWidth: 0
   }
 });

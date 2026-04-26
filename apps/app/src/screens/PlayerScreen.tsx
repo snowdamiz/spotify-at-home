@@ -3,6 +3,7 @@ import { useLocalSearchParams } from "expo-router";
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { AppHeader } from "../components/AppHeader";
 import { AppShell } from "../components/AppShell";
+import { PlaylistArtwork } from "../components/PlaylistArtwork";
 import { fetchSong, likeSong, requestSongCacheIntent, songStreamUrl, songSubtitle, unlikeSong, updatePlaybackState, type ServerSong } from "../library/songsApi";
 import { useLibrarySummary } from "../library/useSongs";
 import { ExpoFileSystemSongCacheRepository, resolvePlaybackSource } from "../player/cache";
@@ -173,46 +174,82 @@ export function PlayerScreen() {
     return playbackStoreRef.current;
   }
 
+  const artworkSize = isWide ? 260 : 280;
+
   return (
     <AppShell miniPlayerTrackId={song?.id}>
       <AppHeader />
-      <View style={StyleSheet.flatten([styles.player, isWide ? styles.desktopPlayer : null])}>
-        <View style={StyleSheet.flatten([styles.art, isWide ? styles.desktopArt : null])}>
-          <Text style={StyleSheet.flatten([styles.artText, isWide ? styles.desktopArtText : null])}>♪</Text>
+      <View style={styles.player}>
+        {song ? (
+          <PlaylistArtwork
+            playlist={{ name: song.title, color: colors.greenDark }}
+            size={artworkSize}
+          />
+        ) : (
+          <View style={StyleSheet.flatten([styles.placeholderArt, { height: artworkSize, width: artworkSize }])}>
+            <Text style={styles.placeholderArtIcon}>♪</Text>
+          </View>
+        )}
+        <View style={styles.meta}>
+          <View style={styles.metaText}>
+            <Text style={styles.title} numberOfLines={2}>
+              {song?.title ?? playerStatusTitle(status)}
+            </Text>
+            <Text style={styles.artist} numberOfLines={1}>
+              {song ? songSubtitle(song) : playerStatusBody(status)}
+            </Text>
+          </View>
+          {song ? (
+            <Pressable
+              accessibilityLabel={isLiked ? "Remove from liked songs" : "Add to liked songs"}
+              accessibilityRole="button"
+              disabled={likeStatus === "saving"}
+              onPress={handleLikeToggle}
+              style={({ pressed }) =>
+                StyleSheet.flatten([
+                  styles.likeButton,
+                  pressed ? styles.likeButtonPressed : null,
+                  likeStatus === "saving" ? styles.disabledControl : null
+                ])
+              }
+            >
+              <Text style={StyleSheet.flatten([styles.likeIcon, isLiked ? styles.likedIcon : null])}>
+                {isLiked ? "♥" : "♡"}
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
-        <Text style={StyleSheet.flatten([styles.title, isWide ? styles.desktopTitle : null])}>
-          {song?.title ?? playerStatusTitle(status)}
-        </Text>
-        <Text style={styles.artist}>{song ? songSubtitle(song) : playerStatusBody(status)}</Text>
         {song ? (
           <View style={styles.controls}>
-            <Pressable accessibilityLabel="Previous track" disabled style={StyleSheet.flatten([styles.controlButton, styles.disabledControl])}>
+            <Pressable
+              accessibilityLabel="Previous track"
+              disabled
+              style={StyleSheet.flatten([styles.controlButton, styles.disabledControl])}
+            >
               <Text style={styles.control}>‹</Text>
             </Pressable>
             <Pressable
               accessibilityLabel={playbackStatus === "playing" ? "Pause selected track" : "Play selected track"}
               disabled={playbackStatus === "loading"}
               onPress={handlePlayPause}
-              style={StyleSheet.flatten([styles.playButton, playbackStatus === "loading" ? styles.disabledControl : null])}
+              style={({ pressed }) =>
+                StyleSheet.flatten([
+                  styles.playButton,
+                  playbackStatus === "loading" ? styles.disabledControl : null,
+                  pressed ? styles.playButtonPressed : null
+                ])
+              }
             >
               <Text style={styles.play}>{playbackStatus === "playing" ? "❚❚" : "▶"}</Text>
             </Pressable>
-            <Pressable accessibilityLabel="Next track" disabled style={StyleSheet.flatten([styles.controlButton, styles.disabledControl])}>
+            <Pressable
+              accessibilityLabel="Next track"
+              disabled
+              style={StyleSheet.flatten([styles.controlButton, styles.disabledControl])}
+            >
               <Text style={styles.control}>›</Text>
             </Pressable>
           </View>
-        ) : null}
-        {song ? (
-          <Pressable
-            accessibilityLabel={isLiked ? "Remove from liked songs" : "Add to liked songs"}
-            disabled={likeStatus === "saving"}
-            onPress={handleLikeToggle}
-            style={StyleSheet.flatten([styles.likeButton, isLiked ? styles.likedButton : null, likeStatus === "saving" ? styles.disabledControl : null])}
-          >
-            <Text style={StyleSheet.flatten([styles.likeText, isLiked ? styles.likedText : null])}>
-              {isLiked ? "Liked" : "Like"}
-            </Text>
-          </Pressable>
         ) : null}
         {playbackStatus === "error" ? (
           <Text style={styles.playbackError}>Could not start playback from the server.</Text>
@@ -254,104 +291,106 @@ function playerStatusBody(status: "loading" | "anonymous" | "not-found" | "ready
 }
 
 const styles = StyleSheet.create({
-  art: {
-    alignItems: "center",
-    backgroundColor: colors.greenDark,
-    borderRadius: radius.lg,
-    height: 280,
-    justifyContent: "center",
-    maxWidth: 420,
-    width: "100%"
-  },
   artist: {
     color: colors.muted,
-    fontSize: 20
-  },
-  artText: {
-    color: "rgba(255, 255, 255, 0.65)",
-    fontSize: 120
-  },
-  desktopArt: {
-    height: 220,
-    maxWidth: 320
-  },
-  desktopArtText: {
-    fontSize: 88
-  },
-  desktopPlayer: {
-    marginTop: spacing.xl
-  },
-  desktopTitle: {
-    fontSize: 26
+    fontSize: 14,
+    marginTop: 4
   },
   control: {
     color: colors.text,
-    fontSize: 54
+    fontSize: 36
   },
   controlButton: {
     alignItems: "center",
-    height: 64,
+    height: 56,
     justifyContent: "center",
-    width: 64
+    width: 56
   },
   controls: {
     alignItems: "center",
     flexDirection: "row",
-    gap: spacing.xl,
+    gap: spacing.lg,
     justifyContent: "center",
-    marginTop: spacing.xl
+    marginTop: spacing.lg
   },
   disabledControl: {
     opacity: 0.4
   },
   likeButton: {
-    borderColor: colors.border,
+    alignItems: "center",
     borderRadius: radius.pill,
-    borderWidth: 1,
+    height: 40,
+    justifyContent: "center",
+    width: 40
+  },
+  likeButtonPressed: {
+    backgroundColor: colors.overlay
+  },
+  likedIcon: {
+    color: colors.green
+  },
+  likeIcon: {
+    color: colors.muted,
+    fontSize: 24,
+    lineHeight: 26
+  },
+  meta: {
+    alignItems: "center",
+    alignSelf: "stretch",
+    flexDirection: "row",
+    gap: spacing.md,
     marginTop: spacing.lg,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm
+    maxWidth: 420,
+    width: "100%"
   },
-  likedButton: {
-    backgroundColor: colors.text,
-    borderColor: colors.text
+  metaText: {
+    flex: 1,
+    minWidth: 0
   },
-  likedText: {
-    color: "#050505"
+  placeholderArt: {
+    alignItems: "center",
+    backgroundColor: colors.cardRaised,
+    borderRadius: radius.lg,
+    justifyContent: "center"
   },
-  likeText: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: "900"
+  placeholderArtIcon: {
+    color: "rgba(255,255,255,0.45)",
+    fontSize: 72
   },
   play: {
-    color: colors.text,
-    fontSize: 34,
+    color: colors.ink,
+    fontSize: 28,
     fontWeight: "900"
   },
   playbackError: {
     color: colors.muted,
-    fontSize: 15,
+    fontSize: 13,
     marginTop: spacing.md,
     textAlign: "center"
   },
   playButton: {
     alignItems: "center",
     backgroundColor: colors.green,
-    borderRadius: 40,
-    height: 72,
+    borderRadius: 999,
+    height: 64,
     justifyContent: "center",
-    width: 72
+    width: 64
+  },
+  playButtonPressed: {
+    transform: [{ scale: 0.96 }]
   },
   player: {
     alignItems: "center",
-    marginTop: spacing.xxl
+    alignSelf: "center",
+    marginTop: spacing.lg,
+    maxWidth: 420,
+    paddingBottom: spacing.lg,
+    width: "100%"
   },
   title: {
     color: colors.text,
-    fontSize: 34,
+    fontSize: 22,
     fontWeight: "900",
-    marginTop: spacing.xl,
-    textAlign: "center"
+    letterSpacing: -0.3
   }
 });

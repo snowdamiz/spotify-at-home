@@ -3,8 +3,9 @@ import { Link, useRouter } from "expo-router";
 import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { createPlaylist, playlistSubtitle } from "../library/songsApi";
 import { useLibrarySummary } from "../library/useSongs";
-import { colors, radius, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
+import { colors, radius, spacing, typography, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
 import { MiniPlayer } from "./MiniPlayer";
+import { PlaylistArtwork } from "./PlaylistArtwork";
 
 type RouteKey = "home" | "search" | "library";
 
@@ -16,7 +17,7 @@ type AppShellProps = PropsWithChildren<{
 const navItems: Array<{ key: RouteKey; label: string; icon: string; href: "/" | "/search" | "/library" }> = [
   { key: "home", label: "Home", icon: "⌂", href: "/" },
   { key: "search", label: "Search", icon: "⌕", href: "/search" },
-  { key: "library", label: "Library", icon: "▥", href: "/library" }
+  { key: "library", label: "Library", icon: "▤", href: "/library" }
 ];
 
 export function AppShell({ activeRoute = "home", children, miniPlayerTrackId }: AppShellProps) {
@@ -28,7 +29,15 @@ export function AppShell({ activeRoute = "home", children, miniPlayerTrackId }: 
       <View style={styles.root}>
         {isWide ? <Sidebar activeRoute={activeRoute} /> : null}
         <View style={styles.main}>
-          <ScrollView contentContainerStyle={StyleSheet.flatten([styles.content, isWide ? styles.wideContent : styles.narrowContent])}>{children}</ScrollView>
+          <ScrollView
+            contentContainerStyle={StyleSheet.flatten([
+              styles.content,
+              isWide ? styles.wideContent : styles.narrowContent
+            ])}
+            showsVerticalScrollIndicator={false}
+          >
+            {children}
+          </ScrollView>
           <MiniPlayer trackId={miniPlayerTrackId} />
           {!isWide ? <BottomTabs activeRoute={activeRoute} /> : null}
         </View>
@@ -69,7 +78,7 @@ function Sidebar({ activeRoute }: { activeRoute: RouteKey }) {
     <View style={styles.sidebar}>
       <View style={styles.navPanel}>
         {navItems.slice(0, 2).map((item) => (
-          <NavLink active={activeRoute === item.key} item={item} key={item.key} />
+          <SidebarNavLink active={activeRoute === item.key} item={item} key={item.key} />
         ))}
       </View>
       <View style={styles.libraryPanel}>
@@ -80,14 +89,20 @@ function Sidebar({ activeRoute }: { activeRoute: RouteKey }) {
             accessibilityRole="button"
             disabled={creatingPlaylist}
             onPress={handleCreatePlaylist}
-            style={StyleSheet.flatten([styles.plusButton, creatingPlaylist ? styles.disabledButton : null])}
+            style={({ pressed }) =>
+              StyleSheet.flatten([
+                styles.plusButton,
+                pressed ? styles.plusButtonPressed : null,
+                creatingPlaylist ? styles.disabledButton : null
+              ])
+            }
           >
             <Text style={styles.plus}>+</Text>
           </Pressable>
         </View>
         <Text style={styles.sidebarSection}>PLAYLISTS</Text>
         <Link href="/playlist/imported-songs" asChild>
-          <Pressable style={styles.sidebarPlaylist}>
+          <Pressable style={({ pressed }) => StyleSheet.flatten([styles.sidebarPlaylist, pressed ? styles.sidebarPlaylistPressed : null])}>
             <View style={styles.sidebarSongArt}>
               <Text style={styles.sidebarSongArtText}>♪</Text>
             </View>
@@ -97,7 +112,7 @@ function Sidebar({ activeRoute }: { activeRoute: RouteKey }) {
               </Text>
               <Text style={styles.sidebarPlaylistType}>
                 {library.status === "authenticated"
-                  ? `${summary.counts.songs} songs`
+                  ? `Playlist · ${summary.counts.songs} ${summary.counts.songs === 1 ? "song" : "songs"}`
                   : library.status === "loading"
                     ? "Loading"
                     : "Sign in required"}
@@ -106,32 +121,30 @@ function Sidebar({ activeRoute }: { activeRoute: RouteKey }) {
           </Pressable>
         </Link>
         <Link href="/playlist/liked-songs" asChild>
-          <Pressable style={styles.sidebarPlaylist}>
-            <View style={styles.sidebarSongArt}>
-              <Text style={styles.sidebarSongArtText}>♥</Text>
+          <Pressable style={({ pressed }) => StyleSheet.flatten([styles.sidebarPlaylist, pressed ? styles.sidebarPlaylistPressed : null])}>
+            <View style={StyleSheet.flatten([styles.sidebarSongArt, styles.sidebarLikedArt])}>
+              <Text style={styles.sidebarLikedText}>♥</Text>
             </View>
             <View style={styles.sidebarPlaylistText}>
               <Text numberOfLines={1} style={styles.sidebarPlaylistTitle}>
                 Liked Songs
               </Text>
               <Text numberOfLines={1} style={styles.sidebarPlaylistType}>
-                {summary.counts.likedSongs} songs
+                Playlist · {summary.counts.likedSongs} {summary.counts.likedSongs === 1 ? "song" : "songs"}
               </Text>
             </View>
           </Pressable>
         </Link>
-        {summary.playlists.slice(0, 4).map((playlist) => (
+        {summary.playlists.slice(0, 6).map((playlist) => (
           <Link href={`/playlist/${playlist.id}`} asChild key={playlist.id}>
-            <Pressable style={styles.sidebarPlaylist}>
-              <View style={StyleSheet.flatten([styles.sidebarSongArt, playlist.color ? { backgroundColor: playlist.color } : null])}>
-                <Text style={styles.sidebarSongArtText}>{playlist.name.slice(0, 1).toUpperCase()}</Text>
-              </View>
+            <Pressable style={({ pressed }) => StyleSheet.flatten([styles.sidebarPlaylist, pressed ? styles.sidebarPlaylistPressed : null])}>
+              <PlaylistArtwork playlist={playlist} size={44} />
               <View style={styles.sidebarPlaylistText}>
                 <Text numberOfLines={1} style={styles.sidebarPlaylistTitle}>
                   {playlist.name}
                 </Text>
                 <Text numberOfLines={1} style={styles.sidebarPlaylistType}>
-                  {playlistSubtitle(playlist)}
+                  Playlist · {playlistSubtitle(playlist)}
                 </Text>
               </View>
             </Pressable>
@@ -146,18 +159,43 @@ function BottomTabs({ activeRoute }: { activeRoute: RouteKey }) {
   return (
     <View style={styles.bottomTabs}>
       {navItems.map((item) => (
-        <NavLink active={activeRoute === item.key} item={item} key={item.key} />
+        <BottomTabLink active={activeRoute === item.key} item={item} key={item.key} />
       ))}
     </View>
   );
 }
 
-function NavLink({ active, item }: { active: boolean; item: (typeof navItems)[number] }) {
+function SidebarNavLink({ active, item }: { active: boolean; item: (typeof navItems)[number] }) {
   return (
     <Link href={item.href} asChild>
-      <Pressable style={styles.navLink}>
-        <Text style={StyleSheet.flatten([styles.navIcon, active ? styles.activeText : styles.inactiveText])}>{item.icon}</Text>
-        <Text style={StyleSheet.flatten([styles.navLabel, active ? styles.activeText : styles.inactiveText])}>{item.label}</Text>
+      <Pressable
+        accessibilityRole="link"
+        accessibilityLabel={item.label}
+        style={({ pressed }) =>
+          StyleSheet.flatten([styles.navLink, pressed ? styles.navLinkPressed : null])
+        }
+      >
+        <Text style={StyleSheet.flatten([styles.navIcon, active ? styles.activeText : styles.inactiveText])}>
+          {item.icon}
+        </Text>
+        <Text style={StyleSheet.flatten([styles.navLabel, active ? styles.activeText : styles.inactiveText])}>
+          {item.label}
+        </Text>
+      </Pressable>
+    </Link>
+  );
+}
+
+function BottomTabLink({ active, item }: { active: boolean; item: (typeof navItems)[number] }) {
+  return (
+    <Link href={item.href} asChild>
+      <Pressable accessibilityRole="link" accessibilityLabel={item.label} style={styles.bottomTab}>
+        <Text style={StyleSheet.flatten([styles.bottomTabIcon, active ? styles.activeText : styles.inactiveText])}>
+          {item.icon}
+        </Text>
+        <Text style={StyleSheet.flatten([styles.bottomTabLabel, active ? styles.activeText : styles.inactiveText])}>
+          {item.label}
+        </Text>
       </Pressable>
     </Link>
   );
@@ -167,6 +205,21 @@ const styles = StyleSheet.create({
   activeText: {
     color: colors.text
   },
+  bottomTab: {
+    alignItems: "center",
+    flex: 1,
+    gap: 4,
+    paddingVertical: spacing.sm
+  },
+  bottomTabIcon: {
+    fontSize: 22,
+    lineHeight: 24
+  },
+  bottomTabLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.2
+  },
   bottomTabs: {
     alignItems: "center",
     backgroundColor: colors.background,
@@ -174,8 +227,9 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     flexDirection: "row",
     justifyContent: "space-around",
-    minHeight: 92,
-    paddingHorizontal: spacing.md
+    paddingBottom: spacing.xs,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.xs
   },
   content: {
     flexGrow: 1,
@@ -192,13 +246,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "space-between",
-    marginBottom: spacing.lg
+    marginBottom: spacing.md
   },
   libraryPanel: {
     backgroundColor: colors.panel,
     borderRadius: radius.lg,
     flex: 1,
-    padding: spacing.md
+    paddingHorizontal: spacing.sm,
+    paddingTop: spacing.md
   },
   main: {
     backgroundColor: colors.background,
@@ -208,13 +263,13 @@ const styles = StyleSheet.create({
   narrowContent: {
     paddingBottom: spacing.xl,
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.lg
+    paddingTop: spacing.md
   },
   navIcon: {
     fontSize: 22,
     fontWeight: "700",
-    lineHeight: 26,
-    width: 26
+    lineHeight: 24,
+    width: 24
   },
   navLabel: {
     fontSize: 15,
@@ -222,27 +277,35 @@ const styles = StyleSheet.create({
   },
   navLink: {
     alignItems: "center",
+    borderRadius: radius.sm,
     flexDirection: "row",
     gap: spacing.md,
     minHeight: 44,
-    paddingHorizontal: spacing.xs
+    paddingHorizontal: spacing.sm
+  },
+  navLinkPressed: {
+    backgroundColor: colors.overlay
   },
   navPanel: {
     backgroundColor: colors.panel,
     borderRadius: radius.lg,
-    gap: spacing.sm,
-    padding: spacing.md
+    gap: 4,
+    padding: spacing.sm
   },
   plus: {
     color: colors.muted,
-    fontSize: 24,
-    lineHeight: 24
+    fontSize: 22,
+    lineHeight: 22
   },
   plusButton: {
     alignItems: "center",
+    borderRadius: radius.pill,
     height: 32,
     justifyContent: "center",
     width: 32
+  },
+  plusButtonPressed: {
+    backgroundColor: colors.overlay
   },
   root: {
     backgroundColor: colors.background,
@@ -260,18 +323,29 @@ const styles = StyleSheet.create({
     width: 264
   },
   sidebarHeading: {
-    color: colors.muted,
-    fontSize: 18,
+    color: colors.text,
+    fontSize: 16,
     fontWeight: "800"
+  },
+  sidebarLikedArt: {
+    backgroundColor: "#3d2c69"
+  },
+  sidebarLikedText: {
+    color: "#dadcff",
+    fontSize: 22,
+    fontWeight: "900"
   },
   sidebarPlaylist: {
     alignItems: "center",
     borderRadius: radius.sm,
     flexDirection: "row",
     gap: spacing.sm,
-    marginBottom: spacing.xs,
-    paddingHorizontal: spacing.xs,
+    minHeight: 56,
+    paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs
+  },
+  sidebarPlaylistPressed: {
+    backgroundColor: colors.overlay
   },
   sidebarPlaylistText: {
     flex: 1,
@@ -279,33 +353,34 @@ const styles = StyleSheet.create({
   },
   sidebarPlaylistTitle: {
     color: colors.text,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "700"
   },
   sidebarPlaylistType: {
     color: colors.muted,
-    fontSize: 13,
+    fontSize: 12,
     marginTop: 2
   },
   sidebarSection: {
     color: colors.muted,
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: "700",
-    letterSpacing: 1,
-    marginBottom: spacing.md,
+    letterSpacing: typography.letterSpacingWide,
+    marginBottom: spacing.xs,
+    paddingHorizontal: spacing.sm,
     textTransform: "uppercase"
   },
   sidebarSongArt: {
     alignItems: "center",
     backgroundColor: colors.cardRaised,
     borderRadius: radius.sm,
-    height: 48,
+    height: 44,
     justifyContent: "center",
-    width: 48
+    width: 44
   },
   sidebarSongArtText: {
     color: colors.green,
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: "900"
   },
   wideContent: {

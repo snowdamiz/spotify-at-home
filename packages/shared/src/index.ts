@@ -1,5 +1,37 @@
 export const APP_NAME = "Tunely" as const;
 
+export const IMPORT_POLICY_MODES = [
+  "open_test",
+  "review_required",
+  "licensed_only"
+] as const;
+
+export type ImportPolicyMode = (typeof IMPORT_POLICY_MODES)[number];
+
+export interface ImportPolicyModeCopy {
+  badge: string;
+  description: string;
+  label: string;
+}
+
+export const IMPORT_POLICY_MODE_COPY: Record<ImportPolicyMode, ImportPolicyModeCopy> = {
+  licensed_only: {
+    badge: "Licensed only",
+    description: "External imports are limited to sources Tunely has approved for licensed use.",
+    label: "Licensed-only imports"
+  },
+  open_test: {
+    badge: "Open test mode",
+    description: "Allowlisted testers can import broad external results for private product validation.",
+    label: "Open testing imports"
+  },
+  review_required: {
+    badge: "Review required",
+    description: "External imports must pass a stricter review or launch policy before they can continue.",
+    label: "Reviewed imports"
+  }
+} as const;
+
 export const AUDIO_IMPORT_LIMITS = {
   maxFileSizeBytes: 100 * 1024 * 1024,
   defaultUserQuotaBytes: 2 * 1024 * 1024 * 1024
@@ -38,6 +70,24 @@ export interface AudioImportMetadata {
   fileName: string;
   mimeType: string;
   sizeBytes: number;
+}
+
+export function isImportPolicyMode(value: unknown): value is ImportPolicyMode {
+  return (
+    typeof value === "string" &&
+    IMPORT_POLICY_MODES.includes(value as ImportPolicyMode)
+  );
+}
+
+export function parseImportPolicyMode(
+  value: unknown,
+  fallback: ImportPolicyMode = "licensed_only"
+): ImportPolicyMode {
+  return isImportPolicyMode(value) ? value : fallback;
+}
+
+export function getImportPolicyModeCopy(mode: ImportPolicyMode): ImportPolicyModeCopy {
+  return IMPORT_POLICY_MODE_COPY[mode];
 }
 
 export function validateAudioImportMetadata(

@@ -5,12 +5,18 @@ import { AuthService } from "./auth/service.js";
 import type { AuthRoutesOptions } from "./auth/routes.js";
 import { closeTunelyDatabase, openTunelyDatabase, runMigrations } from "./db/index.js";
 import { SQLitePlaylistRepository, SQLiteSongRepository, type SqliteDatabase } from "./db/index.js";
+import {
+  createImportPolicyRuntimeConfig,
+  type ImportPolicyRuntimeConfig
+} from "./import-policy/policy.js";
+import { registerImportPolicyRoutes } from "./import-policy/routes.js";
 import { registerLibraryRoutes } from "./library/routes.js";
 import { registerSongRoutes, type SongRoutesOptions } from "./songs/routes.js";
 
 export interface CreateApiAppOptions {
   auth?: Partial<AuthRoutesOptions>;
   db?: SqliteDatabase;
+  importPolicy?: Partial<ImportPolicyRuntimeConfig>;
   songs?: Partial<Omit<SongRoutesOptions, "authService" | "songRepository">>;
 }
 
@@ -44,9 +50,17 @@ export function createApiApp(options: CreateApiAppOptions = {}) {
   });
   const songRepository = new SQLiteSongRepository(db);
   const playlistRepository = new SQLitePlaylistRepository(db);
+  const importPolicyConfig = options.importPolicy
+    ? createImportPolicyRuntimeConfig(options.importPolicy)
+    : undefined;
 
+  registerImportPolicyRoutes(app, {
+    authService,
+    importPolicyConfig
+  });
   registerSongRoutes(app, {
     authService,
+    importPolicyConfig,
     songRepository,
     ...options.songs
   });

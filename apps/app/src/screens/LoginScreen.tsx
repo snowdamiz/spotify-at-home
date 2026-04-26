@@ -46,8 +46,9 @@ export function LoginScreen() {
 const styles = StyleSheet.create({
   body: {
     color: colors.muted,
-    fontSize: 16,
+    fontSize: 15,
     lineHeight: 22,
+    marginTop: spacing.xs,
     textAlign: "center"
   },
   card: {
@@ -92,8 +93,8 @@ const styles = StyleSheet.create({
     opacity: 0.85
   },
   googleText: {
-    color: "#071108",
-    fontSize: 17,
+    color: colors.greenInk,
+    fontSize: 15,
     fontWeight: "800"
   },
   root: {

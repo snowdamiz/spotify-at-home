@@ -15,12 +15,22 @@ export function PlaylistCard({ playlist }: PlaylistCardProps) {
 
   return (
     <Link href={`/playlist/${playlist.id}`} asChild>
-      <Pressable style={StyleSheet.flatten([styles.card, isWide ? styles.desktopCard : null])}>
+      <Pressable
+        accessibilityRole="link"
+        accessibilityLabel={playlist.name}
+        style={({ pressed }) =>
+          StyleSheet.flatten([
+            styles.card,
+            isWide ? styles.desktopCard : null,
+            pressed ? styles.cardPressed : null
+          ])
+        }
+      >
         <PlaylistArtwork playlist={playlist} size="100%" />
-        <Text numberOfLines={1} style={StyleSheet.flatten([styles.title, isWide ? styles.desktopTitle : null])}>
+        <Text numberOfLines={1} style={styles.title}>
           {playlist.name}
         </Text>
-        <Text numberOfLines={2} style={StyleSheet.flatten([styles.subtitle, isWide ? styles.desktopSubtitle : null])}>
+        <Text numberOfLines={2} style={styles.subtitle}>
           {playlist.description ?? playlistSubtitle(playlist)}
         </Text>
       </Pressable>
@@ -38,31 +48,24 @@ const styles = StyleSheet.create({
     minWidth: 150,
     padding: spacing.md
   },
+  cardPressed: {
+    backgroundColor: colors.cardHover
+  },
   desktopCard: {
-    flexBasis: 164,
+    flexBasis: 168,
     maxWidth: 220,
-    minWidth: 148,
-    padding: spacing.md
-  },
-  desktopSubtitle: {
-    fontSize: 13,
-    lineHeight: 18,
-    marginTop: spacing.xs
-  },
-  desktopTitle: {
-    fontSize: 16,
-    marginTop: spacing.md
+    minWidth: 148
   },
   subtitle: {
     color: colors.muted,
-    fontSize: 16,
-    lineHeight: 22,
-    marginTop: spacing.xs
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 4
   },
   title: {
     color: colors.text,
-    fontSize: 20,
-    fontWeight: "800",
+    fontSize: 15,
+    fontWeight: "700",
     marginTop: spacing.md
   }
 });

@@ -1,17 +1,12 @@
-import { StyleSheet, Text, useWindowDimensions, View } from "react-native";
-import { colors, radius, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
+import { StyleSheet, Text, View } from "react-native";
+import { colors, radius, spacing } from "../theme/tokens";
 import { ImportButton } from "./ImportButton";
 
 export function EmptyLibraryPanel() {
-  const { width } = useWindowDimensions();
-  const isWide = width >= WEB_SIDEBAR_BREAKPOINT;
-
   return (
-    <View style={StyleSheet.flatten([styles.panel, isWide ? styles.desktopPanel : null])}>
-      <Text style={StyleSheet.flatten([styles.title, isWide ? styles.desktopTitle : null])}>No songs yet</Text>
-      <Text style={StyleSheet.flatten([styles.body, isWide ? styles.desktopBody : null])}>
-        Tap below to import audio from your device. Files stay in this session and play right here in your browser.
-      </Text>
+    <View style={styles.panel}>
+      <Text style={styles.title}>No songs yet</Text>
+      <Text style={styles.body}>Import audio from your device to start listening — files sync to your private Tunely server.</Text>
       <ImportButton />
     </View>
   );
@@ -20,41 +15,28 @@ export function EmptyLibraryPanel() {
 const styles = StyleSheet.create({
   body: {
     color: colors.muted,
-    fontSize: 20,
-    lineHeight: 30,
-    marginBottom: spacing.xl,
-    maxWidth: 560,
+    fontSize: 15,
+    lineHeight: 22,
+    marginBottom: spacing.lg,
+    maxWidth: 480,
     textAlign: "center"
-  },
-  desktopBody: {
-    fontSize: 17,
-    lineHeight: 25,
-    maxWidth: 500
-  },
-  desktopPanel: {
-    alignSelf: "flex-start",
-    maxWidth: 760,
-    paddingVertical: spacing.xl
-  },
-  desktopTitle: {
-    fontSize: 26
   },
   panel: {
     alignItems: "center",
+    alignSelf: "stretch",
     borderColor: colors.border,
     borderRadius: radius.lg,
     borderStyle: "dashed",
     borderWidth: 1,
-    marginTop: spacing.xl,
-    paddingHorizontal: spacing.xl,
-    paddingVertical: spacing.xxl,
-    width: "100%"
+    marginTop: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.xl
   },
   title: {
     color: colors.text,
-    fontSize: 30,
+    fontSize: 22,
     fontWeight: "800",
-    marginBottom: spacing.md,
+    marginBottom: spacing.sm,
     textAlign: "center"
   }
 });

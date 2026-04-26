@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { Pressable, StyleSheet, Text, useWindowDimensions } from "react-native";
+import { Pressable, StyleSheet, Text } from "react-native";
 import { startGoogleSignIn } from "../auth/session";
 import { importAudioFromDevice } from "../import/audioImport";
-import { colors, radius, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
+import { colors, radius, spacing } from "../theme/tokens";
 
 type ImportButtonProps = {
   compact?: boolean;
@@ -11,8 +11,6 @@ type ImportButtonProps = {
 };
 
 export function ImportButton({ compact = false, tone = "green", onImported }: ImportButtonProps) {
-  const { width } = useWindowDimensions();
-  const isWide = width >= WEB_SIDEBAR_BREAKPOINT;
   const [status, setStatus] = useState<"idle" | "importing" | "failed">("idle");
   const isImporting = status === "importing";
 
@@ -39,20 +37,21 @@ export function ImportButton({ compact = false, tone = "green", onImported }: Im
       accessibilityLabel="Import songs"
       disabled={isImporting}
       onPress={handlePress}
-      style={StyleSheet.flatten([
-        styles.button,
-        compact ? styles.compact : styles.full,
-        isWide && !compact ? styles.desktopFull : null,
-        tone === "light" ? styles.light : styles.green,
-        isImporting ? styles.disabled : null
-      ])}
+      style={({ pressed }) =>
+        StyleSheet.flatten([
+          styles.button,
+          compact ? styles.compact : styles.full,
+          tone === "light" ? styles.light : styles.green,
+          isImporting ? styles.disabled : null,
+          pressed ? styles.pressed : null
+        ])
+      }
     >
-      <Text style={StyleSheet.flatten([styles.icon, isWide ? styles.desktopIcon : null])}>↥</Text>
+      <Text style={StyleSheet.flatten([styles.icon, compact ? styles.compactIcon : null])}>↥</Text>
       {!compact ? (
         <Text
           style={StyleSheet.flatten([
             styles.label,
-            isWide ? styles.desktopLabel : null,
             tone === "light" ? styles.darkLabel : styles.lightLabel
           ])}
         >
@@ -72,47 +71,44 @@ const styles = StyleSheet.create({
     justifyContent: "center"
   },
   compact: {
-    height: 48,
-    width: 48
+    height: 44,
+    width: 44
   },
-  darkLabel: {
-    color: "#050505"
-  },
-  full: {
-    minHeight: 56,
-    paddingHorizontal: spacing.xl
-  },
-  desktopFull: {
-    minHeight: 44,
-    paddingHorizontal: spacing.lg
-  },
-  desktopIcon: {
+  compactIcon: {
     fontSize: 22,
     lineHeight: 24
   },
-  desktopLabel: {
-    fontSize: 16
+  darkLabel: {
+    color: colors.ink
   },
   disabled: {
     opacity: 0.7
+  },
+  full: {
+    minHeight: 44,
+    paddingHorizontal: spacing.lg
   },
   green: {
     backgroundColor: colors.green
   },
   icon: {
-    color: "#050505",
-    fontSize: 28,
+    color: colors.ink,
+    fontSize: 20,
     fontWeight: "800",
-    lineHeight: 30
+    lineHeight: 22
   },
   label: {
-    fontSize: 20,
+    fontSize: 14,
     fontWeight: "800"
   },
   light: {
     backgroundColor: colors.text
   },
   lightLabel: {
-    color: "#050505"
+    color: colors.ink
+  },
+  pressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.98 }]
   }
 });

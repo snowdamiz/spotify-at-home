@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "expo-router";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { fetchSong, songSubtitle, type ServerSong } from "../library/songsApi";
-import { colors, spacing } from "../theme/tokens";
+import { colors, radius, spacing } from "../theme/tokens";
 
 type MiniPlayerProps = {
   trackId?: string;
@@ -44,8 +44,16 @@ export function MiniPlayer({ trackId }: MiniPlayerProps) {
 
   return (
     <Link href={`/now-playing?id=${currentTrack.id}`} asChild>
-      <Pressable style={styles.player}>
-        <View style={styles.art} />
+      <Pressable
+        accessibilityRole="link"
+        accessibilityLabel={`Open now playing for ${currentTrack.title}`}
+        style={({ pressed }) =>
+          StyleSheet.flatten([styles.player, pressed ? styles.playerPressed : null])
+        }
+      >
+        <View style={styles.art}>
+          <Text style={styles.artText}>♪</Text>
+        </View>
         <View style={styles.track}>
           <Text numberOfLines={1} style={styles.title}>
             {currentTrack.title}
@@ -64,19 +72,28 @@ export function MiniPlayer({ trackId }: MiniPlayerProps) {
 
 const styles = StyleSheet.create({
   art: {
-    backgroundColor: colors.green,
-    borderRadius: 6,
+    alignItems: "center",
+    backgroundColor: colors.greenDark,
+    borderRadius: radius.sm,
     height: 44,
+    justifyContent: "center",
     width: 44
+  },
+  artText: {
+    color: "rgba(255,255,255,0.85)",
+    fontSize: 22,
+    fontWeight: "900"
   },
   artist: {
     color: colors.muted,
-    fontSize: 14
+    fontSize: 12,
+    marginTop: 2
   },
   play: {
     color: colors.text,
-    fontSize: 22,
-    width: 32
+    fontSize: 18,
+    paddingHorizontal: spacing.xs,
+    width: 28
   },
   player: {
     alignItems: "center",
@@ -85,14 +102,18 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     flexDirection: "row",
     gap: spacing.md,
-    minHeight: 76,
-    paddingHorizontal: spacing.lg,
+    minHeight: 64,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
     width: "100%"
+  },
+  playerPressed: {
+    backgroundColor: colors.cardHover
   },
   title: {
     color: colors.text,
-    fontSize: 16,
-    fontWeight: "800"
+    fontSize: 14,
+    fontWeight: "700"
   },
   track: {
     flex: 1,

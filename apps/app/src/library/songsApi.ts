@@ -1,3 +1,4 @@
+import { getImportPolicyModeCopy, type ImportPolicyMode } from "@tunely/shared";
 import { apiBaseUrl, apiUrl } from "../api/config";
 
 export interface ServerSong {
@@ -53,6 +54,28 @@ export interface PlaybackState {
   shuffleEnabled: boolean;
   repeatMode: "off" | "one" | "all";
   updatedAt: string | null;
+}
+
+export interface ServerImportPolicy {
+  configuredMode: ImportPolicyMode;
+  copy: ReturnType<typeof getImportPolicyModeCopy>;
+  environment: string;
+  mode: ImportPolicyMode;
+  openTestAllowed: boolean;
+}
+
+export async function fetchImportPolicy() {
+  const response = await fetch(`${apiBaseUrl()}/api/import-policy`, {
+    credentials: "include"
+  });
+
+  if (!response.ok) {
+    throw new Error(`Import policy request failed with status ${response.status}`);
+  }
+
+  const payload = (await response.json()) as { importPolicy: ServerImportPolicy };
+
+  return payload.importPolicy;
 }
 
 export async function fetchSongs() {
@@ -353,6 +376,16 @@ export function songSubtitle(song: ServerSong) {
 
 export function playlistSubtitle(playlist: ServerPlaylist) {
   return `${playlist.songCount} ${playlist.songCount === 1 ? "song" : "songs"}`;
+}
+
+export function defaultImportPolicy(): ServerImportPolicy {
+  return {
+    configuredMode: "licensed_only",
+    copy: getImportPolicyModeCopy("licensed_only"),
+    environment: "production",
+    mode: "licensed_only",
+    openTestAllowed: false
+  };
 }
 
 export function emptyLibrarySummary(): LibrarySummary {
