@@ -1,7 +1,7 @@
-import type { PropsWithChildren } from "react";
-import { Link } from "expo-router";
+import { useState, type PropsWithChildren } from "react";
+import { Link, useRouter } from "expo-router";
 import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
-import { playlistSubtitle } from "../library/songsApi";
+import { createPlaylist, playlistSubtitle } from "../library/songsApi";
 import { useLibrarySummary } from "../library/useSongs";
 import { colors, radius, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
 import { MiniPlayer } from "./MiniPlayer";
@@ -38,8 +38,32 @@ export function AppShell({ activeRoute = "home", children, miniPlayerTrackId }: 
 }
 
 function Sidebar({ activeRoute }: { activeRoute: RouteKey }) {
+  const router = useRouter();
   const library = useLibrarySummary();
   const summary = library.summary;
+  const [creatingPlaylist, setCreatingPlaylist] = useState(false);
+
+  async function handleCreatePlaylist() {
+    if (creatingPlaylist) {
+      return;
+    }
+
+    setCreatingPlaylist(true);
+
+    try {
+      const result = await createPlaylist({
+        name: "New Playlist"
+      });
+
+      if (result.status === "authenticated" && result.playlist) {
+        router.push(`/playlist/${result.playlist.id}`);
+      }
+    } catch {
+      // Keep the sidebar available if the server rejects creation.
+    } finally {
+      setCreatingPlaylist(false);
+    }
+  }
 
   return (
     <View style={styles.sidebar}>
@@ -51,7 +75,13 @@ function Sidebar({ activeRoute }: { activeRoute: RouteKey }) {
       <View style={styles.libraryPanel}>
         <View style={styles.libraryHeader}>
           <Text style={styles.sidebarHeading}>Your Library</Text>
-          <Pressable accessibilityLabel="Create playlist" style={styles.plusButton}>
+          <Pressable
+            accessibilityLabel="Create playlist"
+            accessibilityRole="button"
+            disabled={creatingPlaylist}
+            onPress={handleCreatePlaylist}
+            style={StyleSheet.flatten([styles.plusButton, creatingPlaylist ? styles.disabledButton : null])}
+          >
             <Text style={styles.plus}>+</Text>
           </Pressable>
         </View>
@@ -151,6 +181,9 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     maxWidth: 1280,
     width: "100%"
+  },
+  disabledButton: {
+    opacity: 0.5
   },
   inactiveText: {
     color: colors.muted

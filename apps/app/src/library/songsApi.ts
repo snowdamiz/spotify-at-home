@@ -1,4 +1,4 @@
-import { apiBaseUrl } from "../api/config";
+import { apiBaseUrl, apiUrl } from "../api/config";
 
 export interface ServerSong {
   id: string;
@@ -154,6 +154,33 @@ export async function fetchPlaylist(playlistId: string) {
   return { status: "authenticated" as const, playlist: payload.playlist };
 }
 
+export async function createPlaylist(input: {
+  name: string;
+  description?: string | null;
+  color?: string | null;
+}) {
+  const response = await fetch(`${apiBaseUrl()}/api/playlists`, {
+    body: JSON.stringify(input),
+    credentials: "include",
+    headers: {
+      "content-type": "application/json"
+    },
+    method: "POST"
+  });
+
+  if (response.status === 401) {
+    return { status: "anonymous" as const, playlist: null };
+  }
+
+  if (!response.ok) {
+    throw new Error(`Create playlist request failed with status ${response.status}`);
+  }
+
+  const payload = (await response.json()) as { playlist: ServerPlaylistDetail };
+
+  return { status: "authenticated" as const, playlist: payload.playlist };
+}
+
 export async function fetchSong(songId: string) {
   const response = await fetch(`${apiBaseUrl()}/api/songs/${encodeURIComponent(songId)}`, {
     credentials: "include"
@@ -176,8 +203,50 @@ export async function fetchSong(songId: string) {
   return { status: "authenticated" as const, song: payload.song };
 }
 
+export async function likeSong(songId: string) {
+  const response = await fetch(`${apiBaseUrl()}/api/songs/${encodeURIComponent(songId)}/like`, {
+    credentials: "include",
+    method: "POST"
+  });
+
+  if (response.status === 401) {
+    return { status: "anonymous" as const, liked: false };
+  }
+
+  if (response.status === 404) {
+    return { status: "not-found" as const, liked: false };
+  }
+
+  if (!response.ok) {
+    throw new Error(`Like song request failed with status ${response.status}`);
+  }
+
+  return { status: "authenticated" as const, liked: true };
+}
+
+export async function unlikeSong(songId: string) {
+  const response = await fetch(`${apiBaseUrl()}/api/songs/${encodeURIComponent(songId)}/like`, {
+    credentials: "include",
+    method: "DELETE"
+  });
+
+  if (response.status === 401) {
+    return { status: "anonymous" as const, liked: false };
+  }
+
+  if (response.status === 404) {
+    return { status: "not-found" as const, liked: false };
+  }
+
+  if (!response.ok) {
+    throw new Error(`Unlike song request failed with status ${response.status}`);
+  }
+
+  return { status: "authenticated" as const, liked: false };
+}
+
 export function songStreamUrl(songId: string) {
-  return `${apiBaseUrl()}/api/songs/${encodeURIComponent(songId)}/stream`;
+  return apiUrl(`/api/songs/${encodeURIComponent(songId)}/stream`);
 }
 
 export async function requestSongCacheIntent(songId: string) {
@@ -205,7 +274,13 @@ export async function requestSongCacheIntent(songId: string) {
     };
   };
 
-  return { status: "accepted" as const, cacheIntent: payload.cacheIntent };
+  return {
+    status: "accepted" as const,
+    cacheIntent: {
+      ...payload.cacheIntent,
+      streamUrl: apiUrl(payload.cacheIntent.streamUrl)
+    }
+  };
 }
 
 export async function fetchPlaybackState() {

@@ -12,7 +12,9 @@ describe("Phase 6 library UI wiring", () => {
 
     expect(apiSource).toContain("/api/library/summary");
     expect(apiSource).toContain("/api/search?");
+    expect(apiSource).toContain("/api/playlists");
     expect(apiSource).toContain("/api/playlists/");
+    expect(apiSource).toContain("/api/songs/${encodeURIComponent(songId)}/like");
     expect(apiSource).toContain("LibrarySummary");
     expect(apiSource).toContain("LibrarySearchResults");
   });
@@ -31,5 +33,17 @@ describe("Phase 6 library UI wiring", () => {
     expect(librarySource).toContain("summary.likedSongs");
     expect(playlistSource).toContain("usePlaylist");
     expect(playlistSource).toContain("liked-songs");
+  });
+
+  it("connects visible playlist and liked-song actions to server calls", async () => {
+    const shellSource = await readAppFile("src/components/AppShell.tsx");
+    const playerSource = await readAppFile("src/screens/PlayerScreen.tsx");
+
+    expect(shellSource).toContain("createPlaylist");
+    expect(shellSource).toContain("router.push(`/playlist/${result.playlist.id}`)");
+    expect(playerSource).toContain("likeSong");
+    expect(playerSource).toContain("unlikeSong");
+    expect(playerSource).toContain("requestSongCacheIntent");
+    expect(playerSource).toContain("updatePlaybackState");
   });
 });

@@ -1,5 +1,7 @@
-import { StyleSheet, Text, View } from "react-native";
-import { createMockPlayerStore } from "../player/playerStore";
+import { useEffect, useState } from "react";
+import { Link } from "expo-router";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import { fetchSong, songSubtitle, type ServerSong } from "../library/songsApi";
 import { colors, spacing } from "../theme/tokens";
 
 type MiniPlayerProps = {
@@ -7,34 +9,56 @@ type MiniPlayerProps = {
 };
 
 export function MiniPlayer({ trackId }: MiniPlayerProps) {
-  const player = createMockPlayerStore(trackId);
-  const currentTrack = player.getCurrentTrack();
+  const [currentTrack, setCurrentTrack] = useState<ServerSong | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+
+    if (!trackId) {
+      setCurrentTrack(null);
+      return;
+    }
+
+    fetchSong(trackId)
+      .then((result) => {
+        if (!mounted) {
+          return;
+        }
+
+        setCurrentTrack(result.status === "authenticated" ? result.song : null);
+      })
+      .catch(() => {
+        if (mounted) {
+          setCurrentTrack(null);
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [trackId]);
 
   if (!currentTrack) {
     return null;
   }
 
   return (
-    <View style={styles.player}>
-      <View style={styles.art} />
-      <View style={styles.track}>
-        <Text numberOfLines={1} style={styles.title}>
-          {currentTrack.title}
+    <Link href={`/now-playing?id=${currentTrack.id}`} asChild>
+      <Pressable style={styles.player}>
+        <View style={styles.art} />
+        <View style={styles.track}>
+          <Text numberOfLines={1} style={styles.title}>
+            {currentTrack.title}
+          </Text>
+          <Text numberOfLines={1} style={styles.artist}>
+            {songSubtitle(currentTrack)}
+          </Text>
+        </View>
+        <Text accessibilityLabel="Open selected track" style={styles.play}>
+          ▶
         </Text>
-        <Text numberOfLines={1} style={styles.artist}>
-          {currentTrack.artist}
-        </Text>
-      </View>
-      <Text accessibilityLabel="Previous track" style={styles.control}>
-        ‹
-      </Text>
-      <Text accessibilityLabel="Play selected track" style={styles.play}>
-        ▶
-      </Text>
-      <Text accessibilityLabel="Next track" style={styles.control}>
-        ›
-      </Text>
-    </View>
+      </Pressable>
+    </Link>
   );
 }
 
@@ -48,11 +72,6 @@ const styles = StyleSheet.create({
   artist: {
     color: colors.muted,
     fontSize: 14
-  },
-  control: {
-    color: colors.text,
-    fontSize: 26,
-    width: 28
   },
   play: {
     color: colors.text,
