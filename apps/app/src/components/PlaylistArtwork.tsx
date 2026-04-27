@@ -4,7 +4,7 @@ import { colors, radius } from "../theme/tokens";
 type PlaylistArtworkProps = {
   playlist: {
     color?: string | null;
-    colors?: string[];
+    colors?: readonly string[];
     initials?: string;
     name?: string;
     title?: string;
@@ -19,7 +19,7 @@ export function PlaylistArtwork({ playlist, size = 112 }: PlaylistArtworkProps) 
     : { aspectRatio: 1, width: size };
 
   const letterSize = isPixel ? Math.max(13, Math.round(size * 0.38)) : 32;
-  const showNote = !isPixel || size >= 72;
+  const showNote = !isPixel || size >= 44;
   const noteSize = isPixel ? Math.max(12, Math.round(size * 0.3)) : 30;
   const noteOffset = isPixel ? Math.max(4, Math.round(size * 0.08)) : 10;
   const title = playlist.name ?? playlist.title ?? "Playlist";
@@ -64,7 +64,7 @@ const styles = StyleSheet.create({
   initials: {
     color: "#f4f4f4",
     fontWeight: "800",
-    letterSpacing: 0.5
+    letterSpacing: 0
   },
   note: {
     color: "rgba(255, 255, 255, 0.32)",

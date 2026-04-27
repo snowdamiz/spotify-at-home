@@ -1,23 +1,26 @@
 import { Link } from "expo-router";
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import type { StyleProp, ViewStyle } from "react-native";
+import type { Playlist } from "../data/mockCatalog";
 import type { ServerPlaylist } from "../library/songsApi";
 import { colors, radius, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
 import { ImportButton } from "./ImportButton";
 import { PlaylistArtwork } from "./PlaylistArtwork";
 
 type PlaylistShortcutProps = {
-  playlist?: ServerPlaylist;
+  playlist?: Playlist | ServerPlaylist;
+  style?: StyleProp<ViewStyle>;
   variant?: "import" | "playlist";
 };
 
-export function PlaylistShortcut({ playlist, variant = "playlist" }: PlaylistShortcutProps) {
+export function PlaylistShortcut({ playlist, style, variant = "playlist" }: PlaylistShortcutProps) {
   const { width } = useWindowDimensions();
   const isWide = width >= WEB_SIDEBAR_BREAKPOINT;
-  const artworkSize = isWide ? 56 : 64;
+  const artworkSize = isWide ? 80 : 96;
 
   if (variant === "import") {
     return (
-      <View style={StyleSheet.flatten([styles.shortcut, isWide ? styles.desktopShortcut : null])}>
+      <View style={StyleSheet.flatten([styles.shortcut, isWide ? styles.desktopShortcut : null, style])}>
         <View style={StyleSheet.flatten([styles.importPane, { height: artworkSize, width: artworkSize }])}>
           <ImportButton compact />
         </View>
@@ -32,34 +35,41 @@ export function PlaylistShortcut({ playlist, variant = "playlist" }: PlaylistSho
     return null;
   }
 
+  const title = playlistTitle(playlist);
+
   return (
     <Link href={`/playlist/${playlist.id}`} asChild>
       <Pressable
         accessibilityRole="link"
-        accessibilityLabel={playlist.name}
+        accessibilityLabel={title}
         style={({ pressed }) =>
           StyleSheet.flatten([
             styles.shortcut,
             isWide ? styles.desktopShortcut : null,
+            style,
             pressed ? styles.shortcutPressed : null
           ])
         }
       >
         <PlaylistArtwork playlist={playlist} size={artworkSize} />
         <Text numberOfLines={2} style={StyleSheet.flatten([styles.title, isWide ? styles.desktopTitle : null])}>
-          {playlist.name}
+          {title}
         </Text>
       </Pressable>
     </Link>
   );
 }
 
+function playlistTitle(playlist: Playlist | ServerPlaylist) {
+  return "title" in playlist ? playlist.title : playlist.name;
+}
+
 const styles = StyleSheet.create({
   desktopShortcut: {
-    width: "32%"
+    minWidth: 280
   },
   desktopTitle: {
-    fontSize: 14
+    fontSize: 24
   },
   importPane: {
     alignItems: "center",
@@ -69,13 +79,13 @@ const styles = StyleSheet.create({
   },
   shortcut: {
     alignItems: "center",
-    backgroundColor: colors.cardRaised,
-    borderRadius: radius.md,
+    backgroundColor: colors.panel,
+    borderRadius: radius.lg,
     flexDirection: "row",
-    gap: spacing.md,
-    minHeight: 56,
+    gap: spacing.lg,
+    minHeight: 80,
     overflow: "hidden",
-    paddingRight: spacing.md,
+    paddingRight: spacing.xl,
     width: "100%"
   },
   shortcutPressed: {
@@ -84,8 +94,8 @@ const styles = StyleSheet.create({
   title: {
     color: colors.text,
     flexShrink: 1,
-    fontSize: 14,
-    fontWeight: "700",
+    fontSize: 21,
+    fontWeight: "900",
     minWidth: 0
   }
 });

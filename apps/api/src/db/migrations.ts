@@ -141,6 +141,80 @@ export const migrations: Migration[] = [
       CREATE INDEX idx_likes_user_created ON likes(user_id, created_at DESC);
       CREATE INDEX idx_import_jobs_user_status ON import_jobs(user_id, status, created_at DESC);
     `
+  },
+  {
+    version: 2,
+    name: "external_import_sources",
+    up: `
+      CREATE TABLE external_sources (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        song_id TEXT NOT NULL UNIQUE,
+        provider TEXT NOT NULL CHECK (provider IN ('youtube')),
+        source_id TEXT NOT NULL,
+        canonical_url TEXT NOT NULL,
+        original_title TEXT NOT NULL,
+        original_uploader TEXT,
+        thumbnail_url TEXT,
+        import_policy_mode TEXT NOT NULL CHECK (import_policy_mode IN ('open_test', 'review_required', 'licensed_only')),
+        provenance_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (song_id) REFERENCES songs(id) ON DELETE CASCADE
+      );
+
+      ALTER TABLE import_jobs
+        ADD COLUMN source_id TEXT REFERENCES external_sources(id) ON DELETE SET NULL;
+      ALTER TABLE import_jobs
+        ADD COLUMN import_policy_mode TEXT NOT NULL DEFAULT 'licensed_only'
+          CHECK (import_policy_mode IN ('open_test', 'review_required', 'licensed_only'));
+      ALTER TABLE import_jobs
+        ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0);
+      ALTER TABLE import_jobs
+        ADD COLUMN provenance_json TEXT NOT NULL DEFAULT '{}';
+
+      CREATE INDEX idx_external_sources_user_source ON external_sources(user_id, provider, source_id);
+      CREATE INDEX idx_external_sources_song_id ON external_sources(song_id);
+      CREATE INDEX idx_import_jobs_source_id ON import_jobs(source_id);
+    `
+  },
+  {
+    version: 3,
+    name: "external_source_policies",
+    up: `
+      CREATE TABLE source_policies (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL CHECK (provider IN ('youtube')),
+        scope_type TEXT NOT NULL CHECK (scope_type IN ('provider', 'domain', 'channel', 'source')),
+        scope_value TEXT NOT NULL,
+        action TEXT NOT NULL CHECK (action IN ('allow', 'block', 'review')),
+        enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        reason TEXT,
+        license_type TEXT,
+        license_url TEXT,
+        attribution_text TEXT,
+        created_by_user_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+      );
+
+      CREATE TABLE source_policy_audit_entries (
+        id TEXT PRIMARY KEY,
+        policy_id TEXT NOT NULL,
+        actor_user_id TEXT,
+        action TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (policy_id) REFERENCES source_policies(id) ON DELETE CASCADE,
+        FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX idx_source_policies_lookup ON source_policies(provider, scope_type, scope_value, enabled);
+      CREATE INDEX idx_source_policy_audit_policy ON source_policy_audit_entries(policy_id, created_at DESC);
+      CREATE INDEX idx_import_jobs_failed ON import_jobs(status, updated_at DESC);
+    `
   }
 ];
 

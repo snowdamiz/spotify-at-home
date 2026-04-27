@@ -6,7 +6,7 @@ export function EmptyLibraryPanel() {
   return (
     <View style={styles.panel}>
       <Text style={styles.title}>No songs yet</Text>
-      <Text style={styles.body}>Import audio from your device to start listening — files sync to your private Tunely server.</Text>
+      <Text style={styles.body}>Tap below to import audio from your device. Files stay in this session and play right here in your browser.</Text>
       <ImportButton />
     </View>
   );
@@ -15,10 +15,10 @@ export function EmptyLibraryPanel() {
 const styles = StyleSheet.create({
   body: {
     color: colors.muted,
-    fontSize: 15,
-    lineHeight: 22,
+    fontSize: 20,
+    lineHeight: 30,
     marginBottom: spacing.lg,
-    maxWidth: 480,
+    maxWidth: 640,
     textAlign: "center"
   },
   panel: {
@@ -28,14 +28,14 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
     borderStyle: "dashed",
     borderWidth: 1,
-    marginTop: spacing.lg,
+    marginTop: spacing.xl,
     paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.xl
+    paddingVertical: spacing.xxl
   },
   title: {
     color: colors.text,
-    fontSize: 22,
-    fontWeight: "800",
+    fontSize: 30,
+    fontWeight: "900",
     marginBottom: spacing.sm,
     textAlign: "center"
   }

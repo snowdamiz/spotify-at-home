@@ -1,20 +1,65 @@
 import { useState } from "react";
 import { Link } from "expo-router";
 import { Pressable, StyleSheet, Text, TextInput, useWindowDimensions, View } from "react-native";
+import type { ExternalDiscoveryResult } from "@tunely/shared";
 import { AppHeader } from "../components/AppHeader";
 import { AppShell } from "../components/AppShell";
 import { browseCategories } from "../data/mockCatalog";
-import { playlistSubtitle, songSubtitle } from "../library/songsApi";
+import {
+  discoverYouTubeUrl,
+  importYouTubeDiscovery,
+  playlistSubtitle,
+  songSubtitle
+} from "../library/songsApi";
 import { useLibrarySearch } from "../library/useSongs";
 import { colors, radius, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
 
 export function SearchScreen() {
   const [query, setQuery] = useState("");
+  const [externalResult, setExternalResult] = useState<ExternalDiscoveryResult | null>(null);
+  const [linkStatus, setLinkStatus] = useState<"idle" | "discovering" | "importing" | "ready" | "failed">("idle");
+  const [linkMessage, setLinkMessage] = useState<string | null>(null);
   const { width } = useWindowDimensions();
   const isWide = width >= WEB_SIDEBAR_BREAKPOINT;
   const search = useLibrarySearch(query);
   const resultCount = search.results.playlists.length + search.results.songs.length;
   const trimmedQuery = query.trim();
+  const canDiscoverLink = isLikelyYouTubeUrl(trimmedQuery);
+
+  async function handleDiscoverLink() {
+    setLinkStatus("discovering");
+    setLinkMessage(null);
+    setExternalResult(null);
+
+    try {
+      const result = await discoverYouTubeUrl(trimmedQuery);
+      const discovery = result.discovery?.results[0] ?? null;
+      setExternalResult(discovery);
+      setLinkStatus("idle");
+      setLinkMessage(discovery?.eligibility?.message ?? result.discovery?.importPolicy.copy.description ?? null);
+    } catch (error) {
+      setLinkStatus("failed");
+      setLinkMessage(error instanceof Error ? error.message : "Could not discover that link.");
+    }
+  }
+
+  async function handleImportLink() {
+    if (!externalResult) {
+      return;
+    }
+
+    setLinkStatus("importing");
+    setLinkMessage(null);
+
+    try {
+      const result = await importYouTubeDiscovery(externalResult);
+      setLinkStatus("ready");
+      setLinkMessage(result.alreadyInLibrary ? "Already in your library." : "Added to your library.");
+    } catch (error) {
+      setLinkStatus("failed");
+      setLinkMessage(error instanceof Error ? error.message : "External import failed.");
+    }
+  }
 
   return (
     <AppShell activeRoute="search">
@@ -26,7 +71,12 @@ export function SearchScreen() {
           accessibilityLabel="Search Tunely"
           autoCapitalize="none"
           autoCorrect={false}
-          onChangeText={setQuery}
+          onChangeText={(value) => {
+            setQuery(value);
+            setExternalResult(null);
+            setLinkMessage(null);
+            setLinkStatus("idle");
+          }}
           placeholder="What do you want to listen to?"
           placeholderTextColor={colors.muted}
           returnKeyType="search"
@@ -37,7 +87,12 @@ export function SearchScreen() {
           <Pressable
             accessibilityLabel="Clear search"
             accessibilityRole="button"
-            onPress={() => setQuery("")}
+            onPress={() => {
+              setQuery("");
+              setExternalResult(null);
+              setLinkMessage(null);
+              setLinkStatus("idle");
+            }}
             style={({ pressed }) =>
               StyleSheet.flatten([styles.clearButton, pressed ? styles.clearButtonPressed : null])
             }
@@ -48,6 +103,67 @@ export function SearchScreen() {
       </View>
       {trimmedQuery ? (
         <View style={styles.results}>
+          {canDiscoverLink ? (
+            <View style={styles.linkPanel}>
+              <Text style={styles.sectionTitle}>YouTube link</Text>
+              {externalResult ? (
+                <>
+                  <Text numberOfLines={1} style={styles.resultTitle}>
+                    {externalResult.title}
+                  </Text>
+                  <Text numberOfLines={1} style={styles.resultSubtitle}>
+                    {externalResult.creator ?? "YouTube"} · {externalResult.eligibility?.state ?? externalResult.importPolicyMode}
+                  </Text>
+                  {linkMessage ? <Text style={styles.linkMessage}>{linkMessage}</Text> : null}
+                  <View style={styles.linkActions}>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={
+                        linkStatus === "importing" ||
+                        !(
+                          externalResult.eligibility?.state === "importable" ||
+                          externalResult.importPolicyMode === "open_test"
+                        )
+                      }
+                      onPress={handleImportLink}
+                      style={({ pressed }) =>
+                        StyleSheet.flatten([
+                          styles.linkButton,
+                          styles.primaryLinkButton,
+                          pressed ? styles.resultRowPressed : null
+                        ])
+                      }
+                    >
+                      <Text style={styles.primaryLinkButtonText}>
+                        {linkStatus === "importing" ? "Importing" : "Add to Library"}
+                      </Text>
+                    </Pressable>
+                  </View>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.emptyText}>Normalize this link before importing it.</Text>
+                  {linkMessage ? <Text style={styles.linkMessage}>{linkMessage}</Text> : null}
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={linkStatus === "discovering"}
+                    onPress={handleDiscoverLink}
+                    style={({ pressed }) =>
+                      StyleSheet.flatten([
+                        styles.linkButton,
+                        styles.primaryLinkButton,
+                        pressed ? styles.resultRowPressed : null
+                      ])
+                    }
+                  >
+                    <Text style={styles.primaryLinkButtonText}>
+                      {linkStatus === "discovering" ? "Discovering" : "Discover link"}
+                    </Text>
+                  </Pressable>
+                </>
+              )}
+            </View>
+          ) : null}
           <Text style={styles.sectionTitle}>Results</Text>
           {search.status === "loading" ? (
             <Text style={styles.emptyText}>Searching your server library…</Text>
@@ -195,6 +311,38 @@ const styles = StyleSheet.create({
     fontSize: 15,
     minWidth: 0
   },
+  linkActions: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    marginTop: spacing.md
+  },
+  linkButton: {
+    alignItems: "center",
+    borderRadius: radius.pill,
+    minHeight: 40,
+    paddingHorizontal: spacing.lg
+  },
+  linkMessage: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: spacing.sm
+  },
+  linkPanel: {
+    backgroundColor: colors.card,
+    borderRadius: radius.md,
+    marginBottom: spacing.lg,
+    padding: spacing.md
+  },
+  primaryLinkButton: {
+    backgroundColor: colors.green,
+    justifyContent: "center"
+  },
+  primaryLinkButtonText: {
+    color: colors.ink,
+    fontSize: 14,
+    fontWeight: "800"
+  },
   resultArt: {
     alignItems: "center",
     backgroundColor: colors.cardRaised,
@@ -264,3 +412,18 @@ const styles = StyleSheet.create({
     marginTop: spacing.lg
   }
 });
+
+function isLikelyYouTubeUrl(value: string) {
+  if (!value) {
+    return false;
+  }
+
+  try {
+    const url = new URL(value.startsWith("http") ? value : `https://${value}`);
+    const host = url.hostname.toLowerCase();
+
+    return host.includes("youtube.com") || host === "youtu.be";
+  } catch {
+    return false;
+  }
+}

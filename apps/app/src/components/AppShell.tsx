@@ -1,6 +1,7 @@
 import { useState, type PropsWithChildren } from "react";
 import { Link, useRouter } from "expo-router";
 import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { mockPlaylists } from "../data/mockCatalog";
 import { createPlaylist, playlistSubtitle } from "../library/songsApi";
 import { useLibrarySummary } from "../library/useSongs";
 import { colors, radius, spacing, typography, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
@@ -14,6 +15,13 @@ type AppShellProps = PropsWithChildren<{
   miniPlayerTrackId?: string;
 }>;
 
+type SidebarPlaylistItem = {
+  art: Parameters<typeof PlaylistArtwork>[0]["playlist"];
+  href: string;
+  subtitle: string;
+  title: string;
+};
+
 const navItems: Array<{ key: RouteKey; label: string; icon: string; href: "/" | "/search" | "/library" }> = [
   { key: "home", label: "Home", icon: "⌂", href: "/" },
   { key: "search", label: "Search", icon: "⌕", href: "/search" },
@@ -26,9 +34,9 @@ export function AppShell({ activeRoute = "home", children, miniPlayerTrackId }: 
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <View style={styles.root}>
+      <View style={StyleSheet.flatten([styles.root, isWide ? styles.wideRoot : null])}>
         {isWide ? <Sidebar activeRoute={activeRoute} /> : null}
-        <View style={styles.main}>
+        <View style={StyleSheet.flatten([styles.main, isWide ? styles.mainPanel : null])}>
           <ScrollView
             contentContainerStyle={StyleSheet.flatten([
               styles.content,
@@ -51,6 +59,27 @@ function Sidebar({ activeRoute }: { activeRoute: RouteKey }) {
   const library = useLibrarySummary();
   const summary = library.summary;
   const [creatingPlaylist, setCreatingPlaylist] = useState(false);
+  const playlistItems: SidebarPlaylistItem[] = summary.playlists.length
+    ? [
+        {
+          art: { color: colors.greenDark, initials: "LS", name: "Liked Songs" },
+          href: "/playlist/liked-songs",
+          subtitle: "Playlist",
+          title: "Liked Songs"
+        },
+        ...summary.playlists.slice(0, 5).map((playlist) => ({
+          art: playlist,
+          href: `/playlist/${playlist.id}`,
+          subtitle: playlistSubtitle(playlist),
+          title: playlist.name
+        }))
+      ]
+    : mockPlaylists.slice(0, 5).map((playlist) => ({
+        art: playlist,
+        href: `/playlist/${playlist.id}`,
+        subtitle: "Playlist",
+        title: playlist.title
+      }));
 
   async function handleCreatePlaylist() {
     if (creatingPlaylist) {
@@ -101,51 +130,19 @@ function Sidebar({ activeRoute }: { activeRoute: RouteKey }) {
           </Pressable>
         </View>
         <Text style={styles.sidebarSection}>PLAYLISTS</Text>
-        <Link href="/playlist/imported-songs" asChild>
-          <Pressable style={({ pressed }) => StyleSheet.flatten([styles.sidebarPlaylist, pressed ? styles.sidebarPlaylistPressed : null])}>
-            <View style={styles.sidebarSongArt}>
-              <Text style={styles.sidebarSongArtText}>♪</Text>
-            </View>
-            <View style={styles.sidebarPlaylistText}>
-              <Text numberOfLines={1} style={styles.sidebarPlaylistTitle}>
-                Imported Songs
-              </Text>
-              <Text style={styles.sidebarPlaylistType}>
-                {library.status === "authenticated"
-                  ? `Playlist · ${summary.counts.songs} ${summary.counts.songs === 1 ? "song" : "songs"}`
-                  : library.status === "loading"
-                    ? "Loading"
-                    : "Sign in required"}
-              </Text>
-            </View>
-          </Pressable>
-        </Link>
-        <Link href="/playlist/liked-songs" asChild>
-          <Pressable style={({ pressed }) => StyleSheet.flatten([styles.sidebarPlaylist, pressed ? styles.sidebarPlaylistPressed : null])}>
-            <View style={StyleSheet.flatten([styles.sidebarSongArt, styles.sidebarLikedArt])}>
-              <Text style={styles.sidebarLikedText}>♥</Text>
-            </View>
-            <View style={styles.sidebarPlaylistText}>
-              <Text numberOfLines={1} style={styles.sidebarPlaylistTitle}>
-                Liked Songs
-              </Text>
-              <Text numberOfLines={1} style={styles.sidebarPlaylistType}>
-                Playlist · {summary.counts.likedSongs} {summary.counts.likedSongs === 1 ? "song" : "songs"}
-              </Text>
-            </View>
-          </Pressable>
-        </Link>
-        {summary.playlists.slice(0, 6).map((playlist) => (
-          <Link href={`/playlist/${playlist.id}`} asChild key={playlist.id}>
+        {playlistItems.map((playlist) => (
+          <Link href={playlist.href} asChild key={playlist.href}>
             <Pressable style={({ pressed }) => StyleSheet.flatten([styles.sidebarPlaylist, pressed ? styles.sidebarPlaylistPressed : null])}>
-              <PlaylistArtwork playlist={playlist} size={44} />
-              <View style={styles.sidebarPlaylistText}>
-                <Text numberOfLines={1} style={styles.sidebarPlaylistTitle}>
-                  {playlist.name}
-                </Text>
-                <Text numberOfLines={1} style={styles.sidebarPlaylistType}>
-                  Playlist · {playlistSubtitle(playlist)}
-                </Text>
+              <View style={styles.sidebarPlaylistInner}>
+                <PlaylistArtwork playlist={playlist.art} size={64} />
+                <View style={styles.sidebarPlaylistText}>
+                  <Text numberOfLines={1} style={styles.sidebarPlaylistTitle}>
+                    {playlist.title}
+                  </Text>
+                  <Text numberOfLines={1} style={styles.sidebarPlaylistType}>
+                    {playlist.subtitle}
+                  </Text>
+                </View>
               </View>
             </Pressable>
           </Link>
@@ -175,12 +172,14 @@ function SidebarNavLink({ active, item }: { active: boolean; item: (typeof navIt
           StyleSheet.flatten([styles.navLink, pressed ? styles.navLinkPressed : null])
         }
       >
-        <Text style={StyleSheet.flatten([styles.navIcon, active ? styles.activeText : styles.inactiveText])}>
-          {item.icon}
-        </Text>
-        <Text style={StyleSheet.flatten([styles.navLabel, active ? styles.activeText : styles.inactiveText])}>
-          {item.label}
-        </Text>
+        <View style={styles.navLinkInner}>
+          <Text style={StyleSheet.flatten([styles.navIcon, active ? styles.activeText : styles.inactiveText])}>
+            {item.icon}
+          </Text>
+          <Text style={StyleSheet.flatten([styles.navLabel, active ? styles.activeText : styles.inactiveText])}>
+            {item.label}
+          </Text>
+        </View>
       </Pressable>
     </Link>
   );
@@ -212,13 +211,13 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm
   },
   bottomTabIcon: {
-    fontSize: 22,
-    lineHeight: 24
+    fontSize: 31,
+    lineHeight: 34
   },
   bottomTabLabel: {
-    fontSize: 11,
+    fontSize: 15,
     fontWeight: "700",
-    letterSpacing: 0.2
+    letterSpacing: 0
   },
   bottomTabs: {
     alignItems: "center",
@@ -227,13 +226,12 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     flexDirection: "row",
     justifyContent: "space-around",
-    paddingBottom: spacing.xs,
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.xs
+    paddingBottom: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm
   },
   content: {
     flexGrow: 1,
-    maxWidth: 1280,
     width: "100%"
   },
   disabledButton: {
@@ -252,36 +250,45 @@ const styles = StyleSheet.create({
     backgroundColor: colors.panel,
     borderRadius: radius.lg,
     flex: 1,
-    paddingHorizontal: spacing.sm,
-    paddingTop: spacing.md
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.xl
   },
   main: {
     backgroundColor: colors.background,
     flex: 1,
     overflow: "hidden"
   },
+  mainPanel: {
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    borderWidth: 1
+  },
   narrowContent: {
-    paddingBottom: spacing.xl,
+    paddingBottom: spacing.xxl,
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md
+    paddingTop: spacing.lg
   },
   navIcon: {
-    fontSize: 22,
+    fontSize: 28,
     fontWeight: "700",
-    lineHeight: 24,
-    width: 24
+    lineHeight: 30,
+    width: 36
   },
   navLabel: {
-    fontSize: 15,
-    fontWeight: "700"
+    fontSize: 20,
+    fontWeight: "800"
   },
   navLink: {
+    borderRadius: radius.md,
+    minHeight: 58,
+    paddingHorizontal: spacing.md
+  },
+  navLinkInner: {
     alignItems: "center",
-    borderRadius: radius.sm,
     flexDirection: "row",
     gap: spacing.md,
-    minHeight: 44,
-    paddingHorizontal: spacing.sm
+    minHeight: 58,
+    width: "100%"
   },
   navLinkPressed: {
     backgroundColor: colors.overlay
@@ -289,8 +296,9 @@ const styles = StyleSheet.create({
   navPanel: {
     backgroundColor: colors.panel,
     borderRadius: radius.lg,
-    gap: 4,
-    padding: spacing.sm
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.xl
   },
   plus: {
     color: colors.muted,
@@ -319,30 +327,25 @@ const styles = StyleSheet.create({
   sidebar: {
     backgroundColor: colors.background,
     gap: spacing.sm,
-    padding: spacing.sm,
-    width: 264
+    width: 390
   },
   sidebarHeading: {
-    color: colors.text,
-    fontSize: 16,
+    color: colors.muted,
+    fontSize: 20,
     fontWeight: "800"
   },
-  sidebarLikedArt: {
-    backgroundColor: "#3d2c69"
-  },
-  sidebarLikedText: {
-    color: "#dadcff",
-    fontSize: 22,
-    fontWeight: "900"
-  },
   sidebarPlaylist: {
-    alignItems: "center",
-    borderRadius: radius.sm,
-    flexDirection: "row",
-    gap: spacing.sm,
-    minHeight: 56,
-    paddingHorizontal: spacing.sm,
+    borderRadius: radius.md,
+    minHeight: 82,
+    paddingHorizontal: 0,
     paddingVertical: spacing.xs
+  },
+  sidebarPlaylistInner: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: spacing.md,
+    minHeight: 72,
+    width: "100%"
   },
   sidebarPlaylistPressed: {
     backgroundColor: colors.overlay
@@ -353,37 +356,29 @@ const styles = StyleSheet.create({
   },
   sidebarPlaylistTitle: {
     color: colors.text,
-    fontSize: 14,
-    fontWeight: "700"
+    fontSize: 18,
+    fontWeight: "800"
   },
   sidebarPlaylistType: {
     color: colors.muted,
-    fontSize: 12,
-    marginTop: 2
+    fontSize: 15,
+    marginTop: 6
   },
   sidebarSection: {
     color: colors.muted,
-    fontSize: 11,
-    fontWeight: "700",
+    fontSize: 15,
+    fontWeight: "800",
     letterSpacing: typography.letterSpacingWide,
-    marginBottom: spacing.xs,
-    paddingHorizontal: spacing.sm,
+    marginBottom: spacing.md,
+    marginTop: spacing.xl,
+    paddingHorizontal: spacing.xs,
     textTransform: "uppercase"
   },
-  sidebarSongArt: {
-    alignItems: "center",
-    backgroundColor: colors.cardRaised,
-    borderRadius: radius.sm,
-    height: 44,
-    justifyContent: "center",
-    width: 44
-  },
-  sidebarSongArtText: {
-    color: colors.green,
-    fontSize: 20,
-    fontWeight: "900"
-  },
   wideContent: {
-    padding: spacing.lg
+    padding: spacing.xxl
+  },
+  wideRoot: {
+    gap: spacing.sm,
+    padding: spacing.sm
   }
 });

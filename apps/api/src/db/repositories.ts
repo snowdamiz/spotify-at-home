@@ -1,5 +1,6 @@
 import { randomToken } from "../auth/crypto.js";
 import type { SqliteDatabase } from "./connection.js";
+import type { ExternalSourceProvider, ImportPolicyMode } from "@tunely/shared";
 
 export type ImportStatus = "pending" | "ready" | "failed";
 export type RepeatMode = "off" | "one" | "all";
@@ -25,6 +26,56 @@ export interface Song {
   checksum: string;
   storagePath: string;
   importStatus: ImportStatus;
+  externalSource: ExternalSource | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ExternalSource {
+  id: string;
+  userId: string;
+  songId: string;
+  provider: ExternalSourceProvider;
+  sourceId: string;
+  canonicalUrl: string;
+  originalTitle: string;
+  originalUploader: string | null;
+  thumbnailUrl: string | null;
+  importPolicyMode: ImportPolicyMode;
+  provenance: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ImportJob {
+  id: string;
+  userId: string;
+  songId: string;
+  sourceId: string | null;
+  status: ImportStatus;
+  errorCode: string | null;
+  importPolicyMode: ImportPolicyMode;
+  retryCount: number;
+  provenance: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type SourcePolicyScopeType = "provider" | "domain" | "channel" | "source";
+export type SourcePolicyAction = "allow" | "block" | "review";
+
+export interface SourcePolicy {
+  id: string;
+  provider: ExternalSourceProvider;
+  scopeType: SourcePolicyScopeType;
+  scopeValue: string;
+  action: SourcePolicyAction;
+  enabled: boolean;
+  reason: string | null;
+  licenseType: string | null;
+  licenseUrl: string | null;
+  attributionText: string | null;
+  createdByUserId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -55,6 +106,12 @@ export interface PlaybackState {
   shuffleEnabled: boolean;
   repeatMode: RepeatMode;
   updatedAt: Date | null;
+}
+
+export class ExternalSourceAlreadyInLibraryError extends Error {
+  constructor(readonly song: Song, readonly source: ExternalSource) {
+    super("External source is already in this user's ready library.");
+  }
 }
 
 export class SQLiteUserRepository {
@@ -127,6 +184,7 @@ export class SQLiteSongRepository {
       checksum: input.checksum,
       storagePath: input.storagePath,
       importStatus: input.importStatus ?? "ready",
+      externalSource: null,
       createdAt: now,
       updatedAt: now
     };
@@ -164,9 +222,10 @@ export class SQLiteSongRepository {
     const row = this.db
       .prepare(
         `
-          SELECT *
+          SELECT ${songSelectColumns("songs")}
           FROM songs
-          WHERE user_id = ? AND id = ?
+          LEFT JOIN external_sources es ON es.song_id = songs.id
+          WHERE songs.user_id = ? AND songs.id = ?
         `
       )
       .get(userId, songId);
@@ -178,10 +237,11 @@ export class SQLiteSongRepository {
     return this.db
       .prepare(
         `
-          SELECT *
+          SELECT ${songSelectColumns("songs")}
           FROM songs
-          WHERE user_id = ?
-          ORDER BY created_at DESC, id ASC
+          LEFT JOIN external_sources es ON es.song_id = songs.id
+          WHERE songs.user_id = ?
+          ORDER BY songs.created_at DESC, songs.id ASC
         `
       )
       .all(userId)
@@ -192,10 +252,11 @@ export class SQLiteSongRepository {
     return this.db
       .prepare(
         `
-          SELECT *
+          SELECT ${songSelectColumns("songs")}
           FROM songs
-          WHERE user_id = ? AND import_status = 'ready'
-          ORDER BY created_at DESC, id ASC
+          LEFT JOIN external_sources es ON es.song_id = songs.id
+          WHERE songs.user_id = ? AND songs.import_status = 'ready'
+          ORDER BY songs.created_at DESC, songs.id ASC
         `
       )
       .all(userId)
@@ -206,10 +267,11 @@ export class SQLiteSongRepository {
     return this.db
       .prepare(
         `
-          SELECT *
+          SELECT ${songSelectColumns("songs")}
           FROM songs
-          WHERE user_id = ? AND import_status = 'ready'
-          ORDER BY created_at DESC, id ASC
+          LEFT JOIN external_sources es ON es.song_id = songs.id
+          WHERE songs.user_id = ? AND songs.import_status = 'ready'
+          ORDER BY songs.created_at DESC, songs.id ASC
           LIMIT ?
         `
       )
@@ -237,16 +299,17 @@ export class SQLiteSongRepository {
     return this.db
       .prepare(
         `
-          SELECT *
+          SELECT ${songSelectColumns("songs")}
           FROM songs
-          WHERE user_id = ?
-            AND import_status = 'ready'
+          LEFT JOIN external_sources es ON es.song_id = songs.id
+          WHERE songs.user_id = ?
+            AND songs.import_status = 'ready'
             AND (
-              title LIKE ? ESCAPE '\\'
-              OR artist LIKE ? ESCAPE '\\'
-              OR album LIKE ? ESCAPE '\\'
+              songs.title LIKE ? ESCAPE '\\'
+              OR songs.artist LIKE ? ESCAPE '\\'
+              OR songs.album LIKE ? ESCAPE '\\'
             )
-          ORDER BY created_at DESC, id ASC
+          ORDER BY songs.created_at DESC, songs.id ASC
           LIMIT ? OFFSET ?
         `
       )
@@ -272,6 +335,9 @@ export class SQLiteSongRepository {
     userId: string;
     songId: string;
     checksum: string;
+    durationMs?: number | null;
+    mimeType?: string;
+    sizeBytes?: number;
     storagePath: string;
     now?: Date;
   }) {
@@ -285,13 +351,25 @@ export class SQLiteSongRepository {
           `
             UPDATE songs
             SET checksum = ?,
+                duration_ms = COALESCE(?, duration_ms),
+                mime_type = COALESCE(?, mime_type),
+                size_bytes = COALESCE(?, size_bytes),
                 storage_path = ?,
                 import_status = 'ready',
                 updated_at = ?
             WHERE user_id = ? AND id = ?
           `
         )
-        .run(input.checksum, input.storagePath, toSqlDate(now), input.userId, input.songId);
+        .run(
+          input.checksum,
+          input.durationMs ?? null,
+          input.mimeType ?? null,
+          input.sizeBytes ?? null,
+          input.storagePath,
+          toSqlDate(now),
+          input.userId,
+          input.songId
+        );
 
       this.db
         .prepare(
@@ -423,9 +501,10 @@ export class SQLiteSongRepository {
     return this.db
       .prepare(
         `
-          SELECT s.*
+          SELECT ${songSelectColumns("s")}
           FROM likes l
           INNER JOIN songs s ON s.id = l.song_id
+          LEFT JOIN external_sources es ON es.song_id = s.id
           WHERE l.user_id = ? AND s.user_id = ? AND s.import_status = 'ready'
           ORDER BY l.created_at DESC, s.id ASC
           LIMIT ?
@@ -523,33 +602,365 @@ export class SQLiteSongRepository {
     id?: string;
     userId: string;
     songId: string;
+    sourceId?: string | null;
     status?: ImportStatus;
     errorCode?: string | null;
+    importPolicyMode?: ImportPolicyMode;
+    retryCount?: number;
+    provenance?: Record<string, unknown>;
     now?: Date;
   }) {
     const now = input.now ?? new Date();
-    const id = input.id ?? randomToken(16);
+    const job: ImportJob = {
+      id: input.id ?? randomToken(16),
+      userId: input.userId,
+      songId: input.songId,
+      sourceId: input.sourceId ?? null,
+      status: input.status ?? "pending",
+      errorCode: input.errorCode ?? null,
+      importPolicyMode: input.importPolicyMode ?? "licensed_only",
+      retryCount: input.retryCount ?? 0,
+      provenance: input.provenance ?? {},
+      createdAt: now,
+      updatedAt: now
+    };
 
     this.db
       .prepare(
         `
           INSERT INTO import_jobs (
-            id, user_id, song_id, status, error_code, created_at, updated_at
+            id, user_id, song_id, source_id, status, error_code, import_policy_mode,
+            retry_count, provenance_json, created_at, updated_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `
       )
       .run(
-        id,
-        input.userId,
-        input.songId,
-        input.status ?? "pending",
-        input.errorCode ?? null,
-        toSqlDate(now),
-        toSqlDate(now)
+        job.id,
+        job.userId,
+        job.songId,
+        job.sourceId,
+        job.status,
+        job.errorCode,
+        job.importPolicyMode,
+        job.retryCount,
+        JSON.stringify(job.provenance),
+        toSqlDate(job.createdAt),
+        toSqlDate(job.updatedAt)
       );
 
-    return id;
+    return job;
+  }
+
+  findImportJobForUser(userId: string, jobId: string) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM import_jobs
+          WHERE user_id = ? AND id = ?
+        `
+      )
+      .get(userId, jobId);
+
+    return row ? mapImportJob(row) : null;
+  }
+
+  updateImportJobProvenance(input: {
+    userId: string;
+    jobId: string;
+    provenance: Record<string, unknown>;
+    now?: Date;
+  }) {
+    const result = this.db
+      .prepare(
+        `
+          UPDATE import_jobs
+          SET provenance_json = ?, updated_at = ?
+          WHERE user_id = ? AND id = ?
+        `
+      )
+      .run(
+        JSON.stringify(input.provenance),
+        toSqlDate(input.now ?? new Date()),
+        input.userId,
+        input.jobId
+      );
+
+    return Number(result.changes) > 0;
+  }
+
+  listFailedImportJobs(limit = 50) {
+    return this.db
+      .prepare(
+        `
+          SELECT *
+          FROM import_jobs
+          WHERE status = 'failed'
+          ORDER BY updated_at DESC, id ASC
+          LIMIT ?
+        `
+      )
+      .all(limit)
+      .map(mapImportJob);
+  }
+
+  createExternalSource(input: {
+    id?: string;
+    userId: string;
+    songId: string;
+    provider: ExternalSourceProvider;
+    sourceId: string;
+    canonicalUrl: string;
+    originalTitle: string;
+    originalUploader?: string | null;
+    thumbnailUrl?: string | null;
+    importPolicyMode: ImportPolicyMode;
+    provenance?: Record<string, unknown>;
+    allowReimport?: boolean;
+    now?: Date;
+  }) {
+    if (!input.allowReimport) {
+      const duplicate = this.findReadySongByExternalSourceForUser({
+        userId: input.userId,
+        provider: input.provider,
+        sourceId: input.sourceId
+      });
+
+      if (duplicate) {
+        throw new ExternalSourceAlreadyInLibraryError(duplicate.song, duplicate.source);
+      }
+    }
+
+    const now = input.now ?? new Date();
+    const source: ExternalSource = {
+      id: input.id ?? randomToken(16),
+      userId: input.userId,
+      songId: input.songId,
+      provider: input.provider,
+      sourceId: input.sourceId,
+      canonicalUrl: input.canonicalUrl,
+      originalTitle: input.originalTitle,
+      originalUploader: input.originalUploader ?? null,
+      thumbnailUrl: input.thumbnailUrl ?? null,
+      importPolicyMode: input.importPolicyMode,
+      provenance: input.provenance ?? {},
+      createdAt: now,
+      updatedAt: now
+    };
+
+    this.db
+      .prepare(
+        `
+          INSERT INTO external_sources (
+            id, user_id, song_id, provider, source_id, canonical_url,
+            original_title, original_uploader, thumbnail_url, import_policy_mode,
+            provenance_json, created_at, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `
+      )
+      .run(
+        source.id,
+        source.userId,
+        source.songId,
+        source.provider,
+        source.sourceId,
+        source.canonicalUrl,
+        source.originalTitle,
+        source.originalUploader,
+        source.thumbnailUrl,
+        source.importPolicyMode,
+        JSON.stringify(source.provenance),
+        toSqlDate(source.createdAt),
+        toSqlDate(source.updatedAt)
+      );
+
+    return source;
+  }
+
+  findExternalSourceForSong(input: { userId: string; songId: string }) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT
+            id AS external_source_id,
+            user_id AS external_source_user_id,
+            song_id AS external_source_song_id,
+            provider AS external_source_provider,
+            source_id AS external_source_source_id,
+            canonical_url AS external_source_canonical_url,
+            original_title AS external_source_original_title,
+            original_uploader AS external_source_original_uploader,
+            thumbnail_url AS external_source_thumbnail_url,
+            import_policy_mode AS external_source_import_policy_mode,
+            provenance_json AS external_source_provenance_json,
+            created_at AS external_source_created_at,
+            updated_at AS external_source_updated_at
+          FROM external_sources
+          WHERE user_id = ? AND song_id = ?
+        `
+      )
+      .get(input.userId, input.songId);
+
+    return row ? mapExternalSource(row) : null;
+  }
+
+  updateExternalSourceProvenance(input: {
+    userId: string;
+    sourceId: string;
+    provenance: Record<string, unknown>;
+    now?: Date;
+  }) {
+    const result = this.db
+      .prepare(
+        `
+          UPDATE external_sources
+          SET provenance_json = ?, updated_at = ?
+          WHERE user_id = ? AND id = ?
+        `
+      )
+      .run(
+        JSON.stringify(input.provenance),
+        toSqlDate(input.now ?? new Date()),
+        input.userId,
+        input.sourceId
+      );
+
+    return Number(result.changes) > 0;
+  }
+
+  findReadySongByExternalSourceForUser(input: {
+    userId: string;
+    provider: ExternalSourceProvider;
+    sourceId: string;
+  }) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT ${songSelectColumns("s")}
+          FROM external_sources es
+          INNER JOIN songs s ON s.id = es.song_id
+          WHERE es.user_id = ?
+            AND es.provider = ?
+            AND es.source_id = ?
+            AND s.user_id = ?
+            AND s.import_status = 'ready'
+          ORDER BY s.created_at DESC, s.id ASC
+          LIMIT 1
+        `
+      )
+      .get(input.userId, input.provider, input.sourceId, input.userId);
+
+    if (!row) {
+      return null;
+    }
+
+    const song = mapSong(row);
+
+    return song.externalSource ? { song, source: song.externalSource } : null;
+  }
+
+  createSourcePolicy(input: {
+    id?: string;
+    provider: ExternalSourceProvider;
+    scopeType: SourcePolicyScopeType;
+    scopeValue: string;
+    action: SourcePolicyAction;
+    enabled?: boolean;
+    reason?: string | null;
+    licenseType?: string | null;
+    licenseUrl?: string | null;
+    attributionText?: string | null;
+    createdByUserId?: string | null;
+    now?: Date;
+  }) {
+    const now = input.now ?? new Date();
+    const policy: SourcePolicy = {
+      id: input.id ?? randomToken(16),
+      provider: input.provider,
+      scopeType: input.scopeType,
+      scopeValue: normalizePolicyScopeValue(input.scopeValue),
+      action: input.action,
+      enabled: input.enabled ?? true,
+      reason: input.reason ?? null,
+      licenseType: input.licenseType ?? null,
+      licenseUrl: input.licenseUrl ?? null,
+      attributionText: input.attributionText ?? null,
+      createdByUserId: input.createdByUserId ?? null,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    this.db.exec("BEGIN;");
+
+    try {
+      this.db
+        .prepare(
+          `
+            INSERT INTO source_policies (
+              id, provider, scope_type, scope_value, action, enabled, reason,
+              license_type, license_url, attribution_text, created_by_user_id,
+              created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `
+        )
+        .run(
+          policy.id,
+          policy.provider,
+          policy.scopeType,
+          policy.scopeValue,
+          policy.action,
+          policy.enabled ? 1 : 0,
+          policy.reason,
+          policy.licenseType,
+          policy.licenseUrl,
+          policy.attributionText,
+          policy.createdByUserId,
+          toSqlDate(policy.createdAt),
+          toSqlDate(policy.updatedAt)
+        );
+
+      this.db
+        .prepare(
+          `
+            INSERT INTO source_policy_audit_entries (
+              id, policy_id, actor_user_id, action, snapshot_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+          `
+        )
+        .run(
+          randomToken(16),
+          policy.id,
+          policy.createdByUserId,
+          "created",
+          JSON.stringify(policy),
+          toSqlDate(now)
+        );
+
+      this.db.exec("COMMIT;");
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+
+    return policy;
+  }
+
+  listEnabledSourcePolicies(provider: ExternalSourceProvider) {
+    return this.db
+      .prepare(
+        `
+          SELECT *
+          FROM source_policies
+          WHERE provider = ? AND enabled = 1
+          ORDER BY updated_at DESC, id ASC
+        `
+      )
+      .all(provider)
+      .map(mapSourcePolicy);
   }
 }
 
@@ -867,12 +1278,13 @@ export class SQLitePlaylistRepository {
       .prepare(
         `
           SELECT
-            s.*,
+            ${songSelectColumns("s")},
             ps.position AS playlist_position,
             ps.added_at AS playlist_added_at
           FROM playlists p
           INNER JOIN playlist_songs ps ON ps.playlist_id = p.id
           INNER JOIN songs s ON s.id = ps.song_id
+          LEFT JOIN external_sources es ON es.song_id = s.id
           WHERE p.user_id = ? AND p.id = ? AND s.user_id = ?
           ORDER BY ps.position ASC, ps.added_at ASC, s.id ASC
         `
@@ -888,6 +1300,25 @@ export class SQLitePlaylistRepository {
         };
       });
   }
+}
+
+function songSelectColumns(songAlias: string) {
+  return `
+    ${songAlias}.*,
+    es.id AS external_source_id,
+    es.user_id AS external_source_user_id,
+    es.song_id AS external_source_song_id,
+    es.provider AS external_source_provider,
+    es.source_id AS external_source_source_id,
+    es.canonical_url AS external_source_canonical_url,
+    es.original_title AS external_source_original_title,
+    es.original_uploader AS external_source_original_uploader,
+    es.thumbnail_url AS external_source_thumbnail_url,
+    es.import_policy_mode AS external_source_import_policy_mode,
+    es.provenance_json AS external_source_provenance_json,
+    es.created_at AS external_source_created_at,
+    es.updated_at AS external_source_updated_at
+  `;
 }
 
 function mapPlaylist(row: Record<string, unknown>): Playlist {
@@ -922,6 +1353,59 @@ function mapSong(row: Record<string, unknown>): Song {
     checksum: String(row.checksum),
     storagePath: String(row.storage_path),
     importStatus: row.import_status as ImportStatus,
+    externalSource: row.external_source_id ? mapExternalSource(row) : null,
+    createdAt: fromSqlDate(row.created_at),
+    updatedAt: fromSqlDate(row.updated_at)
+  };
+}
+
+function mapExternalSource(row: Record<string, unknown>): ExternalSource {
+  return {
+    id: String(row.external_source_id),
+    userId: String(row.external_source_user_id),
+    songId: String(row.external_source_song_id),
+    provider: row.external_source_provider as ExternalSourceProvider,
+    sourceId: String(row.external_source_source_id),
+    canonicalUrl: String(row.external_source_canonical_url),
+    originalTitle: String(row.external_source_original_title),
+    originalUploader: nullableString(row.external_source_original_uploader),
+    thumbnailUrl: nullableString(row.external_source_thumbnail_url),
+    importPolicyMode: row.external_source_import_policy_mode as ImportPolicyMode,
+    provenance: parseJsonObject(row.external_source_provenance_json),
+    createdAt: fromSqlDate(row.external_source_created_at),
+    updatedAt: fromSqlDate(row.external_source_updated_at)
+  };
+}
+
+function mapImportJob(row: Record<string, unknown>): ImportJob {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    songId: String(row.song_id),
+    sourceId: nullableString(row.source_id),
+    status: row.status as ImportStatus,
+    errorCode: nullableString(row.error_code),
+    importPolicyMode: row.import_policy_mode as ImportPolicyMode,
+    retryCount: Number(row.retry_count ?? 0),
+    provenance: parseJsonObject(row.provenance_json),
+    createdAt: fromSqlDate(row.created_at),
+    updatedAt: fromSqlDate(row.updated_at)
+  };
+}
+
+function mapSourcePolicy(row: Record<string, unknown>): SourcePolicy {
+  return {
+    id: String(row.id),
+    provider: row.provider as ExternalSourceProvider,
+    scopeType: row.scope_type as SourcePolicyScopeType,
+    scopeValue: String(row.scope_value),
+    action: row.action as SourcePolicyAction,
+    enabled: Boolean(row.enabled),
+    reason: nullableString(row.reason),
+    licenseType: nullableString(row.license_type),
+    licenseUrl: nullableString(row.license_url),
+    attributionText: nullableString(row.attribution_text),
+    createdByUserId: nullableString(row.created_by_user_id),
     createdAt: fromSqlDate(row.created_at),
     updatedAt: fromSqlDate(row.updated_at)
   };
@@ -946,6 +1430,22 @@ function nullableNumber(value: unknown) {
   return value === null || value === undefined ? null : Number(value);
 }
 
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  if (typeof value !== "string" || value.trim() === "") {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
 function toSqlDate(date: Date) {
   return date.toISOString();
 }
@@ -956,4 +1456,8 @@ function fromSqlDate(value: unknown) {
 
 function likePattern(query: string) {
   return `%${query.trim().replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
+}
+
+function normalizePolicyScopeValue(value: string) {
+  return value.trim().toLowerCase();
 }

@@ -13,7 +13,7 @@ Tunely stores private user libraries on the self-hosted API. The first durable s
 The API uses SQLite with foreign keys enabled on every connection and WAL mode for file-backed databases. The initial migration creates:
 
 - `users`, `oauth_accounts`, `sessions`, and `pending_session_exchanges`
-- `songs`, `playlists`, `playlist_songs`, `likes`, `playback_state`, and `import_jobs`
+- `songs`, `external_sources`, `playlists`, `playlist_songs`, `likes`, `playback_state`, and `import_jobs`
 - indexes for session lookup, user library reads, search inputs, playlist ordering, likes, and import job status
 
 Repository methods for user-owned song data require `userId` alongside resource IDs. Playlist membership writes also verify that both the playlist and song belong to the same user.
@@ -22,6 +22,7 @@ Repository methods for user-owned song data require `userId` alongside resource 
 
 Deleting a song removes rows that only make sense while the song exists:
 
+- `external_sources` cascades on song delete.
 - `playlist_songs` cascades on song delete.
 - `likes` cascades on song delete.
 - `import_jobs` cascades on song delete.

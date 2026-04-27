@@ -8,10 +8,29 @@ export const IMPORT_POLICY_MODES = [
 
 export type ImportPolicyMode = (typeof IMPORT_POLICY_MODES)[number];
 
+export const EXTERNAL_SOURCE_PROVIDERS = ["youtube"] as const;
+
+export type ExternalSourceProvider = (typeof EXTERNAL_SOURCE_PROVIDERS)[number];
+
+export const IMPORT_ELIGIBILITY_STATES = [
+  "importable",
+  "review_required",
+  "preview_only",
+  "blocked"
+] as const;
+
+export type ImportEligibilityState = (typeof IMPORT_ELIGIBILITY_STATES)[number];
+
 export interface ImportPolicyModeCopy {
   badge: string;
   description: string;
   label: string;
+}
+
+export interface ImportEligibility {
+  state: ImportEligibilityState;
+  reasonCode: string;
+  message: string;
 }
 
 export const IMPORT_POLICY_MODE_COPY: Record<ImportPolicyMode, ImportPolicyModeCopy> = {
@@ -72,10 +91,89 @@ export interface AudioImportMetadata {
   sizeBytes: number;
 }
 
+export interface SerializedExternalSource {
+  id: string;
+  provider: ExternalSourceProvider;
+  sourceId: string;
+  canonicalUrl: string;
+  originalTitle: string;
+  originalUploader: string | null;
+  thumbnailUrl: string | null;
+  importPolicyMode: ImportPolicyMode;
+  provenance: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExternalDiscoveryResult {
+  provider: ExternalSourceProvider;
+  sourceId: string;
+  canonicalUrl: string;
+  title: string;
+  creator: string | null;
+  thumbnailUrl: string | null;
+  durationMs: number | null;
+  description: string | null;
+  importPolicyMode: ImportPolicyMode;
+  eligibility?: ImportEligibility;
+  attributionText?: string | null;
+  licenseType?: string | null;
+  licenseUrl?: string | null;
+}
+
+export interface ExternalDiscoveryResponse {
+  results: ExternalDiscoveryResult[];
+  nextPageToken: string | null;
+}
+
+export type SerializedImportStatus = "pending" | "ready" | "failed";
+
+export interface SerializedExternalImportJob {
+  id: string;
+  userId: string;
+  songId: string;
+  sourceId: string | null;
+  status: SerializedImportStatus;
+  errorCode: string | null;
+  importPolicyMode: ImportPolicyMode;
+  retryCount: number;
+  provenance: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SerializedSongExternalSourceInput {
+  id: string;
+  provider: ExternalSourceProvider;
+  sourceId: string;
+  canonicalUrl: string;
+  originalTitle: string;
+  originalUploader: string | null;
+  thumbnailUrl: string | null;
+  importPolicyMode: ImportPolicyMode;
+  provenance: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export function isImportPolicyMode(value: unknown): value is ImportPolicyMode {
   return (
     typeof value === "string" &&
     IMPORT_POLICY_MODES.includes(value as ImportPolicyMode)
+  );
+}
+
+export function isExternalSourceProvider(value: unknown): value is ExternalSourceProvider {
+  return (
+    typeof value === "string" &&
+    EXTERNAL_SOURCE_PROVIDERS.includes(value as ExternalSourceProvider)
+  );
+}
+
+export function isImportEligibilityState(value: unknown): value is ImportEligibilityState {
+  return (
+    typeof value === "string" &&
+    IMPORT_ELIGIBILITY_STATES.includes(value as ImportEligibilityState)
   );
 }
 
@@ -88,6 +186,52 @@ export function parseImportPolicyMode(
 
 export function getImportPolicyModeCopy(mode: ImportPolicyMode): ImportPolicyModeCopy {
   return IMPORT_POLICY_MODE_COPY[mode];
+}
+
+export function serializeExternalSource(
+  source: SerializedSongExternalSourceInput
+): SerializedExternalSource {
+  return {
+    id: source.id,
+    provider: source.provider,
+    sourceId: source.sourceId,
+    canonicalUrl: source.canonicalUrl,
+    originalTitle: source.originalTitle,
+    originalUploader: source.originalUploader,
+    thumbnailUrl: source.thumbnailUrl,
+    importPolicyMode: source.importPolicyMode,
+    provenance: source.provenance,
+    createdAt: source.createdAt.toISOString(),
+    updatedAt: source.updatedAt.toISOString()
+  };
+}
+
+export function serializeExternalImportJob(input: {
+  id: string;
+  userId: string;
+  songId: string;
+  sourceId: string | null;
+  status: SerializedImportStatus;
+  errorCode: string | null;
+  importPolicyMode: ImportPolicyMode;
+  retryCount: number;
+  provenance: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}): SerializedExternalImportJob {
+  return {
+    id: input.id,
+    userId: input.userId,
+    songId: input.songId,
+    sourceId: input.sourceId,
+    status: input.status,
+    errorCode: input.errorCode,
+    importPolicyMode: input.importPolicyMode,
+    retryCount: input.retryCount,
+    provenance: input.provenance,
+    createdAt: input.createdAt.toISOString(),
+    updatedAt: input.updatedAt.toISOString()
+  };
 }
 
 export function validateAudioImportMetadata(

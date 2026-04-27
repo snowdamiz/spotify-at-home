@@ -1,3 +1,4 @@
+import { serializeExternalSource } from "@tunely/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { readAccessToken } from "../auth/routes.js";
 import { AuthError, type AuthService, type PublicUser } from "../auth/service.js";
@@ -413,6 +414,7 @@ function serializeSong(song: Song) {
     checksum: song.checksum,
     storagePath: song.storagePath,
     importStatus: song.importStatus,
+    externalSource: song.externalSource ? serializeExternalSource(song.externalSource) : null,
     createdAt: song.createdAt.toISOString(),
     updatedAt: song.updatedAt.toISOString()
   };

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   closeTunelyDatabase,
+  migrations,
   openTunelyDatabase,
   runMigrations,
   SQLitePlaylistRepository,
@@ -43,6 +44,7 @@ describe("Phase 3 SQLite schema and repositories", () => {
         "likes",
         "playback_state",
         "import_jobs",
+        "external_sources",
         "schema_migrations"
       ])
     );
@@ -50,7 +52,7 @@ describe("Phase 3 SQLite schema and repositories", () => {
     expect(String(pragmaValue(db, "journal_mode")).toLowerCase()).toBe("wal");
     expect(
       db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()
-    ).toMatchObject({ count: 1 });
+    ).toMatchObject({ count: migrations.length });
   });
 
   it("keeps song reads scoped to the requesting user", () => {

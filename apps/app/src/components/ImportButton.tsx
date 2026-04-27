@@ -41,13 +41,21 @@ export function ImportButton({ compact = false, tone = "green", onImported }: Im
         StyleSheet.flatten([
           styles.button,
           compact ? styles.compact : styles.full,
-          tone === "light" ? styles.light : styles.green,
+          compact ? styles.compactBare : tone === "light" ? styles.light : styles.green,
           isImporting ? styles.disabled : null,
           pressed ? styles.pressed : null
         ])
       }
     >
-      <Text style={StyleSheet.flatten([styles.icon, compact ? styles.compactIcon : null])}>↥</Text>
+      <Text
+        style={StyleSheet.flatten([
+          styles.icon,
+          compact ? styles.compactIcon : null,
+          compact && tone === "light" ? styles.mutedIcon : null
+        ])}
+      >
+        ↥
+      </Text>
       {!compact ? (
         <Text
           style={StyleSheet.flatten([
@@ -74,9 +82,12 @@ const styles = StyleSheet.create({
     height: 44,
     width: 44
   },
+  compactBare: {
+    backgroundColor: "transparent"
+  },
   compactIcon: {
-    fontSize: 22,
-    lineHeight: 24
+    fontSize: 30,
+    lineHeight: 32
   },
   darkLabel: {
     color: colors.ink
@@ -106,6 +117,9 @@ const styles = StyleSheet.create({
   },
   lightLabel: {
     color: colors.ink
+  },
+  mutedIcon: {
+    color: colors.muted
   },
   pressed: {
     opacity: 0.85,

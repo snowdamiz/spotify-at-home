@@ -1,4 +1,11 @@
-import { getImportPolicyModeCopy, type ImportPolicyMode } from "@tunely/shared";
+import {
+  getImportPolicyModeCopy,
+  type ExternalDiscoveryResponse,
+  type ExternalDiscoveryResult,
+  type ImportPolicyMode,
+  type SerializedExternalImportJob,
+  type SerializedExternalSource
+} from "@tunely/shared";
 import { apiBaseUrl, apiUrl } from "../api/config";
 
 export interface ServerSong {
@@ -11,6 +18,7 @@ export interface ServerSong {
   mimeType: string;
   sizeBytes: number;
   importStatus: "ready";
+  externalSource?: SerializedExternalSource | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -76,6 +84,74 @@ export async function fetchImportPolicy() {
   const payload = (await response.json()) as { importPolicy: ServerImportPolicy };
 
   return payload.importPolicy;
+}
+
+export async function discoverYouTubeUrl(url: string) {
+  const response = await fetch(`${apiBaseUrl()}/api/external-discovery/youtube`, {
+    body: JSON.stringify({ url }),
+    credentials: "include",
+    headers: {
+      "content-type": "application/json"
+    },
+    method: "POST"
+  });
+
+  if (response.status === 401) {
+    return { status: "anonymous" as const, discovery: null };
+  }
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as
+      | { error?: { message?: string } }
+      | null;
+    throw new Error(payload?.error?.message ?? `External discovery failed with status ${response.status}`);
+  }
+
+  const payload = (await response.json()) as {
+    discovery: ExternalDiscoveryResponse & { importPolicy: ServerImportPolicy };
+  };
+
+  return { status: "authenticated" as const, discovery: payload.discovery };
+}
+
+export async function importYouTubeDiscovery(discovery: ExternalDiscoveryResult) {
+  const response = await fetch(`${apiBaseUrl()}/api/external-imports/youtube`, {
+    body: JSON.stringify({ discovery }),
+    credentials: "include",
+    headers: {
+      "content-type": "application/json"
+    },
+    method: "POST"
+  });
+
+  if (response.status === 401) {
+    return {
+      alreadyInLibrary: false,
+      job: null,
+      song: null,
+      status: "anonymous" as const
+    };
+  }
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as
+      | { error?: { message?: string } }
+      | null;
+    throw new Error(payload?.error?.message ?? `External import failed with status ${response.status}`);
+  }
+
+  const payload = (await response.json()) as {
+    alreadyInLibrary: boolean;
+    job: SerializedExternalImportJob | null;
+    song: ServerSong;
+  };
+
+  return {
+    alreadyInLibrary: payload.alreadyInLibrary,
+    job: payload.job,
+    song: payload.song,
+    status: "authenticated" as const
+  };
 }
 
 export async function fetchSongs() {

@@ -11,11 +11,17 @@ export {
   SQLiteUserRepository
 } from "./repositories.js";
 export type {
+  ExternalSource,
   ImportStatus,
+  ImportJob,
   LibraryUser,
   Playlist,
   PlaylistSong,
   PlaylistSummary,
   RepeatMode,
+  SourcePolicy,
+  SourcePolicyAction,
+  SourcePolicyScopeType,
   Song
 } from "./repositories.js";
+export { ExternalSourceAlreadyInLibraryError } from "./repositories.js";

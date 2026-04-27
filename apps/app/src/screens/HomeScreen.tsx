@@ -1,9 +1,13 @@
 import { Link } from "expo-router";
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import type { ViewStyle } from "react-native";
 import { AppHeader } from "../components/AppHeader";
 import { AppShell } from "../components/AppShell";
+import { ImportButton } from "../components/ImportButton";
 import { PlaylistArtwork } from "../components/PlaylistArtwork";
+import { PlaylistCard } from "../components/PlaylistCard";
 import { PlaylistShortcut } from "../components/PlaylistShortcut";
+import { mockPlaylists } from "../data/mockCatalog";
 import { songSubtitle } from "../library/songsApi";
 import { useLibrarySummary } from "../library/useSongs";
 import { colors, radius, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
@@ -14,6 +18,20 @@ export function HomeScreen() {
   const library = useLibrarySummary();
   const summary = library.summary;
   const greeting = greetingForHour(new Date().getHours());
+  const sidebarWidth = isWide ? 390 : 0;
+  const shellChromeWidth = isWide ? spacing.sm * 3 : spacing.lg * 2;
+  const estimatedContentWidth = Math.max(320, Math.min(width - sidebarWidth - shellChromeWidth, 1360));
+  const quickColumnCount = isWide ? (estimatedContentWidth >= 760 ? 3 : 2) : 1;
+  const recommendationColumnCount = estimatedContentWidth >= 1040 ? 4 : estimatedContentWidth >= 620 ? 2 : 1;
+  const quickCardWidth: ViewStyle["width"] = isWide
+    ? Math.floor((estimatedContentWidth - spacing.sm * (quickColumnCount - 1)) / quickColumnCount)
+    : "100%";
+  const recommendationCardWidth: ViewStyle["width"] = Math.floor(
+    (estimatedContentWidth - spacing.lg * (recommendationColumnCount - 1)) / recommendationColumnCount
+  );
+
+  const quickCardStyle = { width: quickCardWidth } as ViewStyle;
+  const recommendationCardStyle = { width: recommendationCardWidth } as ViewStyle;
 
   return (
     <AppShell activeRoute="home">
@@ -22,100 +40,67 @@ export function HomeScreen() {
         <Text style={StyleSheet.flatten([styles.greeting, isWide ? styles.desktopGreeting : null])}>{greeting}</Text>
         <Text style={styles.subtitle}>Your music, anywhere you go.</Text>
       </View>
-      <View style={styles.shortcuts}>
-        <PlaylistShortcut variant="import" />
-        <Link href="/playlist/imported-songs" asChild>
-          <Pressable
-            accessibilityRole="link"
-            style={({ pressed }) =>
-              StyleSheet.flatten([
-                styles.shortcutCard,
-                isWide ? styles.desktopShortcutCard : styles.mobileShortcutCard,
-                pressed ? styles.shortcutCardPressed : null
-              ])
-            }
-          >
-            <View style={StyleSheet.flatten([styles.shortcutArt, styles.importedArt])}>
-              <Text style={styles.importedArtText}>♪</Text>
-            </View>
-            <View style={styles.shortcutTextWrap}>
-              <Text numberOfLines={1} style={styles.shortcutTitle}>
-                Imported Songs
-              </Text>
-              <Text numberOfLines={1} style={styles.shortcutMeta}>
-                {library.status === "authenticated"
-                  ? `${summary.counts.songs} ${summary.counts.songs === 1 ? "song" : "songs"}`
-                  : library.status === "loading"
-                    ? "Loading…"
-                    : "Sign in to sync"}
-              </Text>
-            </View>
-          </Pressable>
-        </Link>
-        <Link href="/playlist/liked-songs" asChild>
-          <Pressable
-            accessibilityRole="link"
-            style={({ pressed }) =>
-              StyleSheet.flatten([
-                styles.shortcutCard,
-                isWide ? styles.desktopShortcutCard : styles.mobileShortcutCard,
-                pressed ? styles.shortcutCardPressed : null
-              ])
-            }
-          >
-            <View style={StyleSheet.flatten([styles.shortcutArt, styles.likedArt])}>
-              <Text style={styles.likedArtText}>♥</Text>
-            </View>
-            <View style={styles.shortcutTextWrap}>
-              <Text numberOfLines={1} style={styles.shortcutTitle}>
-                Liked Songs
-              </Text>
-              <Text numberOfLines={1} style={styles.shortcutMeta}>
-                {summary.counts.likedSongs} {summary.counts.likedSongs === 1 ? "song" : "songs"}
-              </Text>
-            </View>
-          </Pressable>
-        </Link>
-        {summary.playlists.slice(0, 5).map((playlist) => (
-          <PlaylistShortcut key={playlist.id} playlist={playlist} />
+      <View style={StyleSheet.flatten([styles.featuredRow, isWide ? styles.featuredRowWide : null])}>
+        <PlaylistShortcut style={quickCardStyle} variant="import" />
+        {mockPlaylists.slice(0, 5).map((playlist) => (
+          <PlaylistShortcut key={playlist.id} playlist={playlist} style={quickCardStyle} />
         ))}
       </View>
-      <Text style={styles.sectionTitle}>Recent imports</Text>
-      <View style={styles.cards}>
-        {library.status === "loading" ? (
-          <Text style={styles.emptyText}>Loading your server library…</Text>
-        ) : library.status === "anonymous" ? (
-          <Text style={styles.emptyText}>Log in to see imported songs from your Tunely server.</Text>
-        ) : library.status === "error" ? (
-          <Text style={styles.emptyText}>Could not reach the Tunely server.</Text>
-        ) : summary.recentSongs.length ? (
-          summary.recentSongs.slice(0, 8).map((song) => (
-            <Link href={`/now-playing?id=${song.id}`} asChild key={song.id}>
-              <Pressable
-                accessibilityRole="link"
-                accessibilityLabel={`Play ${song.title}`}
-                style={({ pressed }) =>
-                  StyleSheet.flatten([styles.songCard, pressed ? styles.songCardPressed : null])
-                }
-              >
-                <PlaylistArtwork
-                  playlist={{ name: song.title, color: colors.greenDark }}
-                  size="100%"
-                />
-                <Text numberOfLines={1} style={styles.songTitle}>
-                  {song.title}
-                </Text>
-                <Text numberOfLines={1} style={styles.songSubtitle}>
-                  {songSubtitle(song)}
-                </Text>
-              </Pressable>
-            </Link>
-          ))
-        ) : (
-          <Text style={styles.emptyText}>No imports yet. Add a song to make this page yours.</Text>
-        )}
+      <Text style={styles.sectionTitle}>Made for you</Text>
+      <View style={styles.recommendationGrid}>
+        {mockPlaylists.map((playlist) => (
+          <PlaylistCard key={playlist.id} playlist={playlist} style={recommendationCardStyle} />
+        ))}
       </View>
+      {summary.recentSongs.length ? (
+        <>
+          <Text style={styles.sectionTitle}>Recent imports</Text>
+          <View style={styles.cards}>
+            {summary.recentSongs.slice(0, 8).map((song) => (
+              <Link href={`/now-playing?id=${song.id}`} asChild key={song.id}>
+                <Pressable
+                  accessibilityRole="link"
+                  accessibilityLabel={`Play ${song.title}`}
+                  style={({ pressed }) =>
+                    StyleSheet.flatten([styles.songCard, pressed ? styles.songCardPressed : null])
+                  }
+                >
+                  <PlaylistArtwork
+                    playlist={{ name: song.title, color: colors.greenDark }}
+                    size="100%"
+                  />
+                  <Text numberOfLines={1} style={styles.songTitle}>
+                    {song.title}
+                  </Text>
+                  <Text numberOfLines={1} style={styles.songSubtitle}>
+                    {songSubtitle(song)}
+                  </Text>
+                </Pressable>
+              </Link>
+            ))}
+          </View>
+        </>
+      ) : library.status === "loading" ? (
+        <StatusPanel tone="loading" text="Loading your server library…" />
+      ) : library.status === "error" ? (
+        <StatusPanel tone="error" text="Could not reach the Tunely server." />
+      ) : (
+        <View style={styles.emptyLibraryPanel}>
+          <Text style={styles.emptyTitle}>Your library is empty</Text>
+          <Text style={styles.emptyText}>Import audio files from your device to start listening.</Text>
+          <ImportButton compact={false} />
+        </View>
+      )}
     </AppShell>
+  );
+}
+
+function StatusPanel({ text, tone }: { text: string; tone: "error" | "loading" | "locked" }) {
+  return (
+    <View style={styles.statusPanel}>
+      <View style={StyleSheet.flatten([styles.statusDot, tone === "error" ? styles.statusDotError : null])} />
+      <Text style={styles.emptyText}>{text}</Text>
+    </View>
   );
 }
 
@@ -142,92 +127,69 @@ const styles = StyleSheet.create({
     gap: spacing.md
   },
   desktopGreeting: {
-    fontSize: 32,
-    lineHeight: 38
-  },
-  desktopShortcutCard: {
-    width: "32%"
+    fontSize: 46,
+    lineHeight: 52
   },
   emptyText: {
     color: colors.muted,
-    fontSize: 15
+    fontSize: 21,
+    lineHeight: 30,
+    marginBottom: spacing.lg,
+    maxWidth: 560,
+    textAlign: "center"
   },
-  greeting: {
+  emptyLibraryPanel: {
+    alignItems: "center",
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    borderStyle: "dashed",
+    borderWidth: 1,
+    marginTop: spacing.xxl,
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.xl,
+    width: "100%"
+  },
+  emptyTitle: {
     color: colors.text,
     fontSize: 28,
     fontWeight: "900",
-    letterSpacing: -0.5,
-    lineHeight: 34
+    marginBottom: spacing.md,
+    textAlign: "center"
   },
-  hero: {
+  featuredRow: {
+    flexDirection: "column",
+    gap: spacing.sm,
     marginTop: spacing.lg
   },
-  importedArt: {
-    backgroundColor: colors.greenDark
-  },
-  importedArtText: {
-    color: colors.green,
-    fontSize: 22,
-    fontWeight: "900"
-  },
-  likedArt: {
-    backgroundColor: "#3d2c69"
-  },
-  likedArtText: {
-    color: "#dadcff",
-    fontSize: 22,
-    fontWeight: "900"
-  },
-  mobileShortcutCard: {
-    width: "100%"
-  },
-  sectionTitle: {
-    color: colors.text,
-    fontSize: 22,
-    fontWeight: "800",
-    letterSpacing: -0.3,
-    marginBottom: spacing.md,
-    marginTop: spacing.xl
-  },
-  shortcutArt: {
-    alignItems: "center",
-    alignSelf: "stretch",
-    height: 56,
-    justifyContent: "center",
-    width: 56
-  },
-  shortcutCard: {
-    alignItems: "center",
-    backgroundColor: colors.cardRaised,
-    borderRadius: radius.md,
-    flexDirection: "row",
-    gap: spacing.md,
-    minHeight: 56,
-    overflow: "hidden",
-    paddingRight: spacing.md
-  },
-  shortcutCardPressed: {
-    backgroundColor: colors.cardHover
-  },
-  shortcutMeta: {
-    color: colors.muted,
-    fontSize: 12,
-    marginTop: 2
-  },
-  shortcutTextWrap: {
-    flexShrink: 1,
-    minWidth: 0
-  },
-  shortcutTitle: {
-    color: colors.text,
-    fontSize: 14,
-    fontWeight: "700"
-  },
-  shortcuts: {
+  featuredRowWide: {
+    alignItems: "stretch",
     flexDirection: "row",
     flexWrap: "wrap",
     gap: spacing.sm,
-    marginTop: spacing.lg
+    width: "100%"
+  },
+  greeting: {
+    color: colors.text,
+    fontSize: 38,
+    fontWeight: "900",
+    letterSpacing: 0,
+    lineHeight: 44
+  },
+  hero: {
+    marginTop: spacing.xl
+  },
+  recommendationGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.lg
+  },
+  sectionTitle: {
+    color: colors.text,
+    fontSize: 32,
+    fontWeight: "900",
+    letterSpacing: 0,
+    marginBottom: spacing.lg,
+    marginTop: spacing.xxl
   },
   songCard: {
     backgroundColor: colors.card,
@@ -256,5 +218,25 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: 14,
     marginTop: spacing.xs
+  },
+  statusDot: {
+    backgroundColor: colors.green,
+    borderRadius: 999,
+    height: 8,
+    width: 8
+  },
+  statusDotError: {
+    backgroundColor: "#f15d5d"
+  },
+  statusPanel: {
+    alignItems: "center",
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: spacing.sm,
+    padding: spacing.md,
+    width: "100%"
   }
 });

@@ -9,6 +9,14 @@ import {
   createImportPolicyRuntimeConfig,
   type ImportPolicyRuntimeConfig
 } from "./import-policy/policy.js";
+import {
+  registerExternalDiscoveryRoutes,
+  type ExternalDiscoveryRoutesOptions
+} from "./external-discovery/routes.js";
+import {
+  registerExternalImportRoutes,
+  type ExternalImportRoutesOptions
+} from "./external-imports/routes.js";
 import { registerImportPolicyRoutes } from "./import-policy/routes.js";
 import { registerLibraryRoutes } from "./library/routes.js";
 import { registerSongRoutes, type SongRoutesOptions } from "./songs/routes.js";
@@ -16,6 +24,8 @@ import { registerSongRoutes, type SongRoutesOptions } from "./songs/routes.js";
 export interface CreateApiAppOptions {
   auth?: Partial<AuthRoutesOptions>;
   db?: SqliteDatabase;
+  externalDiscovery?: Partial<Omit<ExternalDiscoveryRoutesOptions, "authService">>;
+  externalImports?: Partial<Omit<ExternalImportRoutesOptions, "authService" | "songRepository">>;
   importPolicy?: Partial<ImportPolicyRuntimeConfig>;
   songs?: Partial<Omit<SongRoutesOptions, "authService" | "songRepository">>;
 }
@@ -38,7 +48,11 @@ export function createApiApp(options: CreateApiAppOptions = {}) {
     googleClientId: process.env.GOOGLE_CLIENT_ID ?? "",
     googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
     googleRedirectUri: process.env.GOOGLE_REDIRECT_URI ?? "",
-    allowedReturnToOrigins: process.env.APP_WEB_ORIGIN ? [process.env.APP_WEB_ORIGIN] : [],
+    allowedReturnToOrigins: [
+      process.env.APP_WEB_ORIGIN,
+      "http://localhost:3000",
+      "http://127.0.0.1:3000"
+    ].filter((origin): origin is string => Boolean(origin)),
     authRepository: new SQLiteAuthRepository(db),
     ...options.auth
   };
@@ -57,6 +71,18 @@ export function createApiApp(options: CreateApiAppOptions = {}) {
   registerImportPolicyRoutes(app, {
     authService,
     importPolicyConfig
+  });
+  registerExternalDiscoveryRoutes(app, {
+    authService,
+    importPolicyConfig,
+    songRepository,
+    ...options.externalDiscovery
+  });
+  registerExternalImportRoutes(app, {
+    authService,
+    importPolicyConfig,
+    songRepository,
+    ...options.externalImports
   });
   registerSongRoutes(app, {
     authService,
@@ -83,6 +109,8 @@ function registerCors(app: FastifyInstance) {
   const allowedOrigins = new Set(
     [
       process.env.APP_WEB_ORIGIN,
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
       "http://localhost:8081",
       "http://localhost:8082",
       "http://127.0.0.1:8081",

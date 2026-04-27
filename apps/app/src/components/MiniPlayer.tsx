@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "expo-router";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { fetchSong, songSubtitle, type ServerSong } from "../library/songsApi";
-import { colors, radius, spacing } from "../theme/tokens";
+import { colors, radius, spacing, WEB_SIDEBAR_BREAKPOINT } from "../theme/tokens";
 
 type MiniPlayerProps = {
   trackId?: string;
@@ -10,6 +10,8 @@ type MiniPlayerProps = {
 
 export function MiniPlayer({ trackId }: MiniPlayerProps) {
   const [currentTrack, setCurrentTrack] = useState<ServerSong | null>(null);
+  const { width } = useWindowDimensions();
+  const isWide = width >= WEB_SIDEBAR_BREAKPOINT;
 
   useEffect(() => {
     let mounted = true;
@@ -39,7 +41,11 @@ export function MiniPlayer({ trackId }: MiniPlayerProps) {
   }, [trackId]);
 
   if (!currentTrack) {
-    return null;
+    return isWide ? (
+      <View style={styles.placeholder}>
+        <Text style={styles.placeholderText}>Import a song to start listening.</Text>
+      </View>
+    ) : null;
   }
 
   return (
@@ -109,6 +115,21 @@ const styles = StyleSheet.create({
   },
   playerPressed: {
     backgroundColor: colors.cardHover
+  },
+  placeholder: {
+    alignItems: "center",
+    borderColor: colors.border,
+    borderTopWidth: 1,
+    justifyContent: "center",
+    minHeight: 148,
+    paddingHorizontal: spacing.lg,
+    width: "100%"
+  },
+  placeholderText: {
+    color: colors.muted,
+    fontSize: 18,
+    fontWeight: "700",
+    textAlign: "center"
   },
   title: {
     color: colors.text,

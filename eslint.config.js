@@ -8,18 +8,31 @@ export default tseslint.config(
     ignores: [
       "**/dist/**",
       "**/.expo/**",
+      "**/.next/**",
       "**/node_modules/**"
     ]
   },
   {
     files: [
+      "**/*.js",
+      "**/*.mjs",
       "**/*.ts",
       "**/*.tsx"
     ],
     languageOptions: {
       globals: {
         console: "readonly",
-        process: "readonly"
+        document: "readonly",
+        File: "readonly",
+        FileList: "readonly",
+        FileReader: "readonly",
+        HTMLAudioElement: "readonly",
+        process: "readonly",
+        setInterval: "readonly",
+        setTimeout: "readonly",
+        clearInterval: "readonly",
+        URL: "readonly",
+        window: "readonly"
       }
     },
     rules: {

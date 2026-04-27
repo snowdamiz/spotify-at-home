@@ -5,7 +5,9 @@ import { join } from "node:path";
 import {
   AUDIO_IMPORT_LIMITS,
   isImportPolicyMode,
+  serializeExternalSource,
   validateAudioImportMetadata,
+  type ImportPolicyMode,
   type AudioImportValidationError
 } from "@tunely/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -59,16 +61,19 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
     }
 
     const body = (request.body && typeof request.body === "object" ? request.body : {}) as ImportPayload;
+    let importPolicyMode: ImportPolicyMode = "licensed_only";
 
     if (body.importPolicyMode !== undefined) {
       if (!isImportPolicyMode(body.importPolicyMode)) {
         return sendSongError(reply, "invalid_import_policy_mode", "Import policy mode is invalid.", 400);
       }
 
+      importPolicyMode = body.importPolicyMode;
+
       try {
         assertImportPolicyAllowsRequestedMode({
           config: importPolicyConfig,
-          requestedMode: body.importPolicyMode,
+          requestedMode: importPolicyMode,
           user
         });
       } catch (error) {
@@ -129,6 +134,7 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
     options.songRepository.createImportJob({
       userId: user.id,
       songId: song.id,
+      importPolicyMode,
       status: "pending"
     });
 
@@ -454,6 +460,7 @@ function serializeSong(song: Song) {
     checksum: song.checksum,
     storagePath: song.storagePath,
     importStatus: song.importStatus,
+    externalSource: song.externalSource ? serializeExternalSource(song.externalSource) : null,
     createdAt: song.createdAt.toISOString(),
     updatedAt: song.updatedAt.toISOString()
   };
