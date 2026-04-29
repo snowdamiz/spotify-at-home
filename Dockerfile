@@ -5,7 +5,7 @@ WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates ffmpeg python3 \
+  && apt-get install -y --no-install-recommends ca-certificates ffmpeg procps python3 \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json tsconfig.json tsconfig.base.json ./

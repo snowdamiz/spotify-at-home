@@ -252,6 +252,16 @@ export function AdminView({ songs, onTracksWiped }: AdminViewProps) {
         : 0,
     [storage],
   )
+  const storageDriverLabel = storage
+    ? storage.driver === 'r2'
+      ? 'Cloudflare R2'
+      : 'Local disk'
+    : 'Unavailable'
+  const storageDriverDescription = storage
+    ? storage.driver === 'r2'
+      ? 'Audio served from R2'
+      : 'Audio served from local disk'
+    : 'Storage audit could not load'
 
   const filteredObjects = useMemo(() => {
     if (!storage) return []
@@ -331,11 +341,19 @@ export function AdminView({ songs, onTracksWiped }: AdminViewProps) {
           icon={
             storage?.driver === 'r2' ? (
               <Cloud className="h-4 w-4" />
-            ) : (
+            ) : storage ? (
               <HardDrive className="h-4 w-4" />
+            ) : (
+              <Database className="h-4 w-4" />
             )
           }
-          label={storage?.driver === 'r2' ? 'R2 objects' : 'Stored objects'}
+          label={
+            storage?.driver === 'r2'
+              ? 'R2 objects'
+              : storage
+                ? 'Stored objects'
+                : 'Storage'
+          }
           primary={
             storageLoading
               ? '—'
@@ -356,18 +374,8 @@ export function AdminView({ songs, onTracksWiped }: AdminViewProps) {
         <StatCard
           icon={<Database className="h-4 w-4" />}
           label="Storage driver"
-          primary={
-            storageLoading
-              ? '—'
-              : storage?.driver === 'r2'
-                ? 'Cloudflare R2'
-                : 'Local disk'
-          }
-          secondary={
-            storage?.driver === 'r2'
-              ? 'Audio served from R2'
-              : 'Audio served from local disk'
-          }
+          primary={storageLoading ? '—' : storageDriverLabel}
+          secondary={storageLoading ? 'Loading…' : storageDriverDescription}
         />
       </section>
 

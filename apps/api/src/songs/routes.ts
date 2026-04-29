@@ -74,6 +74,8 @@ interface NormalizedImportPayload {
   title?: unknown;
 }
 
+const STORAGE_DELETE_CONCURRENCY = 6;
+
 export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOptions) {
   const audioStorage =
     options.audioStorage ??
@@ -322,6 +324,12 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
           retainedStoredObjects: 0,
           storageCandidates: 0
         };
+
+    if (deletedTracks > 0) {
+      options.libraryEvents?.emitLibraryChanged(user.id, {
+        reason: "account_tracks_wiped"
+      });
+    }
 
     return {
       deletion: {
@@ -710,7 +718,7 @@ async function deleteStoredAudioForWipedAccount(
   storagePaths: string[]
 ) {
   const uniqueStoragePaths = [...new Set(storagePaths)];
-  const summary = {
+  const summary: StorageDeletionSummary = {
     clearedStorageReferences: 0,
     deletedStoredObjects: 0,
     failedStoredObjects: 0,
@@ -718,22 +726,79 @@ async function deleteStoredAudioForWipedAccount(
     storageCandidates: uniqueStoragePaths.length
   };
 
-  for (const storagePath of uniqueStoragePaths) {
-    if (songRepository.countActiveSongsByStoragePath({ storagePath }) > 0) {
-      summary.retainedStoredObjects += 1;
-      continue;
-    }
+  const results = await runWithConcurrency(
+    uniqueStoragePaths,
+    STORAGE_DELETE_CONCURRENCY,
+    async (storagePath): Promise<StorageDeletionSummary> => {
+      if (songRepository.countActiveSongsByStoragePath({ storagePath }) > 0) {
+        return {
+          clearedStorageReferences: 0,
+          deletedStoredObjects: 0,
+          failedStoredObjects: 0,
+          retainedStoredObjects: 1,
+          storageCandidates: 0
+        };
+      }
 
-    try {
-      await deleteStoredAudioObject(audioStorage, storagePath);
-      summary.deletedStoredObjects += 1;
-      summary.clearedStorageReferences += songRepository.clearDeletedSongStoragePath(storagePath);
-    } catch {
-      summary.failedStoredObjects += 1;
+      try {
+        await deleteStoredAudioObject(audioStorage, storagePath);
+        return {
+          clearedStorageReferences: songRepository.clearDeletedSongStoragePath(storagePath),
+          deletedStoredObjects: 1,
+          failedStoredObjects: 0,
+          retainedStoredObjects: 0,
+          storageCandidates: 0
+        };
+      } catch {
+        return {
+          clearedStorageReferences: 0,
+          deletedStoredObjects: 0,
+          failedStoredObjects: 1,
+          retainedStoredObjects: 0,
+          storageCandidates: 0
+        };
+      }
     }
+  );
+
+  for (const result of results) {
+    summary.clearedStorageReferences += result.clearedStorageReferences;
+    summary.deletedStoredObjects += result.deletedStoredObjects;
+    summary.failedStoredObjects += result.failedStoredObjects;
+    summary.retainedStoredObjects += result.retainedStoredObjects;
   }
 
   return summary;
+}
+
+interface StorageDeletionSummary {
+  clearedStorageReferences: number;
+  deletedStoredObjects: number;
+  failedStoredObjects: number;
+  retainedStoredObjects: number;
+  storageCandidates: number;
+}
+
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>
+) {
+  const results: R[] = [];
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, limit), items.length);
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const item = items[nextIndex];
+        nextIndex += 1;
+        results.push(await worker(item));
+      }
+    })
+  );
+
+  return results;
 }
 
 async function deleteStoredAudioObject(audioStorage: AudioStorage, storagePath: string) {

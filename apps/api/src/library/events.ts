@@ -5,6 +5,7 @@ import { AuthError, type AuthService } from "../auth/service.js";
 
 export type LibraryChangeReason =
   | "audio_import_completed"
+  | "account_tracks_wiped"
   | "csv_import_item_completed"
   | "external_import_completed";
 
