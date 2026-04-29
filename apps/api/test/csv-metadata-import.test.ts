@@ -1529,6 +1529,15 @@ describe("CSV metadata imports", () => {
     expect(items.filter((item) => item.status === "pending")).toHaveLength(2);
     expect(items.filter((item) => item.autoRetryable)).toHaveLength(3);
     expect(items.filter((item) => item.errorCode === "youtube_search_unavailable")).toHaveLength(3);
+
+    const active = await app.inject({
+      method: "GET",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(active.statusCode).toBe(200);
+    expect(active.json().batches).toEqual([]);
     expect(youtubeImportAdapter.resolve).not.toHaveBeenCalled();
     expect(youtubeProvider.search).toHaveBeenCalledTimes(3);
   });

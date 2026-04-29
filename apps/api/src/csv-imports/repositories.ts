@@ -207,17 +207,7 @@ export class SQLiteCsvImportRepository {
         `
           SELECT *
           FROM csv_import_batches
-          WHERE user_id = ?
-            AND (
-              status IN ('pending', 'running')
-              OR EXISTS (
-                SELECT 1
-                FROM csv_import_items
-                WHERE csv_import_items.user_id = csv_import_batches.user_id
-                  AND csv_import_items.batch_id = csv_import_batches.id
-                  AND csv_import_items.status = 'pending'
-              )
-            )
+          WHERE user_id = ? AND status IN ('pending', 'running')
           ORDER BY created_at DESC, id ASC
           LIMIT ?
         `

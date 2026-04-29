@@ -425,6 +425,7 @@ function csvImportDownloadFromStoredValue(
   if (
     typeof value.id !== 'string' ||
     typeof value.title !== 'string' ||
+    status !== 'downloading' ||
     (batchIds.length === 0 && !csvImportBatches?.length)
   ) {
     return null
@@ -468,7 +469,7 @@ function csvImportDownloadToStoredValue(download: Download) {
 function shouldPersistCsvImportDownload(download: Download) {
   return (
     isCsvImportDownload(download) &&
-    (download.status === 'downloading' || download.status === 'error') &&
+    download.status === 'downloading' &&
     csvImportBatchIds(download).length > 0
   )
 }
