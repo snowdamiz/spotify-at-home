@@ -1,9 +1,11 @@
-/* global AbortController, Response, caches, clearTimeout, fetch, self */
+/* global AbortController, Request, Response, caches, clearTimeout, fetch, self */
 
-const CACHE_VERSION = 'v2'
+const CACHE_VERSION = 'v3'
 const SHELL_CACHE = `onvibe-shell-${CACHE_VERSION}`
 const RUNTIME_CACHE = `onvibe-runtime-${CACHE_VERSION}`
+const TRACK_THUMBNAIL_CACHE = `onvibe-track-thumbnails-${CACHE_VERSION}`
 const NAVIGATION_TIMEOUT_MS = 3500
+const THUMBNAIL_CACHE_CONCURRENCY = 6
 const APP_SHELL = [
   '/',
   '/manifest.webmanifest',
@@ -39,7 +41,8 @@ self.addEventListener('activate', (event) => {
               (key) =>
                 key.startsWith('onvibe-') &&
                 key !== SHELL_CACHE &&
-                key !== RUNTIME_CACHE,
+                key !== RUNTIME_CACHE &&
+                key !== TRACK_THUMBNAIL_CACHE,
             )
             .map((key) => caches.delete(key)),
         ),
@@ -51,6 +54,11 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') {
     self.skipWaiting()
+    return
+  }
+
+  if (event.data?.type === 'CACHE_TRACK_THUMBNAILS') {
+    event.waitUntil(cacheTrackThumbnails(event.data.urls))
   }
 })
 
@@ -61,7 +69,12 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url)
 
-  if (url.origin !== self.location.origin) return
+  if (url.origin !== self.location.origin) {
+    if (request.destination === 'image') {
+      event.respondWith(cacheFirstThumbnail(request))
+    }
+    return
+  }
 
   if (url.pathname.startsWith('/api/')) {
     event.respondWith(networkOrOfflineJson(request))
@@ -118,7 +131,7 @@ async function cacheFirst(request) {
   try {
     const response = await fetch(request)
 
-    if (response.ok) {
+    if (isCacheableResponse(response)) {
       const cache = await caches.open(cacheNameForRequest(request))
       await cache.put(request, response.clone())
     }
@@ -132,6 +145,62 @@ async function cacheFirst(request) {
 
     throw new Error('OnVibe is offline and this asset is not cached.')
   }
+}
+
+async function cacheFirstThumbnail(request) {
+  const cache = await caches.open(TRACK_THUMBNAIL_CACHE)
+  const cached =
+    (await cache.match(request, { ignoreVary: true })) ??
+    (await cache.match(request.url, { ignoreVary: true }))
+
+  if (cached) return cached
+
+  try {
+    const response = await fetch(request)
+
+    if (isCacheableResponse(response)) {
+      await cache.put(request, response.clone())
+    }
+
+    return response
+  } catch {
+    const placeholder = await caches.match('/placeholder.svg')
+    if (placeholder) return placeholder
+
+    throw new Error('OnVibe is offline and this thumbnail is not cached.')
+  }
+}
+
+async function cacheTrackThumbnails(urls) {
+  if (!Array.isArray(urls) || urls.length === 0) return
+
+  const cache = await caches.open(TRACK_THUMBNAIL_CACHE)
+  const uniqueUrls = [...new Set(urls.filter(isHttpUrl))]
+
+  await runWithConcurrency(
+    uniqueUrls,
+    THUMBNAIL_CACHE_CONCURRENCY,
+    async (url) => {
+      const cached = await cache.match(url, { ignoreVary: true })
+      if (cached) return
+
+      try {
+        const request = new Request(url, {
+          cache: 'force-cache',
+          credentials: 'omit',
+          mode: 'no-cors',
+          referrerPolicy: 'no-referrer',
+        })
+        const response = await fetch(request)
+
+        if (isCacheableResponse(response)) {
+          await cache.put(url, response)
+        }
+      } catch {
+        // Thumbnail warming should never interrupt the app shell.
+      }
+    },
+  )
 }
 
 async function networkOrOfflineJson(request) {
@@ -241,6 +310,35 @@ function cacheNameForRequest(request) {
   return request.destination === 'script' || request.destination === 'style'
     ? SHELL_CACHE
     : RUNTIME_CACHE
+}
+
+function isCacheableResponse(response) {
+  return response.ok || response.type === 'opaque'
+}
+
+function isHttpUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl)
+
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+async function runWithConcurrency(items, limit, worker) {
+  let nextIndex = 0
+  const workerCount = Math.min(Math.max(1, limit), items.length)
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const item = items[nextIndex]
+        nextIndex += 1
+        await worker(item)
+      }
+    }),
+  )
 }
 
 async function fetchWithTimeout(request, timeoutMs) {

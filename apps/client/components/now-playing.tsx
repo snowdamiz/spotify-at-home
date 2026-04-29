@@ -1,5 +1,6 @@
 'use client'
 
+import { useRef, type PointerEvent } from 'react'
 import {
   ChevronDown,
   Heart,
@@ -33,6 +34,16 @@ import {
 import type { PlayingFromLabel } from '@/components/music-app'
 
 type RepeatMode = 'off' | 'all' | 'one'
+type SongSwipeState = {
+  pointerId: number
+  startX: number
+  startY: number
+  latestX: number
+  latestY: number
+}
+
+const SONG_SWIPE_DISTANCE_PX = 72
+const SONG_SWIPE_AXIS_RATIO = 1.35
 
 type NowPlayingProps = {
   open: boolean
@@ -59,6 +70,17 @@ type NowPlayingProps = {
   onSelectQueueItem: (song: Song) => void
   onRemoveFromQueue: (songId: string) => void
   isLikePending?: boolean
+}
+
+function isInteractiveSwipeTarget(target: EventTarget | null) {
+  return (
+    target instanceof Element &&
+    Boolean(
+      target.closest(
+        'button, a, input, textarea, select, [role="button"], [role="menuitem"], [data-swipe-ignore]',
+      ),
+    )
+  )
 }
 
 function formatPlayingFrom(label: PlayingFromLabel | null): {
@@ -109,6 +131,8 @@ export function NowPlaying(props: NowPlayingProps) {
     isLikePending = false,
   } = props
 
+  const songSwipeRef = useRef<SongSwipeState | null>(null)
+
   if (!song) return null
 
   const gradient = song.coverColor
@@ -122,6 +146,62 @@ export function NowPlaying(props: NowPlayingProps) {
   const upcoming =
     currentIdx >= 0 ? queue.slice(currentIdx + 1) : queue.slice(0)
 
+  const handleSongSwipeStart = (event: PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === 'mouse' || isInteractiveSwipeTarget(event.target)) {
+      return
+    }
+
+    songSwipeRef.current = {
+      latestX: event.clientX,
+      latestY: event.clientY,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+    }
+
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId)
+    } catch {
+      // Pointer capture can fail if the browser has already canceled the touch.
+    }
+  }
+
+  const handleSongSwipeMove = (event: PointerEvent<HTMLDivElement>) => {
+    const swipe = songSwipeRef.current
+    if (!swipe || swipe.pointerId !== event.pointerId) return
+
+    swipe.latestX = event.clientX
+    swipe.latestY = event.clientY
+  }
+
+  const handleSongSwipeEnd = (event: PointerEvent<HTMLDivElement>) => {
+    const swipe = songSwipeRef.current
+    if (!swipe || swipe.pointerId !== event.pointerId) return
+
+    songSwipeRef.current = null
+
+    const deltaX = swipe.latestX - swipe.startX
+    const deltaY = swipe.latestY - swipe.startY
+
+    if (
+      Math.abs(deltaX) >= SONG_SWIPE_DISTANCE_PX &&
+      Math.abs(deltaX) > Math.abs(deltaY) * SONG_SWIPE_AXIS_RATIO
+    ) {
+      if (deltaX < 0) {
+        onNext()
+      } else {
+        onPrev()
+      }
+    }
+  }
+
+  const handleSongSwipeCancel = (event: PointerEvent<HTMLDivElement>) => {
+    const swipe = songSwipeRef.current
+    if (swipe?.pointerId === event.pointerId) {
+      songSwipeRef.current = null
+    }
+  }
+
   return (
     <>
       <div
@@ -133,10 +213,14 @@ export function NowPlaying(props: NowPlayingProps) {
         aria-hidden={!open}
         role="dialog"
         aria-label="Now playing"
+        onPointerDown={handleSongSwipeStart}
+        onPointerMove={handleSongSwipeMove}
+        onPointerUp={handleSongSwipeEnd}
+        onPointerCancel={handleSongSwipeCancel}
       >
         <div
           className={cn(
-            'flex h-full w-full flex-col bg-gradient-to-b to-background',
+            'flex h-full w-full touch-pan-y select-none flex-col bg-gradient-to-b to-background',
             gradient,
           )}
         >

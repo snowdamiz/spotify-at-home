@@ -60,6 +60,7 @@ import { useImportPolicy, useLibrarySummary, useSongs } from '@/lib/library-hook
 import { isLikelyYouTubeUrl } from '@/lib/url-import'
 import { toast } from '@/hooks/use-toast'
 import { useOnlineStatus } from '@/hooks/use-online-status'
+import { cacheTrackThumbnails } from '@/lib/track-thumbnail-cache'
 import {
   canStoreOffline,
   deleteOfflineAudio,
@@ -722,6 +723,7 @@ function AuthenticatedMusicApp() {
     useState<ServerPlaylistDetail | null>(null)
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const mediaLoadIdRef = useRef(0)
   const playNextRef = useRef<() => void>(() => undefined)
   const repeatModeRef = useRef<RepeatMode>(repeatMode)
   const canceledCsvImportIdsRef = useRef<Set<string>>(new Set())
@@ -887,6 +889,10 @@ function AuthenticatedMusicApp() {
   }, [userSongs])
 
   useEffect(() => {
+    cacheTrackThumbnails(userSongs.map((song) => song.coverImageUrl))
+  }, [userSongs])
+
+  useEffect(() => {
     const audio = audioRef.current
     if (!audio) return
 
@@ -947,6 +953,9 @@ function AuthenticatedMusicApp() {
     const audio = audioRef.current
     if (!audio) return
 
+    const loadId = mediaLoadIdRef.current + 1
+    mediaLoadIdRef.current = loadId
+
     if (!currentSong) {
       audio.pause()
       audio.removeAttribute('src')
@@ -958,15 +967,20 @@ function AuthenticatedMusicApp() {
 
     let disposed = false
     let objectUrl: string | null = null
+    const songToLoad = currentSong
+    const shouldAutoplay = isPlaying
 
     const loadSong = async () => {
       setProgress(0)
-      setDuration(currentSong.duration || 0)
+      setDuration(songToLoad.duration || 0)
+      audio.pause()
+      audio.removeAttribute('src')
+      audio.load()
 
       try {
-        const offlineBlob = await getOfflineAudioBlob(currentSong)
+        const offlineBlob = await getOfflineAudioBlob(songToLoad)
 
-        if (disposed) return
+        if (disposed || mediaLoadIdRef.current !== loadId) return
 
         if (offlineBlob) {
           objectUrl = URL.createObjectURL(offlineBlob)
@@ -974,34 +988,38 @@ function AuthenticatedMusicApp() {
           audio.src = objectUrl
         } else {
           setOfflineAudio((states) =>
-            states[currentSong.id]?.status === 'downloaded'
-              ? { ...states, [currentSong.id]: { status: 'idle' } }
+            states[songToLoad.id]?.status === 'downloaded'
+              ? { ...states, [songToLoad.id]: { status: 'idle' } }
               : states,
           )
 
-          const cacheIntent = await requestSongCacheIntent(currentSong.id)
+          const cacheIntent = await requestSongCacheIntent(songToLoad.id)
           const streamUrl =
             cacheIntent.status === 'accepted' && cacheIntent.cacheIntent
               ? cacheIntent.cacheIntent.streamUrl
-              : songStreamUrl(currentSong.id)
+              : songStreamUrl(songToLoad.id)
 
-          if (disposed) return
+          if (disposed || mediaLoadIdRef.current !== loadId) return
 
           audio.crossOrigin = 'use-credentials'
           audio.src = streamUrl
         }
         audio.load()
 
-        if (isPlaying) {
+        if (shouldAutoplay) {
           await audio.play()
         }
       } catch {
-        if (disposed) return
+        if (disposed || mediaLoadIdRef.current !== loadId) return
         audio.crossOrigin = 'use-credentials'
-        audio.src = currentSong.url
+        audio.src = songToLoad.url
         audio.load()
-        if (isPlaying) {
-          audio.play().catch(() => setIsPlaying(false))
+        if (shouldAutoplay) {
+          audio.play().catch(() => {
+            if (mediaLoadIdRef.current === loadId) {
+              setIsPlaying(false)
+            }
+          })
         }
       }
     }
@@ -1017,7 +1035,14 @@ function AuthenticatedMusicApp() {
   }, [currentSongId])
 
   const playSong = useCallback(
-    (song: Song, contextQueue?: Song[], from?: PlayingFromLabel) => {
+    (
+      song: Song,
+      contextQueue?: Song[],
+      from?: PlayingFromLabel,
+      options: { preserveQueueOrder?: boolean } = {},
+    ) => {
+      const isCurrentSong = song.id === currentSongId
+
       setCurrentSongId(song.id)
       setIsPlaying(true)
       const baseQueue =
@@ -1025,7 +1050,11 @@ function AuthenticatedMusicApp() {
       // If shuffle is on and the queue has more than one item, shuffle the
       // remaining items but keep the requested song at the front.
       let resolvedQueue = baseQueue
-      if (shuffleEnabled && baseQueue.length > 1) {
+      if (
+        shuffleEnabled &&
+        baseQueue.length > 1 &&
+        !options.preserveQueueOrder
+      ) {
         const rest = baseQueue.filter((item) => item.id !== song.id)
         resolvedQueue = [song, ...shuffleArray(rest)]
       }
@@ -1039,11 +1068,20 @@ function AuthenticatedMusicApp() {
         shuffleEnabled,
         songId: song.id,
       }).catch(() => undefined)
-      setTimeout(() => {
-        audioRef.current?.play().catch(() => setIsPlaying(false))
-      }, 0)
+
+      if (isCurrentSong) {
+        const audio = audioRef.current
+
+        if (audio?.src) {
+          if (audio.ended) {
+            audio.currentTime = 0
+          }
+
+          audio.play().catch(() => setIsPlaying(false))
+        }
+      }
     },
-    [repeatMode, shuffleEnabled],
+    [currentSongId, repeatMode, shuffleEnabled],
   )
 
   const togglePlay = useCallback(() => {
@@ -1088,7 +1126,7 @@ function AuthenticatedMusicApp() {
       return
     }
     const next = list[(idx + 1) % list.length]
-    if (next) playSong(next, list)
+    if (next) playSong(next, list, undefined, { preserveQueueOrder: true })
   }, [currentSongId, playSong, queue, repeatMode, userSongs])
 
   useEffect(() => {
@@ -1107,7 +1145,7 @@ function AuthenticatedMusicApp() {
 
     const idx = list.findIndex((song) => song.id === currentSongId)
     const prev = list[(idx - 1 + list.length) % list.length]
-    if (prev) playSong(prev, list)
+    if (prev) playSong(prev, list, undefined, { preserveQueueOrder: true })
   }, [currentSongId, playSong, queue, userSongs])
 
   const toggleShuffle = useCallback(() => {
@@ -3156,7 +3194,9 @@ function AuthenticatedMusicApp() {
         onPrev={playPrev}
         onNext={playNext}
         onSelectQueueItem={(song) => {
-          playSong(song, queue, playingFromLabel ?? undefined)
+          playSong(song, queue, playingFromLabel ?? undefined, {
+            preserveQueueOrder: true,
+          })
         }}
         onRemoveFromQueue={removeFromQueue}
         isLikePending={currentSong ? likingSongId === currentSong.id : false}
