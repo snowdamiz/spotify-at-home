@@ -1260,26 +1260,56 @@ function createBatchItemsFromPlaylists(input: {
   userId: string;
 }) {
   const itemsBySourceKey = new Map<string, CsvImportItemInput>();
+  const playlistTargetsByName = new Map<string, { id: string; name: string }>();
+  const nextPositionsByPlaylistId = new Map<string, number>();
 
   for (const playlist of input.parsedPlaylists) {
     if (playlist.tracks.length === 0) {
       continue;
     }
 
-    const createdPlaylist = input.playlistRepository.createPlaylist({
-      color: pickPlaylistColor(playlist.playlistName),
-      description: `Imported from ${playlist.fileName}`,
-      name: playlist.playlistName,
-      userId: input.userId
-    });
+    const playlistNameKey = normalizePlaylistNameKey(playlist.playlistName);
+    let targetPlaylist = playlistTargetsByName.get(playlistNameKey);
+
+    if (!targetPlaylist) {
+      const existingPlaylist = input.playlistRepository.findPlaylistByNameForUser({
+        name: playlist.playlistName,
+        userId: input.userId
+      });
+      const playlistForImport =
+        existingPlaylist ??
+        input.playlistRepository.createPlaylist({
+          color: pickPlaylistColor(playlist.playlistName),
+          description: `Imported from ${playlist.fileName}`,
+          name: playlist.playlistName,
+          userId: input.userId
+        });
+
+      targetPlaylist = {
+        id: playlistForImport.id,
+        name: playlistForImport.name
+      };
+      playlistTargetsByName.set(playlistNameKey, targetPlaylist);
+      nextPositionsByPlaylistId.set(
+        targetPlaylist.id,
+        existingPlaylist
+          ? input.playlistRepository.nextSongPosition({
+              playlistId: targetPlaylist.id,
+              userId: input.userId
+            })
+          : 0
+      );
+    }
+
+    const startPosition = nextPositionsByPlaylistId.get(targetPlaylist.id) ?? 0;
     const likeAfterImport = isLikedPlaylistName(playlist.playlistName);
 
     playlist.tracks.forEach((track, index) => {
       const existing = itemsBySourceKey.get(track.sourceKey);
       const target: CsvPlaylistTarget = {
-        playlistId: createdPlaylist.id,
-        playlistName: createdPlaylist.name,
-        position: index
+        playlistId: targetPlaylist.id,
+        playlistName: targetPlaylist.name,
+        position: startPosition + index
       };
 
       if (existing) {
@@ -1304,9 +1334,15 @@ function createBatchItemsFromPlaylists(input: {
         title: track.title
       });
     });
+
+    nextPositionsByPlaylistId.set(targetPlaylist.id, startPosition + playlist.tracks.length);
   }
 
   return [...itemsBySourceKey.values()];
+}
+
+function normalizePlaylistNameKey(name: string) {
+  return name.trim().toLowerCase();
 }
 
 function csvProvenance(

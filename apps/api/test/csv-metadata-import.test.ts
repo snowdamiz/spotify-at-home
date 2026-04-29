@@ -166,6 +166,104 @@ describe("CSV metadata imports", () => {
     ]);
   });
 
+  it("merges CSV imports into an existing same-name playlist", async () => {
+    const youtubeProvider = createYouTubeProvider();
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app, db, storageRoot } = createTestApp({
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const user = db
+      .prepare("SELECT id FROM users WHERE email = ?")
+      .get("ada@example.com") as { id: string };
+    const now = new Date().toISOString();
+
+    db.prepare(
+      `
+        INSERT INTO songs (
+          id, user_id, title, artist, album, duration_ms, mime_type, size_bytes,
+          checksum, storage_path, import_status, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)
+      `
+    ).run(
+      "existing-mix-song",
+      user.id,
+      "Existing Song",
+      "Ada",
+      "Archive",
+      180000,
+      "audio/mpeg",
+      3,
+      "existing-checksum",
+      join(storageRoot, "existing-mix-song.mp3"),
+      now,
+      now
+    );
+
+    const createdPlaylist = await app.inject({
+      method: "POST",
+      url: "/api/playlists",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { name: "Mix" }
+    });
+    const playlistId = createdPlaylist.json().playlist.id;
+
+    await app.inject({
+      method: "POST",
+      url: `/api/playlists/${playlistId}/songs`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { songId: "existing-mix-song" }
+    });
+
+    const batch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        files: [
+          csvFile("mix.csv", [
+            ["spotify:track:road", "Road Song", "spotify:artist:grace", "Grace", "spotify:album:drive", "Drive", "spotify:artist:grace", "Grace", "2026-01-01", "https://i.scdn.co/image/road", "1", "1", "210000", "", "false", "40", "USROAD000001", "", "2026-01-03T00:00:00Z"]
+          ])
+        ]
+      }
+    });
+
+    expect(batch.statusCode).toBe(202);
+    expect(batch.json().batch).toMatchObject({
+      completedItems: 1,
+      failedItems: 0,
+      status: "completed"
+    });
+
+    const playlists = await app.inject({
+      method: "GET",
+      url: "/api/playlists",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    const mixes = playlists.json().playlists.filter(
+      (playlist: { name: string }) => playlist.name === "Mix"
+    );
+
+    expect(mixes).toHaveLength(1);
+    expect(mixes[0]).toMatchObject({
+      id: playlistId,
+      songCount: 2
+    });
+
+    const playlist = await app.inject({
+      method: "GET",
+      url: `/api/playlists/${playlistId}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(playlist.json().playlist.songs.map((song: { title: string }) => song.title)).toEqual([
+      "Existing Song",
+      "Road Song"
+    ]);
+  });
+
   it("normalizes CSV imported audio before storing it", async () => {
     const normalizedAudio = Buffer.from("ID3 normalized csv import audio");
     const youtubeProvider = createYouTubeProvider();

@@ -1292,6 +1292,38 @@ export class SQLitePlaylistRepository {
     return row ? mapPlaylist(row) : null;
   }
 
+  findPlaylistByNameForUser(input: { userId: string; name: string }) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM playlists
+          WHERE user_id = ?
+            AND lower(trim(name)) = lower(trim(?))
+          ORDER BY updated_at DESC, id ASC
+          LIMIT 1
+        `
+      )
+      .get(input.userId, input.name);
+
+    return row ? mapPlaylist(row) : null;
+  }
+
+  nextSongPosition(input: { userId: string; playlistId: string }) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COALESCE(MAX(ps.position) + 1, 0) AS next_position
+          FROM playlists p
+          LEFT JOIN playlist_songs ps ON ps.playlist_id = p.id
+          WHERE p.user_id = ? AND p.id = ?
+        `
+      )
+      .get(input.userId, input.playlistId) as { next_position?: number | bigint } | undefined;
+
+    return Number(row?.next_position ?? 0);
+  }
+
   listPlaylistsForUser(userId: string, limit = 25) {
     return this.db
       .prepare(
