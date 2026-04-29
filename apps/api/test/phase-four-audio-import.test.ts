@@ -568,6 +568,65 @@ describe("Phase 4 audio imports and private storage", () => {
     });
   });
 
+  it("keeps the admin storage list available when R2 object metadata cannot be read", async () => {
+    const previousStorageDriver = process.env.BROADSIDE_AUDIO_STORAGE_DRIVER;
+
+    try {
+      const audioStorage: AudioStorage = {
+        async writeOriginal(input) {
+          return `r2://broadside/users/${input.userId}/${input.songId}/original`;
+        },
+        async statOriginal() {
+          const error = new Error("UnknownError");
+          error.name = "UnknownError";
+          throw error;
+        },
+        async deleteOriginal() {}
+      };
+      const { app } = createTestApp({ audioStorage });
+      const token = await signIn(app);
+      const imported = await app.inject({
+        method: "POST",
+        url: "/api/songs/import",
+        headers: {
+          authorization: `Bearer ${token}`
+        },
+        payload: mp3Payload({ title: "R2 metadata target" })
+      });
+      const song = imported.json().song;
+
+      process.env.BROADSIDE_AUDIO_STORAGE_DRIVER = "r2";
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/admin/storage-objects",
+        headers: {
+          authorization: `Bearer ${token}`
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        storage: {
+          driver: "r2",
+          objects: [
+            {
+              exists: false,
+              sizeBytes: 0,
+              storagePath: song.storagePath
+            }
+          ],
+          totalObjects: 1
+        }
+      });
+    } finally {
+      if (previousStorageDriver === undefined) {
+        delete process.env.BROADSIDE_AUDIO_STORAGE_DRIVER;
+      } else {
+        process.env.BROADSIDE_AUDIO_STORAGE_DRIVER = previousStorageDriver;
+      }
+    }
+  });
+
   function createTestApp(options: {
     audioProcessor?: AudioImportProcessor;
     audioStorage?: AudioStorage;

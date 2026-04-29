@@ -873,7 +873,7 @@ async function statStoredAudioObject(audioStorage: AudioStorage, storagePath: st
         return null;
       }
 
-      return audioStorage.statOriginal(storagePath);
+      return await audioStorage.statOriginal(storagePath);
     }
 
     return { sizeBytes: (await stat(storagePath)).size };
