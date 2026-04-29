@@ -592,6 +592,70 @@ describe("CSV metadata imports", () => {
     ]);
   });
 
+  it("filters Live-titled YouTube results during CSV auto-matching", async () => {
+    const youtubeProvider: YouTubeDiscoveryClient = {
+      normalizeUrl: vi.fn(),
+      search: vi.fn(async (_query, importPolicyMode) => ({
+        nextPageToken: null,
+        results: [
+          youtubeResult({
+            creator: "Ada Channel",
+            durationMs: 180000,
+            importPolicyMode,
+            sourceId: "liveMoon01",
+            title: "Moon Song Live"
+          }),
+          youtubeResult({
+            creator: "Ada - Topic",
+            durationMs: 180000,
+            importPolicyMode,
+            sourceId: "studioMoon01",
+            title: "Moon Song Official Audio"
+          })
+        ]
+      }))
+    };
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app } = createTestApp({
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const files = [
+      csvFile("liked.csv", [
+        ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"]
+      ])
+    ];
+
+    const batch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(batch.statusCode).toBe(202);
+    expect(batch.json().batch).toMatchObject({
+      completedItems: 1,
+      failedItems: 0,
+      status: "completed"
+    });
+    expect(youtubeImportAdapter.resolve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        discovery: expect.objectContaining({
+          sourceId: "studioMoon01"
+        })
+      })
+    );
+    expect(youtubeImportAdapter.resolve).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        discovery: expect.objectContaining({
+          sourceId: "liveMoon01"
+        })
+      })
+    );
+  });
+
   it("fails low-confidence YouTube matches instead of importing unrelated audio", async () => {
     const youtubeProvider: YouTubeDiscoveryClient = {
       normalizeUrl: vi.fn(),

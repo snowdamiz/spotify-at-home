@@ -19,7 +19,11 @@ primary_region = "ord"
   R2_BUCKET = "broadside"
   BROADSIDE_API_BASE_URL = "http://127.0.0.1:3101"
   BROADSIDE_AUDIO_STORAGE_DRIVER = "r2"
+  BROADSIDE_CSV_IMPORT_CONCURRENCY = "2"
+  BROADSIDE_CSV_IMPORT_LOAD_BACKOFF_DELAY_MS = "2500"
+  BROADSIDE_CSV_IMPORT_LOAD_BACKOFF_THRESHOLD = "1"
   BROADSIDE_DATABASE_PATH = "/data/broadside.sqlite"
+  BROADSIDE_FFMPEG_THREADS = "1"
 
 [mounts]
   source = "tunely_data"
@@ -35,5 +39,5 @@ primary_region = "ord"
 
 [[vm]]
   cpu_kind = "shared"
-  cpus = 1
-  memory = "1gb"
+  cpus = 2
+  memory = "2gb"

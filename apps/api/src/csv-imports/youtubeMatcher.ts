@@ -82,6 +82,10 @@ export async function findBestCsvYouTubeMatch(input: {
     }
 
     discoveryResults.results.forEach((result, rank) => {
+      if (isLiveYouTubeTitle(result.title)) {
+        return;
+      }
+
       const existing = candidatesBySourceId.get(result.sourceId);
 
       if (!existing || rank < existing.rank) {
@@ -385,6 +389,10 @@ function isDescriptor(value: string) {
 
 function isCollaboratorQualifier(value: string) {
   return /\b(feat|ft|featuring|with)\b/i.test(value);
+}
+
+function isLiveYouTubeTitle(value: string) {
+  return /\blive\b/i.test(value);
 }
 
 function areLikelySameCsvTrack(item: CsvImportItem, left: Candidate & { score: number }, right: Candidate & { score: number }) {

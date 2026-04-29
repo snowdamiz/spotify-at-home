@@ -11,6 +11,7 @@ const defaultTargetTruePeakDbtp = -1.5;
 const defaultTargetLra = 11;
 const defaultOutputBitrate = "192k";
 const defaultTimeoutMs = 240_000;
+const defaultFfmpegThreads = 1;
 const commandOutputLimitBytes = 10 * 1024 * 1024;
 
 export interface AudioImportProcessingInput {
@@ -55,6 +56,7 @@ export class PassthroughAudioImportProcessor implements AudioImportProcessor {
 }
 
 export interface FfmpegLoudnessNormalizerOptions {
+  ffmpegThreads?: number;
   ffmpegPath?: string;
   outputBitrate?: string;
   targetIntegratedLufs?: number;
@@ -65,6 +67,7 @@ export interface FfmpegLoudnessNormalizerOptions {
 }
 
 export class FfmpegLoudnessNormalizer implements AudioImportProcessor {
+  private readonly ffmpegThreads: number;
   private readonly ffmpegPath: string;
   private readonly outputBitrate: string;
   private readonly targetIntegratedLufs: number;
@@ -74,6 +77,10 @@ export class FfmpegLoudnessNormalizer implements AudioImportProcessor {
   private readonly timeoutMs: number;
 
   constructor(options: FfmpegLoudnessNormalizerOptions = {}) {
+    this.ffmpegThreads = positiveIntegerOrDefault(
+      options.ffmpegThreads,
+      defaultFfmpegThreads
+    );
     this.ffmpegPath = options.ffmpegPath ?? process.env.FFMPEG_PATH ?? "ffmpeg";
     this.outputBitrate = options.outputBitrate ?? defaultOutputBitrate;
     this.targetIntegratedLufs = finiteOrDefault(
@@ -102,6 +109,8 @@ export class FfmpegLoudnessNormalizer implements AudioImportProcessor {
         "-hide_banner",
         "-nostdin",
         "-y",
+        "-threads",
+        String(this.ffmpegThreads),
         "-i",
         inputPath,
         "-vn",
@@ -117,6 +126,8 @@ export class FfmpegLoudnessNormalizer implements AudioImportProcessor {
         "-hide_banner",
         "-nostdin",
         "-y",
+        "-threads",
+        String(this.ffmpegThreads),
         "-i",
         inputPath,
         "-vn",
@@ -217,6 +228,7 @@ export function createAudioImportProcessorFromEnv(env: NodeJS.ProcessEnv = proce
   }
 
   return new FfmpegLoudnessNormalizer({
+    ffmpegThreads: numberFromEnv(env.BROADSIDE_FFMPEG_THREADS, defaultFfmpegThreads),
     ffmpegPath: env.FFMPEG_PATH,
     outputBitrate: env.BROADSIDE_AUDIO_NORMALIZATION_BITRATE ?? defaultOutputBitrate,
     targetIntegratedLufs: numberFromEnv(
@@ -353,6 +365,12 @@ function numberFromEnv(value: string | undefined, fallback: number) {
 
 function finiteOrDefault(value: number | undefined, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function positiveIntegerOrDefault(value: number | undefined, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : fallback;
 }
 
 function numberFromLoudnormValue(value: string) {

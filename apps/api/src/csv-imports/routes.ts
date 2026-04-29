@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { availableParallelism, loadavg } from "node:os";
 import {
   pickPlaylistColor,
   validateAudioImportMetadata,
@@ -62,6 +63,8 @@ export interface CsvImportRoutesOptions {
   audioStorage?: AudioStorage;
   audioProcessor?: AudioImportProcessor;
   csvImportConcurrency?: number;
+  csvImportLoadBackoffDelayMs?: number;
+  csvImportLoadBackoffThreshold?: number;
   csvYouTubeSearchIntervalMs?: number;
   importPolicyConfig?: ImportPolicyRuntimeConfig;
   libraryEvents?: LibraryEventSink;
@@ -77,6 +80,7 @@ export interface CsvImportRoutesOptions {
 const DEFAULT_CSV_IMPORT_BODY_LIMIT_BYTES = 25 * 1024 * 1024;
 const DEFAULT_CSV_IMPORT_CONCURRENCY = 3;
 const DEFAULT_CSV_UPLOAD_CHUNK_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
+const DEFAULT_CSV_IMPORT_LOAD_BACKOFF_DELAY_MS = 2500;
 const DEFAULT_CSV_YOUTUBE_SEARCH_INTERVAL_MS = 500;
 const DEFAULT_RECOVERABLE_FAILURE_PAUSE_THRESHOLD = 3;
 const DEFAULT_RECOVERABLE_SEARCH_ATTEMPTS = 2;
@@ -114,8 +118,18 @@ export function registerCsvImportRoutes(app: FastifyInstance, options: CsvImport
     audioStorage,
     csvImportRepository: options.csvImportRepository,
     csvImportConcurrency: normalizePositiveInteger(
-      options.csvImportConcurrency,
-      DEFAULT_CSV_IMPORT_CONCURRENCY
+      options.csvImportConcurrency ?? integerFromEnv(process.env.BROADSIDE_CSV_IMPORT_CONCURRENCY),
+      defaultCsvImportConcurrency()
+    ),
+    csvImportLoadBackoffDelayMs: normalizePositiveInteger(
+      options.csvImportLoadBackoffDelayMs ??
+        integerFromEnv(process.env.BROADSIDE_CSV_IMPORT_LOAD_BACKOFF_DELAY_MS),
+      DEFAULT_CSV_IMPORT_LOAD_BACKOFF_DELAY_MS
+    ),
+    csvImportLoadBackoffThreshold: normalizePositiveNumber(
+      options.csvImportLoadBackoffThreshold ??
+        numberFromEnv(process.env.BROADSIDE_CSV_IMPORT_LOAD_BACKOFF_THRESHOLD),
+      defaultCsvImportLoadBackoffThreshold()
     ),
     csvYouTubeSearchIntervalMs: normalizeNonNegativeInteger(
       options.csvYouTubeSearchIntervalMs,
@@ -535,6 +549,8 @@ class CsvImportQueue {
       audioProcessor: AudioImportProcessor;
       audioStorage: AudioStorage;
       csvImportConcurrency: number;
+      csvImportLoadBackoffDelayMs: number;
+      csvImportLoadBackoffThreshold: number;
       csvImportRepository: SQLiteCsvImportRepository;
       csvYouTubeSearchIntervalMs: number;
       importPolicyConfig: ImportPolicyRuntimeConfig;
@@ -659,6 +675,17 @@ class CsvImportQueue {
       !pausedAfterRecoverableSearchFailures;
       index += this.options.csvImportConcurrency
     ) {
+      await this.waitForCsvImportCapacity({
+        batchId,
+        shouldContinue: () =>
+          !this.canceledBatches.has(batchId) && !pausedAfterRecoverableSearchFailures,
+        userId: user.id
+      });
+
+      if (this.canceledBatches.has(batchId) || pausedAfterRecoverableSearchFailures) {
+        break;
+      }
+
       const items = pendingItems.slice(index, index + this.options.csvImportConcurrency);
 
       await Promise.all(items.map(async (item) => {
@@ -922,6 +949,42 @@ class CsvImportQueue {
 
     this.releaseCsvYouTubeSearchGate = null;
     release();
+  }
+
+  private async waitForCsvImportCapacity(input: {
+    batchId: string;
+    shouldContinue: () => boolean;
+    userId: string;
+  }) {
+    if (!Number.isFinite(this.options.csvImportLoadBackoffThreshold)) {
+      return;
+    }
+
+    let loggedBackoff = false;
+
+    while (input.shouldContinue()) {
+      const load = csvImportSystemLoad();
+
+      if (!load || load.pressure <= this.options.csvImportLoadBackoffThreshold) {
+        return;
+      }
+
+      if (!loggedBackoff) {
+        loggedBackoff = true;
+        this.options.app.log.warn({
+          availableParallelism: load.availableParallelism,
+          csvImportBatchId: input.batchId,
+          delayMs: this.options.csvImportLoadBackoffDelayMs,
+          event: "csv_import_worker_load_backoff",
+          loadAverage1m: roundMetric(load.loadAverage1m),
+          loadPressure: roundMetric(load.pressure),
+          threshold: this.options.csvImportLoadBackoffThreshold,
+          userId: input.userId
+        });
+      }
+
+      await wait(this.options.csvImportLoadBackoffDelayMs);
+    }
   }
 }
 
@@ -1669,10 +1732,61 @@ function normalizePositiveInteger(value: number | undefined, fallback: number) {
     : fallback;
 }
 
+function normalizePositiveNumber(value: number | undefined, fallback: number) {
+  return typeof value === "number" &&
+    (Number.isFinite(value) || value === Number.POSITIVE_INFINITY) &&
+    value > 0
+    ? value
+    : fallback;
+}
+
 function normalizeNonNegativeInteger(value: number | undefined, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? Math.floor(value)
     : fallback;
+}
+
+function integerFromEnv(value: string | undefined) {
+  const parsed = numberFromEnv(value);
+
+  return parsed === undefined ? undefined : Math.floor(parsed);
+}
+
+function numberFromEnv(value: string | undefined) {
+  if (value === undefined || value.trim() === "") {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function defaultCsvImportConcurrency() {
+  return DEFAULT_CSV_IMPORT_CONCURRENCY;
+}
+
+function defaultCsvImportLoadBackoffThreshold() {
+  return process.env.NODE_ENV === "test" ? Number.POSITIVE_INFINITY : 1;
+}
+
+function csvImportSystemLoad() {
+  const loadAverage1m = loadavg()[0];
+  const parallelism = Math.max(1, availableParallelism());
+
+  if (!Number.isFinite(loadAverage1m) || loadAverage1m <= 0) {
+    return null;
+  }
+
+  return {
+    availableParallelism: parallelism,
+    loadAverage1m,
+    pressure: loadAverage1m / parallelism
+  };
+}
+
+function roundMetric(value: number) {
+  return Math.round(value * 100) / 100;
 }
 
 function wait(ms: number) {
