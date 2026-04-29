@@ -1,5 +1,8 @@
-<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Broadside">
-  <title>Broadside</title>
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="OnVibe">
+  <title>OnVibe</title>
   <rect width="512" height="512" rx="112" fill="#fd923e"/>
-  <path fill="#0a0a0a" d="M168 96h126c44 0 76 12 96 35 15 17 23 38 23 61 0 39-21 65-61 79 23 5 43 17 56 35 14 18 21 39 21 62 0 30-10 53-29 71-23 23-58 37-105 37H168V96zm71 64v82h46c22 0 39-3 50-11 12-8 19-21 19-39 0-17-6-29-17-37-11-7-27-11-49-11H239zm0 144v82h57c23 0 41-4 52-11 13-8 20-21 20-39 0-17-7-29-19-37-12-7-31-12-53-12H239z"/>
+  <g fill="none" stroke="#0a0a0a" stroke-width="46" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="174" cy="256" r="72"/>
+    <path d="M282 168l68 176 80-176"/>
+  </g>
 </svg>

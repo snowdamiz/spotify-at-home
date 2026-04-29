@@ -121,7 +121,7 @@ export function CollectionView({
           : playlistState.status === 'anonymous'
             ? 'Log in to view server-backed playlists.'
             : playlistState.status === 'error'
-              ? 'Could not reach the Broadside server.'
+              ? 'Could not reach the OnVibe server.'
               : 'Collection not found.'}
       </div>
     )
@@ -144,33 +144,34 @@ export function CollectionView({
     <div>
       {/* Hero */}
       <div
-        className={`bg-gradient-to-b ${meta.coverColor} to-background px-4 pt-2 pb-6 md:px-6`}
+        className={`relative bg-gradient-to-b ${meta.coverColor} to-background px-4 pt-3 pb-8 md:px-6`}
       >
+        <div className="absolute inset-0 bg-gradient-to-b from-black/20 to-transparent" aria-hidden />
         <button
           type="button"
           onClick={onBack}
-          className="mb-4 inline-flex items-center gap-1 rounded-full bg-background/40 px-2 py-1 text-xs font-medium text-foreground backdrop-blur transition-colors hover:bg-background/60"
+          className="relative mb-5 inline-flex items-center gap-1.5 rounded-full bg-background/40 px-3 py-1.5 text-xs font-medium text-foreground backdrop-blur transition-colors hover:bg-background/60"
           aria-label="Back"
         >
-          <ArrowLeft className="h-4 w-4" />
+          <ArrowLeft className="h-3.5 w-3.5" />
           Back
         </button>
 
-        <div className="flex flex-col items-center gap-4 text-center sm:flex-row sm:items-end sm:text-left">
+        <div className="relative flex flex-col items-center gap-5 text-center sm:flex-row sm:items-end sm:gap-6 sm:text-left">
           <CoverArt
             colorClass={meta.coverColor}
             title={meta.title}
-            className="h-40 w-40 rounded-md text-3xl shadow-2xl sm:h-48 sm:w-48 md:h-52 md:w-52"
+            className="h-44 w-44 rounded-md text-3xl shadow-2xl shadow-black/40 sm:h-48 sm:w-48 md:h-56 md:w-56"
             rounded="md"
           />
           <div className="min-w-0 flex-1">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-foreground/80">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-foreground/80">
               {meta.kindLabel}
             </div>
-            <h1 className="mt-1 text-3xl font-bold tracking-tight text-balance md:text-5xl">
+            <h1 className="mt-2 text-4xl font-extrabold tracking-tight text-balance md:text-6xl">
               {meta.title}
             </h1>
-            <p className="mt-2 max-w-xl text-sm text-foreground/80 text-pretty">
+            <p className="mt-3 max-w-xl text-sm text-foreground/80 text-pretty">
               {meta.subtitle}
             </p>
             <div className="mt-3 text-xs text-foreground/70">
@@ -188,11 +189,11 @@ export function CollectionView({
 
       {/* Action bar */}
       {meta.songs.length > 0 && (
-        <div className="flex items-center gap-3 px-4 pb-2 md:px-6">
+        <div className="flex items-center gap-3 px-4 pb-3 pt-3 md:px-6 md:gap-4">
           <button
             type="button"
             onClick={() => onPlayAll(meta.songs)}
-            className="flex h-12 w-12 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105 md:h-14 md:w-14"
+            className="flex h-12 w-12 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-black/30 transition-transform hover:scale-105 active:scale-100 md:h-14 md:w-14"
             aria-label={isCollectionPlaying ? 'Pause' : 'Play all'}
           >
             {isCollectionPlaying ? (
@@ -246,11 +247,13 @@ export function CollectionView({
       )}
 
       {/* Track list */}
-      <div className="px-2 pb-6 md:px-4">
+      <div className="px-2 pb-8 md:px-4">
         {meta.songs.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-border bg-card/40 p-8 text-center">
-            <h3 className="text-lg font-semibold">No songs yet</h3>
-            <p className="mt-1 text-sm text-muted-foreground">
+          <div className="rounded-2xl border border-dashed border-border bg-card/30 px-6 py-10 text-center">
+            <h3 className="text-lg font-semibold tracking-tight">
+              No songs yet
+            </h3>
+            <p className="mt-1.5 text-sm text-muted-foreground">
               This collection is empty.
             </p>
           </div>

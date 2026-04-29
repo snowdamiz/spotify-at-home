@@ -18,19 +18,17 @@
   <g transform="translate(96, 187)">
     <g transform="scale(0.5)">
       <rect width="512" height="512" rx="112" fill="#fd923e"/>
-      <g fill="#0a0a0a">
-        <path d="M112 96h112c40 0 70 11 89 33 14 16 21 35 21 56 0 36-19 60-56 73 22 5 40 16 53 33 13 17 19 36 19 58 0 27-9 49-26 65-22 22-56 34-100 34H112V96zm67 60v74h45c20 0 35-3 45-10 11-7 17-19 17-36 0-15-5-26-15-33s-25-11-44-11h-48zm0 134v76h54c22 0 38-3 49-10 12-7 18-19 18-36 0-15-6-26-17-33-12-7-29-11-50-11h-54z"/>
-        <rect x="370" y="220" width="16" height="72" rx="8"/>
-        <rect x="402" y="188" width="16" height="136" rx="8"/>
-        <rect x="434" y="232" width="16" height="48" rx="8"/>
+      <g fill="none" stroke="#0a0a0a" stroke-width="46" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="174" cy="256" r="72"/>
+        <path d="M282 168l68 176 80-176"/>
       </g>
     </g>
   </g>
 
   <!-- Wordmark + tagline -->
   <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
-    <text x="408" y="298" font-size="118" font-weight="900" letter-spacing="-3" fill="#f8f8f8">Broadside</text>
-    <text x="412" y="360" font-size="40" font-weight="500" letter-spacing="-0.5" fill="#fd923e">Your music, anywhere.</text>
+    <text x="408" y="298" font-size="118" font-weight="900" letter-spacing="0" fill="#f8f8f8">OnVibe</text>
+    <text x="412" y="360" font-size="40" font-weight="500" letter-spacing="0" fill="#fd923e">Your music, anywhere.</text>
 
     <line x1="412" y1="395" x2="540" y2="395" stroke="url(#hairline)" stroke-width="3" stroke-linecap="round"/>
 

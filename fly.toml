@@ -9,8 +9,8 @@ primary_region = "ord"
 
 [env]
   API_PORT = "3101"
-  APP_WEB_ORIGIN = "https://broadside.fly.dev"
-  GOOGLE_REDIRECT_URI = "https://broadside.fly.dev/api/auth/google/callback"
+  APP_WEB_ORIGIN = "https://onvibe.dev"
+  GOOGLE_REDIRECT_URI = "https://onvibe.dev/api/auth/google/callback"
   HOST = "127.0.0.1"
   NODE_ENV = "production"
   PORT = "3000"

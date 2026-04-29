@@ -1,13 +1,35 @@
 'use client'
 
 import { useState } from 'react'
-import { Heart, ListMusic, Plus, Search as SearchIcon } from 'lucide-react'
+import {
+  Heart,
+  ListMusic,
+  Loader2,
+  Plus,
+  Search as SearchIcon,
+  Trash2,
+} from 'lucide-react'
 import { SongRow } from '@/components/song-row'
 import { CoverArt } from '@/components/cover-art'
 import { Button } from '@/components/ui/button'
-import { playlistSubtitle, type LibraryLoadStatus, type ServerPlaylist } from '@/lib/api'
+import {
+  playlistSubtitle,
+  type LibraryLoadStatus,
+  type ServerPlaylist,
+} from '@/lib/api'
 import { type CollectionRef, type Song } from '@/lib/music-types'
 import type { OfflineAudioStateMap } from '@/lib/offline-audio-cache'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 
 type LibraryViewProps = {
   songs: Song[]
@@ -24,6 +46,7 @@ type LibraryViewProps = {
   onAddSongToPlaylist: (song: Song, playlistId: string) => void
   onCreatePlaylistWithSong: (song: Song) => void
   onCreatePlaylistClick: () => void
+  onDeletePlaylist: (playlist: ServerPlaylist) => Promise<void> | void
   deletingSongId: string | null
   likingSongId?: string | null
   onImportClick: () => void
@@ -47,6 +70,7 @@ export function LibraryView({
   onAddSongToPlaylist,
   onCreatePlaylistWithSong,
   onCreatePlaylistClick,
+  onDeletePlaylist,
   deletingSongId,
   likingSongId,
   onImportClick,
@@ -72,9 +96,9 @@ export function LibraryView({
   const showPlaylists = filter !== 'songs'
 
   return (
-    <div className="px-4 pb-6 md:px-6">
-      <header className="flex items-center justify-between pt-2 pb-3">
-        <h1 className="text-2xl font-bold tracking-tight md:text-3xl">
+    <div className="px-4 pb-8 md:px-6">
+      <header className="flex items-center justify-between pt-2 pb-4">
+        <h1 className="text-3xl font-bold tracking-tight md:text-4xl">
           Your Library
         </h1>
         <Button
@@ -89,7 +113,7 @@ export function LibraryView({
       </header>
 
       {/* Filter chips */}
-      <div className="mb-3 flex gap-2 overflow-x-auto no-scrollbar">
+      <div className="mb-4 flex gap-2 overflow-x-auto no-scrollbar">
         {([
           { id: 'all', label: 'All' },
           { id: 'playlists', label: 'Playlists' },
@@ -102,8 +126,8 @@ export function LibraryView({
               onClick={() => setFilter(f.id)}
               className={
                 active
-                  ? 'shrink-0 rounded-full bg-foreground px-3 py-1 text-xs font-semibold text-background'
-                  : 'shrink-0 rounded-full bg-card px-3 py-1 text-xs font-medium text-foreground hover:bg-accent'
+                  ? 'shrink-0 rounded-full bg-foreground px-3.5 py-1.5 text-xs font-semibold tracking-tight text-background transition-colors'
+                  : 'shrink-0 rounded-full bg-card/70 px-3.5 py-1.5 text-xs font-medium tracking-tight text-foreground transition-colors hover:bg-card'
               }
             >
               {f.label}
@@ -113,22 +137,22 @@ export function LibraryView({
       </div>
 
       {/* Search */}
-      <div className="relative mb-4">
+      <div className="relative mb-5 md:max-w-sm">
         <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Find in library"
-          className="h-10 w-full rounded-full bg-card pl-9 pr-4 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary md:max-w-xs"
+          className="h-10 w-full rounded-full bg-card/70 pl-9 pr-4 text-sm text-foreground placeholder:text-muted-foreground transition-colors focus:bg-card focus:outline-none focus:ring-1 focus:ring-foreground/20"
           aria-label="Find in library"
         />
       </div>
 
       {/* Playlists */}
       {showPlaylists && (
-        <section className="mb-6">
+        <section className="mb-7">
           <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
               Playlists
             </h2>
             <Button
@@ -145,28 +169,34 @@ export function LibraryView({
             <ul className="space-y-1">
               {filteredPlaylists.map((p) => (
                 <li key={p.id}>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onOpenCollection({ kind: 'playlist', id: p.id })
-                    }
-                    className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-card/80"
-                  >
-                    <CoverArt
-                      colorClass={p.color ?? 'from-zinc-700 to-zinc-950'}
-                      title={p.name}
-                      size="md"
-                      rounded="md"
+                  <div className="group flex items-center gap-1 rounded-lg transition-colors hover:bg-card/60">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onOpenCollection({ kind: 'playlist', id: p.id })
+                      }
+                      className="flex min-w-0 flex-1 items-center gap-3 px-2 py-2 text-left"
+                    >
+                      <CoverArt
+                        colorClass={p.color ?? 'from-zinc-700 to-zinc-950'}
+                        title={p.name}
+                        size="md"
+                        rounded="md"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-medium">
+                          {p.name}
+                        </div>
+                        <div className="truncate text-xs text-muted-foreground">
+                          Playlist &middot; {playlistSubtitle(p)}
+                        </div>
+                      </div>
+                    </button>
+                    <PlaylistDeleteButton
+                      playlist={p}
+                      onDelete={() => onDeletePlaylist(p)}
                     />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-medium">
-                        {p.name}
-                      </div>
-                      <div className="truncate text-xs text-muted-foreground">
-                        Playlist &middot; {playlistSubtitle(p)}
-                      </div>
-                    </div>
-                  </button>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -199,7 +229,7 @@ export function LibraryView({
       {/* Songs */}
       {showSongs && (
         <section>
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+          <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
             Your songs
           </h2>
 
@@ -209,15 +239,20 @@ export function LibraryView({
             </div>
           ) : libraryStatus === 'error' ? (
             <div className="py-10 text-center text-sm text-muted-foreground">
-              Could not reach the Broadside server.
+              Could not reach the OnVibe server.
             </div>
           ) : songs.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-border bg-card/40 p-8 text-center">
-              <h3 className="text-lg font-semibold">No songs yet</h3>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Upload audio from your device to store it on your Broadside server.
+            <div className="rounded-2xl border border-dashed border-border bg-card/30 px-6 py-10 text-center">
+              <h3 className="text-lg font-semibold tracking-tight">
+                No songs yet
+              </h3>
+              <p className="mx-auto mt-1.5 max-w-sm text-sm text-muted-foreground">
+                Upload audio from your device to store it on your OnVibe server.
               </p>
-              <Button onClick={onImportClick} className="mt-5 rounded-full">
+              <Button
+                onClick={onImportClick}
+                className="mt-5 h-10 rounded-full bg-foreground text-background hover:bg-foreground/90"
+              >
                 <Plus className="mr-2 h-4 w-4" />
                 Add music
               </Button>
@@ -257,14 +292,14 @@ export function LibraryView({
       )}
 
       {showPlaylists && (
-        <section className="mt-6">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+        <section className="mt-7">
+          <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
             System
           </h2>
           <button
             type="button"
             onClick={() => onOpenCollection({ kind: 'system', id: 'liked-songs' })}
-            className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-card/80"
+            className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-card/60"
           >
             <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-fuchsia-600 to-zinc-950 text-foreground shadow-md">
               <Heart className="h-5 w-5" fill="currentColor" />
@@ -279,5 +314,66 @@ export function LibraryView({
         </section>
       )}
     </div>
+  )
+}
+
+function PlaylistDeleteButton({
+  playlist,
+  onDelete,
+}: {
+  playlist: ServerPlaylist
+  onDelete: () => Promise<void> | void
+}) {
+  const [deleting, setDeleting] = useState(false)
+
+  const handleDelete = async () => {
+    if (deleting) return
+
+    setDeleting(true)
+    try {
+      await onDelete()
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          disabled={deleting}
+          className="mr-1 h-9 w-9 shrink-0 rounded-full text-muted-foreground opacity-100 hover:text-destructive sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"
+          aria-label={`Delete ${playlist.name}`}
+        >
+          {deleting ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Trash2 className="h-4 w-4" />
+          )}
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this playlist?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This removes &ldquo;{playlist.name}&rdquo; permanently. The songs
+            stay in your library.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={deleting}
+            onClick={handleDelete}
+            className="bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/20"
+          >
+            {deleting ? 'Deleting...' : 'Delete'}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }

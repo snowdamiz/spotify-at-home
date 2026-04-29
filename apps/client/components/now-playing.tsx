@@ -70,25 +70,26 @@ export function NowPlaying(props: NowPlayingProps) {
           gradient,
         )}
       >
+        <div className="absolute inset-0 bg-gradient-to-b from-black/30 via-transparent to-black/40" aria-hidden />
         {/* Header */}
-        <div className="flex items-center justify-between px-4 pt-[max(env(safe-area-inset-top),12px)] pb-3">
+        <div className="safe-x-4 safe-top-3 relative flex items-center justify-between pb-3">
           <button
             type="button"
             onClick={onClose}
-            className="rounded-full p-2 text-foreground/90 hover:bg-foreground/10"
+            className="rounded-full p-2 text-foreground/90 transition-colors hover:bg-foreground/10"
             aria-label="Minimize"
           >
             <ChevronDown className="h-6 w-6" />
           </button>
           <div className="text-center">
-            <div className="text-[11px] uppercase tracking-wider text-foreground/70">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-foreground/70">
               Playing from
             </div>
-            <div className="text-xs font-semibold">Your Library</div>
+            <div className="text-xs font-semibold tracking-tight">Your Library</div>
           </div>
           <button
             type="button"
-            className="rounded-full p-2 text-foreground/90 hover:bg-foreground/10"
+            className="rounded-full p-2 text-foreground/90 transition-colors hover:bg-foreground/10"
             aria-label="More"
           >
             <MoreHorizontal className="h-6 w-6" />
@@ -96,22 +97,24 @@ export function NowPlaying(props: NowPlayingProps) {
         </div>
 
         {/* Album art */}
-        <div className="flex flex-1 items-center justify-center px-8">
+        <div className="relative flex flex-1 items-center justify-center px-8">
           <CoverArt
             colorClass={song.coverColor}
             imageUrl={song.coverImageUrl}
             title={song.title}
             size="full"
             rounded="2xl"
-            className="max-h-[60vh] w-full max-w-sm shadow-2xl"
+            className="max-h-[60vh] w-full max-w-sm shadow-2xl shadow-black/50"
           />
         </div>
 
         {/* Bottom controls */}
-        <div className="px-6 pb-[max(env(safe-area-inset-bottom),16px)]">
+        <div className="safe-x-6 safe-bottom-4 relative">
           <div className="mb-4 flex items-end justify-between gap-3">
             <div className="min-w-0 flex-1">
-              <div className="truncate text-2xl font-bold">{song.title}</div>
+              <div className="truncate text-2xl font-bold tracking-tight">
+                {song.title}
+              </div>
               <div className="truncate text-sm text-foreground/70">
                 {song.artist}
               </div>
@@ -121,7 +124,10 @@ export function NowPlaying(props: NowPlayingProps) {
                 type="button"
                 onClick={onToggleLike}
                 disabled={isLikePending}
-                className="rounded-full p-2 text-foreground/90 hover:bg-foreground/10 disabled:cursor-wait disabled:opacity-70"
+                className={cn(
+                  'rounded-full p-2 text-foreground/90 transition-colors hover:bg-foreground/10 disabled:cursor-wait disabled:opacity-70',
+                  isLiked && 'text-primary',
+                )}
                 aria-label={isLiked ? `Unlike ${song.title}` : `Like ${song.title}`}
                 title={isLiked ? 'Remove from Liked Songs' : 'Add to Liked Songs'}
               >
@@ -142,10 +148,10 @@ export function NowPlaying(props: NowPlayingProps) {
           </div>
 
           {/* Controls */}
-          <div className="mt-4 flex items-center justify-between">
+          <div className="mt-5 flex items-center justify-between">
             <button
               type="button"
-              className="text-foreground/80 hover:text-foreground"
+              className="text-foreground/70 transition-colors hover:text-foreground"
               aria-label="Shuffle"
             >
               <Shuffle className="h-5 w-5" />
@@ -153,7 +159,7 @@ export function NowPlaying(props: NowPlayingProps) {
             <button
               type="button"
               onClick={onPrev}
-              className="text-foreground hover:text-foreground"
+              className="text-foreground transition-transform active:scale-95"
               aria-label="Previous"
             >
               <SkipBack className="h-8 w-8" fill="currentColor" />
@@ -161,7 +167,7 @@ export function NowPlaying(props: NowPlayingProps) {
             <button
               type="button"
               onClick={onTogglePlay}
-              className="flex h-16 w-16 items-center justify-center rounded-full bg-foreground text-background transition-transform active:scale-95"
+              className="flex h-16 w-16 items-center justify-center rounded-full bg-foreground text-background shadow-2xl shadow-black/40 transition-transform active:scale-95"
               aria-label={isPlaying ? 'Pause' : 'Play'}
             >
               {isPlaying ? (
@@ -173,14 +179,14 @@ export function NowPlaying(props: NowPlayingProps) {
             <button
               type="button"
               onClick={onNext}
-              className="text-foreground hover:text-foreground"
+              className="text-foreground transition-transform active:scale-95"
               aria-label="Next"
             >
               <SkipForward className="h-8 w-8" fill="currentColor" />
             </button>
             <button
               type="button"
-              className="text-foreground/80 hover:text-foreground"
+              className="text-foreground/70 transition-colors hover:text-foreground"
               aria-label="Repeat"
             >
               <Repeat className="h-5 w-5" />

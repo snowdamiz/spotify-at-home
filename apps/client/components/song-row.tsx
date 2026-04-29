@@ -93,15 +93,15 @@ export function SongRow({
   return (
     <div
       className={cn(
-        'group flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors',
-        'hover:bg-card/80 active:bg-card',
+        'group flex w-full items-center gap-3 rounded-lg px-2 py-1.5 text-left transition-colors',
+        'hover:bg-card/70 active:bg-card',
         isActive && 'bg-card/60',
       )}
     >
       <button
         type="button"
         onClick={onPlay}
-        className="flex min-w-0 flex-1 items-center gap-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+        className="flex min-w-0 flex-1 items-center gap-3 text-left outline-none rounded-md focus-visible:ring-2 focus-visible:ring-ring/60"
       >
         <div className="relative shrink-0">
           <CoverArt
@@ -110,17 +110,18 @@ export function SongRow({
             title={song.title}
             size="md"
             rounded="md"
+            className="h-12 w-12"
           />
           <div
             className={cn(
-              'absolute inset-0 flex items-center justify-center rounded-md bg-black/50 transition-opacity',
+              'absolute inset-0 flex items-center justify-center rounded-md bg-black/55 transition-opacity duration-150',
               isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
             )}
           >
             {isActive && isPlaying ? (
               <Pause className="h-5 w-5 text-foreground" fill="currentColor" />
             ) : (
-              <Play className="h-5 w-5 text-foreground" fill="currentColor" />
+              <Play className="h-5 w-5 translate-x-px text-foreground" fill="currentColor" />
             )}
           </div>
         </div>
@@ -128,7 +129,7 @@ export function SongRow({
         <div className="min-w-0 flex-1">
           <div
             className={cn(
-              'truncate text-sm font-medium',
+              'truncate text-sm font-medium tracking-tight',
               isActive ? 'text-primary' : 'text-foreground',
             )}
           >

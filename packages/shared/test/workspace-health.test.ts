@@ -7,8 +7,8 @@ import {
 } from "@broadside/shared";
 
 describe("workspace health", () => {
-  it("exports the Broadside app name from the shared package", () => {
-    expect(APP_NAME).toBe("Broadside");
+  it("exports the OnVibe app name from the shared package", () => {
+    expect(APP_NAME).toBe("OnVibe");
   });
 
   it("defines the YouTube import policy modes and shared copy", () => {

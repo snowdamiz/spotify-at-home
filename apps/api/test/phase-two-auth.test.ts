@@ -1,6 +1,10 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiApp } from "../src/app";
 import type { GoogleIdentity, GoogleOAuthClient } from "../src/auth/google";
+import { closeBroadsideDatabase, openBroadsideDatabase, type SqliteDatabase } from "../src/db";
 
 const authConfig = {
   googleClientId: "google-client-id",
@@ -88,10 +92,23 @@ async function signIn(app: ReturnType<typeof createApiApp>) {
 
 describe("Phase 2 auth routes", () => {
   const apps = new Set<ReturnType<typeof createApiApp>>();
+  const databases = new Set<SqliteDatabase>();
+  const dirs = new Set<string>();
 
   afterEach(async () => {
     await Promise.all([...apps].map((app) => app.close()));
     apps.clear();
+
+    for (const db of databases) {
+      closeBroadsideDatabase(db);
+    }
+    databases.clear();
+
+    for (const dir of dirs) {
+      rmSync(dir, { force: true, recursive: true });
+    }
+    dirs.clear();
+
     vi.restoreAllMocks();
   });
 
@@ -286,6 +303,82 @@ describe("Phase 2 auth routes", () => {
     );
 
     const me = await app.inject({
+      method: "GET",
+      url: "/api/me",
+      headers: {
+        cookie: `broadside_access=${accessToken}`
+      }
+    });
+
+    expect(me.statusCode).toBe(200);
+    expect(me.json()).toMatchObject({
+      user: {
+        email: "ada@example.com"
+      }
+    });
+  });
+
+  it("keeps web sessions refreshable after the API restarts with the same database", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "broadside-auth-"));
+    const dbPath = join(dir, "broadside.sqlite");
+    dirs.add(dir);
+
+    const firstDb = openBroadsideDatabase(dbPath);
+    databases.add(firstDb);
+    const firstApp = createApiApp({
+      db: firstDb,
+      auth: {
+        ...authConfig,
+        googleOAuthClient: createGoogleClient()
+      }
+    });
+    apps.add(firstApp);
+
+    const { redirectUrl } = await startGoogleAuth(
+      firstApp,
+      "mode=web&returnTo=https%3A%2F%2Fbroadside.test%2Flibrary"
+    );
+    const callback = await firstApp.inject({
+      method: "GET",
+      url: `/api/auth/google/callback?state=${redirectUrl.searchParams.get("state")}&code=auth-code`
+    });
+    const refreshToken = cookieValue(callback.headers["set-cookie"], "broadside_refresh");
+
+    await firstApp.close();
+    apps.delete(firstApp);
+    closeBroadsideDatabase(firstDb);
+    databases.delete(firstDb);
+
+    const restartedDb = openBroadsideDatabase(dbPath);
+    databases.add(restartedDb);
+    const restartedApp = createApiApp({
+      db: restartedDb,
+      auth: {
+        ...authConfig,
+        googleOAuthClient: createGoogleClient()
+      }
+    });
+    apps.add(restartedApp);
+
+    const refresh = await restartedApp.inject({
+      method: "POST",
+      url: "/api/auth/refresh",
+      headers: {
+        cookie: `broadside_refresh=${refreshToken}`
+      }
+    });
+
+    expect(refresh.statusCode).toBe(200);
+    expect(refresh.json()).toMatchObject({
+      accessToken: expect.any(String),
+      refreshToken: expect.any(String),
+      user: {
+        email: "ada@example.com"
+      }
+    });
+
+    const accessToken = cookieValue(refresh.headers["set-cookie"], "broadside_access");
+    const me = await restartedApp.inject({
       method: "GET",
       url: "/api/me",
       headers: {

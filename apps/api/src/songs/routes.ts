@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { rm, stat } from "node:fs/promises";
 import {
   AUDIO_IMPORT_LIMITS,
   isImportPolicyMode,
@@ -13,7 +13,13 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomToken } from "../auth/crypto.js";
 import { AuthError, type AuthService, type PublicUser } from "../auth/service.js";
 import { readAccessToken } from "../auth/routes.js";
-import type { PlaybackState, RepeatMode, SQLiteSongRepository, Song } from "../db/repositories.js";
+import type {
+  PlaybackState,
+  RepeatMode,
+  SQLiteSongRepository,
+  Song,
+  StorageObjectSummary
+} from "../db/repositories.js";
 import {
   assertImportPolicyAllowsRequestedMode,
   ImportPolicyError,
@@ -42,6 +48,11 @@ interface ImportPayload {
   album?: unknown;
   contentBase64?: unknown;
   importPolicyMode?: unknown;
+}
+
+interface WipeAccountTracksPayload {
+  deleteFromR2?: unknown;
+  deleteStoredAudio?: unknown;
 }
 
 export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOptions) {
@@ -183,6 +194,80 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
 
     return {
       songs: options.songRepository.listReadySongsForUser(user.id).map(serializeSong)
+    };
+  });
+
+  app.get("/api/admin/storage-objects", async (request, reply) => {
+    const user = await authenticate(request, reply, options.authService, {
+      requireEntryKeyAccess: false
+    });
+
+    if (!user) {
+      return;
+    }
+
+    if (!user.isAdmin) {
+      return sendSongError(reply, "admin_required", "Admin access is required.", 403);
+    }
+
+    const driver = audioStorageDriver();
+    const objects = options.songRepository.listStorageObjectsForAdmin();
+    const totalObjects = options.songRepository.countStorageObjectsForAdmin();
+    const serializedObjects = await Promise.all(
+      objects.map((object) => serializeStorageObject(audioStorage, object))
+    );
+    const totalBytes = serializedObjects.reduce((total, object) => total + object.sizeBytes, 0);
+
+    return {
+      storage: {
+        driver,
+        objects: serializedObjects,
+        returnedObjects: objects.length,
+        totalBytes,
+        totalObjects
+      }
+    };
+  });
+
+  app.post("/api/account/tracks/wipe", async (request, reply) => {
+    const user = await authenticate(request, reply, options.authService, {
+      requireEntryKeyAccess: false
+    });
+
+    if (!user) {
+      return;
+    }
+
+    if (!user.isAdmin) {
+      return sendSongError(reply, "admin_required", "Admin access is required.", 403);
+    }
+
+    const body = (request.body && typeof request.body === "object" ? request.body : {}) as WipeAccountTracksPayload;
+    const deleteStoredAudio = body.deleteStoredAudio === true || body.deleteFromR2 === true;
+    const storagePaths = deleteStoredAudio
+      ? options.songRepository.listStoragePathsForUser(user.id)
+      : [];
+    const deletedTracks = options.songRepository.deleteAllSongsForUser(user.id);
+    const storageDeletion = deleteStoredAudio
+      ? await deleteStoredAudioForWipedAccount(
+          options.songRepository,
+          audioStorage,
+          storagePaths
+        )
+      : {
+          clearedStorageReferences: 0,
+          deletedStoredObjects: 0,
+          failedStoredObjects: 0,
+          retainedStoredObjects: 0,
+          storageCandidates: 0
+        };
+
+    return {
+      deletion: {
+        deletedTracks,
+        storageDeleteRequested: deleteStoredAudio,
+        ...storageDeletion
+      }
     };
   });
 
@@ -378,10 +463,11 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
 async function authenticate(
   request: FastifyRequest,
   reply: FastifyReply,
-  authService: AuthService
+  authService: AuthService,
+  options: { requireEntryKeyAccess?: boolean } = {}
 ): Promise<PublicUser | null> {
   try {
-    return await authService.getUserForAccessToken(readAccessToken(request));
+    return await authService.getUserForAccessToken(readAccessToken(request), options);
   } catch (error) {
     if (error instanceof AuthError) {
       sendSongError(reply, error.code, error.message, error.statusCode);
@@ -473,6 +559,51 @@ async function deleteStoredAudioIfUnreferenced(
   }
 }
 
+async function deleteStoredAudioForWipedAccount(
+  songRepository: SQLiteSongRepository,
+  audioStorage: AudioStorage,
+  storagePaths: string[]
+) {
+  const uniqueStoragePaths = [...new Set(storagePaths)];
+  const summary = {
+    clearedStorageReferences: 0,
+    deletedStoredObjects: 0,
+    failedStoredObjects: 0,
+    retainedStoredObjects: 0,
+    storageCandidates: uniqueStoragePaths.length
+  };
+
+  for (const storagePath of uniqueStoragePaths) {
+    if (songRepository.countActiveSongsByStoragePath({ storagePath }) > 0) {
+      summary.retainedStoredObjects += 1;
+      continue;
+    }
+
+    try {
+      await deleteStoredAudioObject(audioStorage, storagePath);
+      summary.deletedStoredObjects += 1;
+      summary.clearedStorageReferences += songRepository.clearDeletedSongStoragePath(storagePath);
+    } catch {
+      summary.failedStoredObjects += 1;
+    }
+  }
+
+  return summary;
+}
+
+async function deleteStoredAudioObject(audioStorage: AudioStorage, storagePath: string) {
+  if (storageObjectLocation(storagePath) === "r2") {
+    if (audioStorageDriver() !== "r2") {
+      throw new Error("R2 storage is not configured for this server.");
+    }
+
+    await audioStorage.deleteOriginal(storagePath);
+    return;
+  }
+
+  await rm(storagePath, { force: true });
+}
+
 function serializeSong(song: Song) {
   return {
     id: song.id,
@@ -491,6 +622,51 @@ function serializeSong(song: Song) {
     createdAt: song.createdAt.toISOString(),
     updatedAt: song.updatedAt.toISOString()
   };
+}
+
+function audioStorageDriver(): "r2" | "local" {
+  const driver = process.env.BROADSIDE_AUDIO_STORAGE_DRIVER ?? (process.env.R2_BUCKET ? "r2" : "local");
+
+  return driver === "r2" ? "r2" : "local";
+}
+
+async function serializeStorageObject(audioStorage: AudioStorage, object: StorageObjectSummary) {
+  const stat = await statStoredAudioObject(audioStorage, object.storagePath);
+
+  return {
+    storagePath: object.storagePath,
+    location: storageObjectLocation(object.storagePath),
+    songCount: object.songCount,
+    activeSongCount: object.activeSongCount,
+    sizeBytes: stat?.sizeBytes ?? 0,
+    declaredSizeBytes: object.sizeBytes,
+    exists: Boolean(stat),
+    mimeType: object.mimeType,
+    ownerEmails: object.ownerEmails,
+    sampleTitle: object.sampleTitle,
+    earliestCreatedAt: object.earliestCreatedAt.toISOString(),
+    latestUpdatedAt: object.latestUpdatedAt.toISOString()
+  };
+}
+
+async function statStoredAudioObject(audioStorage: AudioStorage, storagePath: string) {
+  try {
+    if (storageObjectLocation(storagePath) === "r2") {
+      if (audioStorageDriver() !== "r2" || !audioStorage.statOriginal) {
+        return null;
+      }
+
+      return audioStorage.statOriginal(storagePath);
+    }
+
+    return { sizeBytes: (await stat(storagePath)).size };
+  } catch {
+    return null;
+  }
+}
+
+function storageObjectLocation(storagePath: string): "r2" | "local" {
+  return storagePath.startsWith("r2://") ? "r2" : "local";
 }
 
 function serializePlaybackState(playbackState: PlaybackState) {

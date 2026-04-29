@@ -1,0 +1,859 @@
+import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ExternalDiscoveryResult, ImportPolicyMode } from "@broadside/shared";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createApiApp } from "../src/app";
+import type { GoogleOAuthClient } from "../src/auth/google";
+import { closeBroadsideDatabase, openBroadsideDatabase, type SqliteDatabase } from "../src/db";
+import { YouTubeDiscoveryError, type YouTubeDiscoveryClient } from "../src/external-discovery/youtube";
+import type { YouTubeImportAdapter } from "../src/external-imports/youtubeAdapter";
+
+const authConfig = {
+  googleClientId: "google-client-id",
+  googleClientSecret: "google-client-secret",
+  googleRedirectUri: "https://api.broadside.test/api/auth/google/callback",
+  cookieSecure: true,
+  allowedReturnToOrigins: ["https://broadside.test"],
+  adminEmails: ["ada@example.com"]
+};
+
+describe("CSV metadata imports", () => {
+  const apps = new Set<ReturnType<typeof createApiApp>>();
+  const databases: SqliteDatabase[] = [];
+  const dirs: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all([...apps].map((app) => app.close()));
+    apps.clear();
+
+    while (databases.length > 0) {
+      closeBroadsideDatabase(databases.pop()!);
+    }
+
+    while (dirs.length > 0) {
+      rmSync(dirs.pop()!, { force: true, recursive: true });
+    }
+
+    vi.restoreAllMocks();
+  });
+
+  it("imports Exportify CSV metadata through the queued YouTube import pipeline", async () => {
+    const youtubeProvider = createYouTubeProvider();
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app, storageRoot } = createTestApp({
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const files = [
+      csvFile("liked.csv", [
+        ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"]
+      ]),
+      csvFile("road_mix.csv", [
+        ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"],
+        ["spotify:track:road", "Road Song", "spotify:artist:grace", "Grace", "spotify:album:drive", "Drive", "spotify:artist:grace", "Grace", "2026-01-01", "https://i.scdn.co/image/road", "1", "2", "210000", "", "false", "40", "USROAD000001", "", "2026-01-03T00:00:00Z"]
+      ])
+    ];
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/preview",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json()).toMatchObject({
+      csvImport: {
+        files: [
+          {
+            fileName: "liked.csv",
+            playlistName: "Liked",
+            trackCount: 1
+          },
+          {
+            fileName: "road_mix.csv",
+            playlistName: "Road Mix",
+            trackCount: 2
+          }
+        ],
+        totalTracks: 3
+      }
+    });
+
+    const batch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(batch.statusCode).toBe(202);
+    expect(batch.json()).toMatchObject({
+      batch: {
+        completedItems: 2,
+        failedItems: 0,
+        status: "completed",
+        totalItems: 2
+      }
+    });
+    expect(youtubeProvider.search).toHaveBeenCalledTimes(2);
+    expect(youtubeImportAdapter.resolve).toHaveBeenCalledTimes(2);
+
+    const songs = await app.inject({
+      method: "GET",
+      url: "/api/songs",
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(songs.statusCode).toBe(200);
+    expect(songs.json().songs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          liked: true,
+          title: "Moon Song",
+          externalSource: expect.objectContaining({
+            provider: "youtube",
+            provenance: expect.objectContaining({
+              csv: expect.objectContaining({
+                fileName: "liked.csv",
+                isrc: "USMOON000001",
+                sourceKey: "track:moon"
+              }),
+              searchSource: "csv_metadata"
+            })
+          })
+        }),
+        expect.objectContaining({
+          liked: false,
+          title: "Road Song"
+        })
+      ])
+    );
+
+    for (const song of songs.json().songs) {
+      expect(song.storagePath.startsWith(storageRoot)).toBe(true);
+      expect(statSync(song.storagePath).size).toBeGreaterThan(0);
+    }
+
+    const playlists = await app.inject({
+      method: "GET",
+      url: "/api/playlists",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    const roadMix = playlists.json().playlists.find(
+      (playlist: { name: string }) => playlist.name === "Road Mix"
+    );
+    const liked = playlists.json().playlists.find(
+      (playlist: { name: string }) => playlist.name === "Liked"
+    );
+
+    expect(roadMix).toMatchObject({ songCount: 2 });
+    expect(liked).toMatchObject({ songCount: 1 });
+
+    const playlist = await app.inject({
+      method: "GET",
+      url: `/api/playlists/${roadMix.id}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(playlist.json().playlist.songs.map((song: { title: string }) => song.title)).toEqual([
+      "Moon Song",
+      "Road Song"
+    ]);
+  });
+
+  it("accepts all-playlist-sized CSV preview payloads", async () => {
+    const { app } = createTestApp({
+      youtubeImportAdapter: createYouTubeImportAdapter(),
+      youtubeProvider: createYouTubeProvider()
+    });
+    const token = await signIn(app);
+    const fileName = "everything.csv";
+    const csv = largeCsvContent(8_000);
+    const files = [{ contentBase64: Buffer.from(csv).toString("base64"), fileName }];
+
+    expect(JSON.stringify({ files }).length).toBeGreaterThan(1_048_576);
+
+    const started = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/uploads",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { fileName }
+    });
+
+    expect(started.statusCode).toBe(200);
+
+    const uploadId = started.json().upload.id;
+    const csvBuffer = Buffer.from(csv);
+    const chunkSize = 256 * 1024;
+
+    for (let offset = 0, chunkIndex = 0; offset < csvBuffer.byteLength; offset += chunkSize, chunkIndex += 1) {
+      const chunk = csvBuffer.subarray(offset, offset + chunkSize);
+      const uploaded = await app.inject({
+        method: "POST",
+        url: `/api/csv-imports/uploads/${uploadId}/chunks`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          chunkIndex,
+          contentBase64: chunk.toString("base64")
+        }
+      });
+
+      expect(uploaded.statusCode).toBe(200);
+    }
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/preview",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { uploads: [{ id: uploadId }] }
+    });
+
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json()).toMatchObject({
+      csvImport: {
+        files: [
+          {
+            fileName: "everything.csv",
+            playlistName: "Everything",
+            trackCount: 8_000
+          }
+        ],
+        totalTracks: 8_000
+      }
+    });
+  });
+
+  it("scores candidates instead of importing the first weak YouTube result", async () => {
+    const youtubeProvider: YouTubeDiscoveryClient = {
+      normalizeUrl: vi.fn(),
+      search: vi.fn(async (_query, importPolicyMode) => ({
+        nextPageToken: null,
+        results: [
+          youtubeResult({
+            creator: "Random Karaoke",
+            durationMs: 180000,
+            importPolicyMode,
+            sourceId: "badKaraoke01",
+            title: "Moon Song Karaoke Cover"
+          }),
+          youtubeResult({
+            creator: "Ada - Topic",
+            durationMs: 180000,
+            importPolicyMode,
+            sourceId: "goodMoon01",
+            title: "Moon Song Official Audio"
+          })
+        ]
+      }))
+    };
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app } = createTestApp({
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const files = [
+      csvFile("liked.csv", [
+        ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"]
+      ])
+    ];
+
+    const batch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(batch.statusCode).toBe(202);
+    expect(batch.json().batch).toMatchObject({
+      completedItems: 1,
+      failedItems: 0,
+      status: "completed"
+    });
+    expect(youtubeImportAdapter.resolve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        discovery: expect.objectContaining({
+          sourceId: "goodMoon01"
+        })
+      })
+    );
+  });
+
+  it("fails low-confidence YouTube matches instead of importing unrelated audio", async () => {
+    const youtubeProvider: YouTubeDiscoveryClient = {
+      normalizeUrl: vi.fn(),
+      search: vi.fn(async (_query, importPolicyMode) => ({
+        nextPageToken: null,
+        results: [
+          youtubeResult({
+            creator: "Talk Channel",
+            durationMs: 3600000,
+            importPolicyMode,
+            sourceId: "wrongPodcast01",
+            title: "Completely Different Podcast Episode"
+          })
+        ]
+      }))
+    };
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app } = createTestApp({
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const files = [
+      csvFile("liked.csv", [
+        ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"]
+      ])
+    ];
+
+    const batch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(batch.statusCode).toBe(202);
+    expect(batch.json().batch).toMatchObject({
+      completedItems: 0,
+      failedItems: 1,
+      status: "failed"
+    });
+    expect(youtubeImportAdapter.resolve).not.toHaveBeenCalled();
+
+    const status = await app.inject({
+      method: "GET",
+      url: `/api/csv-imports/batches/${batch.json().batch.id}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(status.json().items[0]).toMatchObject({
+      errorCode: "youtube_match_low_confidence",
+      status: "failed"
+    });
+  });
+
+  it("retries recoverable failed CSV import items", async () => {
+    const youtubeProvider: YouTubeDiscoveryClient = {
+      normalizeUrl: vi.fn(),
+      search: vi
+        .fn()
+        .mockRejectedValueOnce(
+          new YouTubeDiscoveryError(
+            "youtube_search_unavailable",
+            "YouTube search is temporarily unavailable.",
+            502,
+            true
+          )
+        )
+        .mockRejectedValueOnce(
+          new YouTubeDiscoveryError(
+            "youtube_search_unavailable",
+            "YouTube search is temporarily unavailable.",
+            502,
+            true
+          )
+        )
+        .mockImplementation(async (_query, importPolicyMode) => ({
+          nextPageToken: null,
+          results: [
+            youtubeResult({
+              creator: "Ada Channel",
+              durationMs: 180000,
+              importPolicyMode,
+              sourceId: "youtubeMoonRetry01",
+              title: "Moon Song Official Audio"
+            })
+          ]
+        }))
+    };
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app } = createTestApp({
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const files = [
+      csvFile("liked.csv", [
+        ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"]
+      ])
+    ];
+
+    const batch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(batch.statusCode).toBe(202);
+    expect(batch.json().batch).toMatchObject({
+      completedItems: 0,
+      failedItems: 1,
+      status: "failed"
+    });
+
+    const retried = await app.inject({
+      method: "POST",
+      url: `/api/csv-imports/batches/${batch.json().batch.id}/retry`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(retried.statusCode).toBe(200);
+    expect(retried.json()).toMatchObject({
+      batch: {
+        completedItems: 1,
+        failedItems: 0,
+        status: "completed"
+      },
+      retriedItems: 1
+    });
+    expect(retried.json().items[0]).toMatchObject({
+      errorCode: null,
+      status: "completed",
+      youtubeSourceId: "youtubeMoonRetry01"
+    });
+    expect(youtubeProvider.search).toHaveBeenCalledTimes(3);
+  });
+
+  it("pauses after repeated recoverable YouTube search failures and leaves untried CSV rows pending", async () => {
+    const youtubeProvider: YouTubeDiscoveryClient = {
+      normalizeUrl: vi.fn(),
+      search: vi.fn(async () => {
+        throw new YouTubeDiscoveryError(
+          "youtube_search_unavailable",
+          "YouTube search is temporarily unavailable.",
+          502,
+          true
+        );
+      })
+    };
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app } = createTestApp({
+      recoverableFailurePauseThreshold: 3,
+      recoverableSearchAttempts: 1,
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const files = [
+      csvFile("liked.csv", [
+        ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"],
+        ["spotify:track:road", "Road Song", "spotify:artist:grace", "Grace", "spotify:album:drive", "Drive", "spotify:artist:grace", "Grace", "2026-01-01", "https://i.scdn.co/image/road", "1", "2", "210000", "", "false", "40", "USROAD000001", "", "2026-01-03T00:00:00Z"],
+        ["spotify:track:river", "River Song", "spotify:artist:lin", "Lin", "spotify:album:water", "Water", "spotify:artist:lin", "Lin", "2026-01-01", "https://i.scdn.co/image/river", "1", "3", "220000", "", "false", "30", "USRIVER00001", "", "2026-01-04T00:00:00Z"],
+        ["spotify:track:sky", "Sky Song", "spotify:artist:kay", "Kay", "spotify:album:clouds", "Clouds", "spotify:artist:kay", "Kay", "2026-01-01", "https://i.scdn.co/image/sky", "1", "4", "230000", "", "false", "20", "USSKY0000001", "", "2026-01-05T00:00:00Z"],
+        ["spotify:track:sun", "Sun Song", "spotify:artist:sol", "Sol", "spotify:album:light", "Light", "spotify:artist:sol", "Sol", "2026-01-01", "https://i.scdn.co/image/sun", "1", "5", "240000", "", "false", "10", "USSUN0000001", "", "2026-01-06T00:00:00Z"]
+      ])
+    ];
+
+    const batch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(batch.statusCode).toBe(202);
+    expect(batch.json().batch).toMatchObject({
+      completedItems: 0,
+      failedItems: 3,
+      status: "failed",
+      totalItems: 5
+    });
+
+    const status = await app.inject({
+      method: "GET",
+      url: `/api/csv-imports/batches/${batch.json().batch.id}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    const items = status.json().items as Array<{ autoRetryable: boolean; errorCode: string | null; status: string }>;
+
+    expect(items.filter((item) => item.status === "failed")).toHaveLength(3);
+    expect(items.filter((item) => item.status === "pending")).toHaveLength(2);
+    expect(items.filter((item) => item.autoRetryable)).toHaveLength(3);
+    expect(items.filter((item) => item.errorCode === "youtube_search_unavailable")).toHaveLength(3);
+    expect(youtubeImportAdapter.resolve).not.toHaveBeenCalled();
+    expect(youtubeProvider.search).toHaveBeenCalledTimes(3);
+  });
+
+  it("imports a user-selected YouTube match for low-confidence CSV items", async () => {
+    const youtubeProvider: YouTubeDiscoveryClient = {
+      normalizeUrl: vi.fn(),
+      search: vi.fn(async (_query, importPolicyMode) => ({
+        nextPageToken: null,
+        results: [
+          youtubeResult({
+            creator: "Talk Channel",
+            durationMs: 3600000,
+            importPolicyMode,
+            sourceId: "wrongPodcast01",
+            title: "Completely Different Podcast Episode"
+          })
+        ]
+      }))
+    };
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app } = createTestApp({
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const files = [
+      csvFile("road_mix.csv", [
+        ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"]
+      ])
+    ];
+
+    const batch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+    const item = batch.json().items?.[0];
+    const status = await app.inject({
+      method: "GET",
+      url: `/api/csv-imports/batches/${batch.json().batch.id}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    const failedItem = item ?? status.json().items[0];
+
+    expect(failedItem).toMatchObject({
+      errorCode: "youtube_match_low_confidence",
+      status: "failed",
+      userMatchRequired: true
+    });
+
+    const selected = youtubeResult({
+      creator: "Ada Channel",
+      durationMs: 180000,
+      importPolicyMode: batch.json().batch.importPolicyMode,
+      sourceId: "selectedMoon01",
+      title: "Moon Song Official Audio"
+    });
+    const imported = await app.inject({
+      method: "POST",
+      url: `/api/csv-imports/batches/${batch.json().batch.id}/items/${failedItem.id}/import`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { discovery: selected }
+    });
+
+    expect(imported.statusCode).toBe(200);
+    expect(imported.json()).toMatchObject({
+      batch: {
+        completedItems: 1,
+        failedItems: 0,
+        status: "completed"
+      },
+      item: {
+        status: "completed",
+        youtubeSourceId: "selectedMoon01"
+      }
+    });
+
+    const playlists = await app.inject({
+      method: "GET",
+      url: "/api/playlists",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    const roadMix = playlists.json().playlists.find(
+      (playlist: { name: string }) => playlist.name === "Road Mix"
+    );
+
+    expect(roadMix).toMatchObject({ songCount: 1 });
+  });
+
+  it("cancels an in-progress CSV import batch and skips remaining pending items", async () => {
+    const searchStarted = deferred();
+    const releaseSearch = deferred();
+    const youtubeProvider: YouTubeDiscoveryClient = {
+      normalizeUrl: vi.fn(),
+      search: vi.fn(async (_query, importPolicyMode) => {
+        searchStarted.resolve();
+        await releaseSearch.promise;
+
+        return {
+          nextPageToken: null,
+          results: [
+            youtubeResult({
+              creator: "Ada Channel",
+              durationMs: 180000,
+              importPolicyMode,
+              sourceId: "youtubeMoon01",
+              title: "Moon Song Official Audio"
+            })
+          ]
+        };
+      })
+    };
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app } = createTestApp({
+      processImportsInline: false,
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const files = [
+      csvFile("liked.csv", [
+        ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"],
+        ["spotify:track:road", "Road Song", "spotify:artist:grace", "Grace", "spotify:album:drive", "Drive", "spotify:artist:grace", "Grace", "2026-01-01", "https://i.scdn.co/image/road", "1", "2", "210000", "", "false", "40", "USROAD000001", "", "2026-01-03T00:00:00Z"]
+      ])
+    ];
+
+    const batch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(batch.statusCode).toBe(202);
+    await searchStarted.promise;
+
+    const canceled = await app.inject({
+      method: "POST",
+      url: `/api/csv-imports/batches/${batch.json().batch.id}/cancel`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(canceled.statusCode).toBe(200);
+    expect(canceled.json().batch).toMatchObject({
+      failedItems: 2,
+      status: "failed",
+      totalItems: 2
+    });
+    expect(canceled.json().items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          errorCode: "csv_import_canceled",
+          status: "failed",
+          title: "Moon Song"
+        }),
+        expect.objectContaining({
+          errorCode: "csv_import_canceled",
+          status: "failed",
+          title: "Road Song"
+        })
+      ])
+    );
+
+    releaseSearch.resolve();
+    await wait(25);
+
+    expect(youtubeProvider.search).toHaveBeenCalledTimes(1);
+  });
+
+  function createTestApp(input: {
+    processImportsInline?: boolean;
+    recoverableFailurePauseThreshold?: number;
+    recoverableSearchAttempts?: number;
+    youtubeImportAdapter: YouTubeImportAdapter;
+    youtubeProvider: YouTubeDiscoveryClient;
+  }) {
+    const dir = mkdtempSync(join(tmpdir(), "broadside-csv-import-"));
+    const storageRoot = join(dir, "audio");
+    const db = openBroadsideDatabase(join(dir, "broadside.sqlite"));
+    const app = createApiApp({
+      db,
+      auth: {
+        ...authConfig,
+        googleOAuthClient: createGoogleClient()
+      },
+      csvImports: {
+        processImportsInline: input.processImportsInline ?? true,
+        recoverableFailurePauseThreshold: input.recoverableFailurePauseThreshold,
+        recoverableSearchAttempts: input.recoverableSearchAttempts,
+        recoverableSearchRetryDelayMs: 0,
+        storageRoot,
+        youtubeImportAdapter: input.youtubeImportAdapter,
+        youtubeProvider: input.youtubeProvider
+      },
+      importPolicy: {
+        environment: "test",
+        mode: "open_test",
+        openTestAllowedEnvironments: ["test"],
+        openTestAllowedUserEmails: ["ada@example.com"]
+      },
+      songs: {
+        storageRoot
+      }
+    });
+
+    apps.add(app);
+    databases.push(db);
+    dirs.push(dir);
+
+    return { app, storageRoot };
+  }
+});
+
+function createYouTubeProvider(): YouTubeDiscoveryClient {
+  return {
+    search: vi.fn(async (query, importPolicyMode) => {
+      const isMoon = query.toLowerCase().includes("moon");
+      const sourceId = isMoon ? "youtubeMoon01" : "youtubeRoad01";
+
+      return {
+        nextPageToken: null,
+        results: [
+          youtubeResult({
+            creator: isMoon ? "Ada Channel" : "Grace Channel",
+            durationMs: isMoon ? 180000 : 210000,
+            importPolicyMode,
+            sourceId,
+            title: isMoon ? "Moon Song Official Audio" : "Road Song Official Audio"
+          })
+        ]
+      };
+    }),
+    normalizeUrl: vi.fn()
+  };
+}
+
+function youtubeResult(input: {
+  creator: string;
+  durationMs: number;
+  importPolicyMode: ImportPolicyMode;
+  sourceId: string;
+  title: string;
+}): ExternalDiscoveryResult {
+  return {
+    canonicalUrl: `https://www.youtube.com/watch?v=${input.sourceId}`,
+    creator: input.creator,
+    description: null,
+    durationMs: input.durationMs,
+    importPolicyMode: input.importPolicyMode,
+    provider: "youtube",
+    sourceId: input.sourceId,
+    thumbnailUrl: `https://i.ytimg.com/vi/${input.sourceId}/hqdefault.jpg`,
+    title: input.title
+  };
+}
+
+function createYouTubeImportAdapter(): YouTubeImportAdapter {
+  return {
+    resolve: vi.fn(async ({ discovery }) => ({
+      adapter: "test_youtube_adapter",
+      content: Buffer.concat([Buffer.from("ID3"), Buffer.from(discovery.sourceId)]),
+      durationMs: discovery.durationMs,
+      fileName: `${discovery.sourceId}.mp3`,
+      mimeType: "audio/mpeg",
+      provenance: {
+        adapter: "test_youtube_adapter"
+      }
+    }))
+  };
+}
+
+function csvFile(fileName: string, rows: string[][]) {
+  const header = [
+    "Track URI",
+    "Track Name",
+    "Artist URI(s)",
+    "Artist Name(s)",
+    "Album URI",
+    "Album Name",
+    "Album Artist URI(s)",
+    "Album Artist Name(s)",
+    "Album Release Date",
+    "Album Image URL",
+    "Disc Number",
+    "Track Number",
+    "Track Duration (ms)",
+    "Track Preview URL",
+    "Explicit",
+    "Popularity",
+    "ISRC",
+    "Added By",
+    "Added At"
+  ];
+  const csv = [header, ...rows]
+    .map((row) => row.map((cell) => `"${cell.replace(/"/g, "\"\"")}"`).join(","))
+    .join("\n");
+
+  return {
+    contentBase64: Buffer.from(csv).toString("base64"),
+    fileName
+  };
+}
+
+function largeCsvContent(rowCount: number) {
+  const header = [
+    "Track URI",
+    "Track Name",
+    "Artist Name(s)",
+    "Album Name",
+    "Track Duration (ms)",
+    "ISRC"
+  ].join(",");
+  const rows = Array.from({ length: rowCount }, (_, index) => {
+    const padded = String(index).padStart(5, "0");
+
+    return [
+      `spotify:track:bulk${padded}`,
+      `Bulk Preview Song ${padded}`,
+      `CSV Artist ${padded}`,
+      `CSV Album ${padded}`,
+      "180000",
+      `USCSV${padded}`
+    ].map((cell) => `"${cell}"`).join(",");
+  });
+
+  return [header, ...rows].join("\n");
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+
+  return { promise, resolve };
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createGoogleClient(): GoogleOAuthClient {
+  return {
+    exchangeCodeForTokens: vi.fn(async () => ({ idToken: "mock-google-id-token" })),
+    verifyIdToken: vi.fn(async () => ({
+      iss: "https://accounts.google.com",
+      aud: authConfig.googleClientId,
+      exp: Math.floor(Date.now() / 1000) + 300,
+      sub: "google-subject-ada",
+      email: "ada@example.com",
+      emailVerified: true,
+      displayName: "Ada",
+      avatarUrl: "https://example.com/avatar.png"
+    }))
+  };
+}
+
+async function signIn(app: ReturnType<typeof createApiApp>) {
+  const start = await app.inject({
+    method: "GET",
+    url: "/api/auth/google/start?mode=mobile&returnTo=broadside%3A%2F%2Fauth%2Fcallback"
+  });
+  const state = new URL(String(start.headers.location)).searchParams.get("state");
+  const callback = await app.inject({
+    method: "GET",
+    url: `/api/auth/google/callback?state=${state}&code=auth-code`
+  });
+  const exchangeCode = new URL(String(callback.headers.location)).searchParams.get(
+    "session_exchange_code"
+  );
+  const session = await app.inject({
+    method: "POST",
+    url: "/api/auth/session/exchange",
+    payload: { code: exchangeCode }
+  });
+
+  return String(session.json().accessToken);
+}

@@ -252,6 +252,77 @@ export const migrations: Migration[] = [
       CREATE INDEX idx_entry_keys_consumed_by_user_id
         ON entry_keys(consumed_by_user_id);
     `
+  },
+  {
+    version: 6,
+    name: "reserved_removed_metadata_import_queue",
+    up: `
+      SELECT 1;
+    `
+  },
+  {
+    version: 7,
+    name: "csv_metadata_import_queue",
+    up: `
+      DROP TABLE IF EXISTS spotify_import_items;
+      DROP TABLE IF EXISTS spotify_import_batches;
+      DROP TABLE IF EXISTS spotify_playlist_tracks;
+      DROP TABLE IF EXISTS spotify_playlists;
+      DROP TABLE IF EXISTS spotify_tracks;
+      DROP TABLE IF EXISTS spotify_connections;
+      DROP TABLE IF EXISTS spotify_oauth_states;
+
+      CREATE TABLE csv_import_batches (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        import_policy_mode TEXT NOT NULL CHECK (import_policy_mode IN ('open_test', 'review_required', 'licensed_only')),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+        total_items INTEGER NOT NULL DEFAULT 0 CHECK (total_items >= 0),
+        completed_items INTEGER NOT NULL DEFAULT 0 CHECK (completed_items >= 0),
+        failed_items INTEGER NOT NULL DEFAULT 0 CHECK (failed_items >= 0),
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE csv_import_items (
+        id TEXT PRIMARY KEY,
+        batch_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        playlist_name TEXT NOT NULL,
+        source_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        artist TEXT,
+        album TEXT,
+        duration_ms INTEGER,
+        artwork_url TEXT,
+        source_url TEXT,
+        isrc TEXT,
+        search_query TEXT NOT NULL,
+        like_after_import INTEGER NOT NULL DEFAULT 0 CHECK (like_after_import IN (0, 1)),
+        playlist_targets_json TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'skipped')),
+        song_id TEXT,
+        youtube_source_id TEXT,
+        error_code TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (batch_id) REFERENCES csv_import_batches(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (song_id) REFERENCES songs(id) ON DELETE SET NULL,
+        UNIQUE (batch_id, source_key)
+      );
+
+      CREATE INDEX idx_csv_import_batches_user_status
+        ON csv_import_batches(user_id, status, created_at DESC);
+      CREATE INDEX idx_csv_import_items_batch_status
+        ON csv_import_items(batch_id, status, created_at ASC);
+      CREATE INDEX idx_csv_import_items_user_source
+        ON csv_import_items(user_id, source_key);
+    `
   }
 ];
 

@@ -222,6 +222,85 @@ describe("Phase 6 library, search, and playlist features", () => {
     ]);
   });
 
+  it("deletes playlists without deleting the songs in the library", async () => {
+    const { app, signIn } = createTestApp();
+    const token = await signIn({ sub: "google-subject-1", email: "ada@example.com" });
+    const song = await importSong(app, token, { fileName: "keeper.mp3", title: "Keeper" });
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/playlists",
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      payload: {
+        name: "Temporary Mix"
+      }
+    });
+    const playlistId = created.json().playlist.id;
+
+    const added = await app.inject({
+      method: "POST",
+      url: `/api/playlists/${playlistId}/songs`,
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      payload: {
+        songId: song.id
+      }
+    });
+    expect(added.statusCode).toBe(200);
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/api/playlists/${playlistId}`,
+      headers: {
+        authorization: `Bearer ${token}`
+      }
+    });
+    expect(deleted.statusCode).toBe(204);
+
+    const deletedAgain = await app.inject({
+      method: "DELETE",
+      url: `/api/playlists/${playlistId}`,
+      headers: {
+        authorization: `Bearer ${token}`
+      }
+    });
+    expect(deletedAgain.statusCode).toBe(204);
+
+    const missingPlaylist = await app.inject({
+      method: "GET",
+      url: `/api/playlists/${playlistId}`,
+      headers: {
+        authorization: `Bearer ${token}`
+      }
+    });
+    expect(missingPlaylist.statusCode).toBe(404);
+
+    const summary = await app.inject({
+      method: "GET",
+      url: "/api/library/summary",
+      headers: {
+        authorization: `Bearer ${token}`
+      }
+    });
+    expect(summary.json()).toMatchObject({
+      summary: {
+        counts: {
+          playlists: 0,
+          songs: 1
+        },
+        playlists: [],
+        recentSongs: [
+          {
+            id: song.id,
+            title: "Keeper"
+          }
+        ]
+      }
+    });
+  });
+
   it("treats liking and unliking a song as idempotent Liked Songs membership", async () => {
     const { app, signIn } = createTestApp();
     const token = await signIn({ sub: "google-subject-1", email: "ada@example.com" });

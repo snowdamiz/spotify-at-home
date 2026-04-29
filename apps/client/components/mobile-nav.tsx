@@ -28,14 +28,14 @@ export function MobileNav({ isAdmin, view, setView }: MobileNavProps) {
 
   return (
     <nav
-      className="md:hidden border-t border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80"
+      className="safe-x md:hidden border-t border-border/60 bg-background/95 backdrop-blur-md supports-[backdrop-filter]:bg-background/75"
       aria-label="Primary"
     >
       <ul
         className={
           isAdmin
-            ? 'grid grid-cols-5 pb-[env(safe-area-inset-bottom)]'
-            : 'grid grid-cols-4 pb-[env(safe-area-inset-bottom)]'
+            ? 'safe-bottom-nav grid grid-cols-5'
+            : 'safe-bottom-nav grid grid-cols-4'
         }
       >
         {items.map((item) => {
@@ -45,12 +45,19 @@ export function MobileNav({ isAdmin, view, setView }: MobileNavProps) {
               <button
                 onClick={() => setView(item.id)}
                 className={cn(
-                  'flex w-full flex-col items-center justify-center gap-1 py-2.5 text-[11px] font-medium transition-colors',
+                  'relative flex w-full flex-col items-center justify-center gap-1 py-2.5 text-[11px] font-medium tracking-tight transition-colors',
                   active
                     ? 'text-foreground'
                     : 'text-muted-foreground hover:text-foreground',
                 )}
               >
+                <span
+                  aria-hidden
+                  className={cn(
+                    'absolute top-0 h-[2px] w-8 rounded-full bg-primary transition-opacity',
+                    active ? 'opacity-100' : 'opacity-0',
+                  )}
+                />
                 {item.icon}
                 {item.label}
               </button>

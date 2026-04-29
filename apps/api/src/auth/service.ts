@@ -285,7 +285,7 @@ export class AuthService {
     if (options.requireEntryKeyAccess !== false && !this.hasEntryAccess(user)) {
       throw new AuthError(
         "entry_key_required",
-        "An entry key is required before this account can use Broadside.",
+        "An entry key is required before this account can use OnVibe.",
         403
       );
     }

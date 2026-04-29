@@ -10,6 +10,11 @@ import {
   type ImportPolicyRuntimeConfig
 } from "./import-policy/policy.js";
 import {
+  registerCsvImportRoutes,
+  type CsvImportRoutesOptions
+} from "./csv-imports/routes.js";
+import { SQLiteCsvImportRepository } from "./csv-imports/repositories.js";
+import {
   registerExternalDiscoveryRoutes,
   type ExternalDiscoveryRoutesOptions
 } from "./external-discovery/routes.js";
@@ -23,6 +28,12 @@ import { registerSongRoutes, type SongRoutesOptions } from "./songs/routes.js";
 
 export interface CreateApiAppOptions {
   auth?: Partial<AuthRoutesOptions>;
+  csvImports?: Partial<
+    Omit<
+      CsvImportRoutesOptions,
+      "authService" | "csvImportRepository" | "playlistRepository" | "songRepository"
+    >
+  >;
   db?: SqliteDatabase;
   externalDiscovery?: Partial<Omit<ExternalDiscoveryRoutesOptions, "authService">>;
   externalImports?: Partial<Omit<ExternalImportRoutesOptions, "authService" | "songRepository">>;
@@ -65,6 +76,7 @@ export function createApiApp(options: CreateApiAppOptions = {}) {
   });
   const songRepository = new SQLiteSongRepository(db);
   const playlistRepository = new SQLitePlaylistRepository(db);
+  const csvImportRepository = new SQLiteCsvImportRepository(db);
   const importPolicyConfig = options.importPolicy
     ? createImportPolicyRuntimeConfig(options.importPolicy)
     : undefined;
@@ -95,6 +107,14 @@ export function createApiApp(options: CreateApiAppOptions = {}) {
     authService,
     playlistRepository,
     songRepository
+  });
+  registerCsvImportRoutes(app, {
+    authService,
+    csvImportRepository,
+    importPolicyConfig,
+    playlistRepository,
+    songRepository,
+    ...options.csvImports
   });
 
   if (ownsDatabase) {

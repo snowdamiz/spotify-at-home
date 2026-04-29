@@ -1,14 +1,16 @@
 'use client'
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
   ArrowRight,
   CheckCircle2,
   ExternalLink,
   FileAudio,
+  ListMusic,
   Loader2,
   Music2,
+  RefreshCcw,
   Search,
   Sparkles,
   Upload,
@@ -24,7 +26,14 @@ import {
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { cn } from '@/lib/utils'
-import { isSupportedAudioFile } from '@/lib/api'
+import {
+  previewCsvImportFiles,
+  type CsvImportBatch,
+  type CsvImportItem,
+  type CsvImportPreviewFile,
+  isSupportedCsvFile,
+  isSupportedAudioFile,
+} from '@/lib/api'
 import type { detectPlatform } from '@/lib/url-import'
 
 export type Download = {
@@ -33,9 +42,15 @@ export type Download = {
   platform: ReturnType<typeof detectPlatform>
   title: string
   artist: string
+  batchIds?: string[]
+  cancelable?: boolean
+  canceling?: boolean
+  csvImportBatches?: CsvImportBatch[]
+  csvImportItems?: CsvImportItem[]
   thumbnailUrl?: string | null
   progress: number // 0..1
-  status: 'downloading' | 'complete' | 'error'
+  retrying?: boolean
+  status: 'downloading' | 'complete' | 'error' | 'canceled'
   message?: string
 }
 
@@ -45,9 +60,18 @@ type AddMusicDialogProps = {
   downloads: Download[]
   externalResults: ExternalDiscoveryResult[]
   isDiscoveringLink: boolean
-  isImportingLink: boolean
+  manualMatchItem?: CsvImportItem | null
+  onCancelImport?: (download: Download) => void | Promise<void>
+  onClearManualMatch?: () => void
+  onCsvFilesSelected: (files: File[]) => void | Promise<void>
   onFilesSelected: (files: FileList | File[]) => void
+  onImportCsvMatch?: (
+    item: CsvImportItem,
+    result: ExternalDiscoveryResult,
+  ) => void | Promise<void>
   onImportExternalResult: (result: ExternalDiscoveryResult) => void | Promise<void>
+  onMatchCsvImportItem?: (download: Download, item: CsvImportItem) => void
+  onRetryCsvImport?: (download: Download) => void | Promise<void>
   onSubmitUrl: (url: string) => void | Promise<void>
 }
 
@@ -73,19 +97,49 @@ export function AddMusicDialog({
   downloads,
   externalResults,
   isDiscoveringLink,
-  isImportingLink,
+  manualMatchItem,
+  onCancelImport,
+  onClearManualMatch,
+  onCsvFilesSelected,
   onFilesSelected,
+  onImportCsvMatch,
   onImportExternalResult,
+  onMatchCsvImportItem,
+  onRetryCsvImport,
   onSubmitUrl,
 }: AddMusicDialogProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
-  const [tab, setTab] = useState<'youtube' | 'upload'>('youtube')
+  const [tab, setTab] = useState<'youtube' | 'csv' | 'upload'>('youtube')
   const [url, setUrl] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [hasSearched, setHasSearched] = useState(false)
-  const [pendingResultId, setPendingResultId] = useState<string | null>(null)
+  const pendingResultIdsRef = useRef<Set<string>>(new Set())
+  const [pendingResultIds, setPendingResultIds] = useState<Set<string>>(
+    () => new Set(),
+  )
+
+  useEffect(() => {
+    if (!manualMatchItem) return
+
+    setTab('youtube')
+    setUrl(manualMatchItem.searchQuery)
+    setHasSearched(true)
+    setError(null)
+  }, [manualMatchItem])
+
+  const setResultPending = (sourceId: string, pending: boolean) => {
+    const next = new Set(pendingResultIdsRef.current)
+    if (pending) {
+      next.add(sourceId)
+    } else {
+      next.delete(sourceId)
+    }
+
+    pendingResultIdsRef.current = next
+    setPendingResultIds(next)
+  }
 
   const handleFiles = useCallback(
     (files: FileList | File[]) => {
@@ -127,13 +181,17 @@ export function AddMusicDialog({
   }
 
   const handleImport = async (result: ExternalDiscoveryResult) => {
-    setPendingResultId(result.sourceId)
+    if (pendingResultIdsRef.current.has(result.sourceId)) return
+
+    setResultPending(result.sourceId, true)
     try {
-      await onImportExternalResult(result)
+      if (manualMatchItem && onImportCsvMatch) {
+        await onImportCsvMatch(manualMatchItem, result)
+      } else {
+        await onImportExternalResult(result)
+      }
     } finally {
-      setPendingResultId((current) =>
-        current === result.sourceId ? null : current,
-      )
+      setResultPending(result.sourceId, false)
     }
   }
 
@@ -156,7 +214,7 @@ export function AddMusicDialog({
         </DialogDescription>
 
         {/* Header */}
-        <header className="relative z-20 flex shrink-0 items-center justify-between border-b border-border/50 bg-background/80 px-4 py-3 backdrop-blur-xl md:px-8 md:py-4">
+        <header className="safe-x-4 safe-top-3 relative z-20 flex shrink-0 items-center justify-between border-b border-border/50 bg-background/80 pb-3 backdrop-blur-xl md:py-4">
           <div className="flex min-w-0 items-center gap-3">
             <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary/70 text-primary-foreground shadow-lg shadow-primary/20">
               <Music2 className="h-5 w-5" />
@@ -190,7 +248,7 @@ export function AddMusicDialog({
             className="pointer-events-none absolute inset-x-0 top-0 h-[440px] bg-[radial-gradient(60%_60%_at_50%_0%,rgba(255,150,80,0.18)_0%,rgba(255,150,80,0.06)_30%,transparent_70%)]"
           />
 
-          <div className="relative mx-auto w-full max-w-5xl px-4 pb-32 pt-8 md:px-8 md:pt-14">
+          <div className="safe-x-page relative mx-auto w-full max-w-5xl pb-32 pt-8 md:pt-14">
             {/* Tab switcher */}
             <div className="flex justify-center">
               <div
@@ -203,6 +261,12 @@ export function AddMusicDialog({
                   onClick={() => setTab('youtube')}
                   icon={<Search className="h-4 w-4" />}
                   label="Search & link"
+                />
+                <TabButton
+                  active={tab === 'csv'}
+                  onClick={() => setTab('csv')}
+                  icon={<ListMusic className="h-4 w-4" />}
+                  label="CSV playlists"
                 />
                 <TabButton
                   active={tab === 'upload'}
@@ -223,15 +287,18 @@ export function AddMusicDialog({
                 onSubmit={onSubmit}
                 onSuggestionClick={onSuggestionClick}
                 isDiscoveringLink={isDiscoveringLink}
-                isImportingLink={isImportingLink}
-                pendingResultId={pendingResultId}
+                pendingResultIds={pendingResultIds}
                 externalResults={externalResults}
+                manualMatchItem={manualMatchItem}
                 showResults={showResults}
                 showEmptySearchHint={showEmptySearchHint}
                 showNoMatches={showNoMatches}
                 onImport={handleImport}
                 canImportExternal={canImportExternal}
+                onClearManualMatch={onClearManualMatch}
               />
+            ) : tab === 'csv' ? (
+              <CsvPanel onImport={onCsvFilesSelected} />
             ) : (
               <UploadPanel
                 fileInputRef={fileInputRef}
@@ -244,7 +311,14 @@ export function AddMusicDialog({
             )}
 
             {/* Imports — shared across tabs */}
-            {downloads.length > 0 && <ImportsList downloads={downloads} />}
+            {downloads.length > 0 && (
+              <ImportsList
+                downloads={downloads}
+                onCancelImport={onCancelImport}
+                onMatchCsvImportItem={onMatchCsvImportItem}
+                onRetryCsvImport={onRetryCsvImport}
+              />
+            )}
           </div>
         </div>
       </DialogContent>
@@ -299,14 +373,15 @@ type SearchPanelProps = {
   onSubmit: (e: React.FormEvent) => void
   onSuggestionClick: (value: string) => void
   isDiscoveringLink: boolean
-  isImportingLink: boolean
-  pendingResultId: string | null
+  pendingResultIds: Set<string>
   externalResults: ExternalDiscoveryResult[]
+  manualMatchItem?: CsvImportItem | null
   showResults: boolean
   showEmptySearchHint: boolean
   showNoMatches: boolean
   onImport: (result: ExternalDiscoveryResult) => void | Promise<void>
   canImportExternal: (result: ExternalDiscoveryResult) => boolean
+  onClearManualMatch?: () => void
 }
 
 function SearchPanel({
@@ -318,14 +393,15 @@ function SearchPanel({
   onSubmit,
   onSuggestionClick,
   isDiscoveringLink,
-  isImportingLink,
-  pendingResultId,
+  pendingResultIds,
   externalResults,
+  manualMatchItem,
   showResults,
   showEmptySearchHint,
   showNoMatches,
   onImport,
   canImportExternal,
+  onClearManualMatch,
 }: SearchPanelProps) {
   return (
     <section className="mt-10">
@@ -410,6 +486,34 @@ function SearchPanel({
         </div>
       </form>
 
+      {manualMatchItem && (
+        <div className="mx-auto mt-5 flex max-w-2xl items-center gap-3 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-left">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
+            <Search className="h-4 w-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium">
+              {manualMatchItem.title}
+            </div>
+            <div className="truncate text-xs text-muted-foreground">
+              {manualMatchItem.artist ?? manualMatchItem.playlistName}
+            </div>
+          </div>
+          {onClearManualMatch && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
+              onClick={onClearManualMatch}
+              aria-label="Clear CSV match"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
+      )}
+
       {/* Results / loading / empty state */}
       <div className="mx-auto mt-12 w-full max-w-3xl">
         {isDiscoveringLink && !showResults && (
@@ -440,8 +544,7 @@ function SearchPanel({
                 <ResultRow
                   key={result.sourceId}
                   result={result}
-                  isPending={pendingResultId === result.sourceId && isImportingLink}
-                  isAnyPending={isImportingLink && pendingResultId !== null}
+                  isPending={pendingResultIds.has(result.sourceId)}
                   canImport={canImportExternal(result)}
                   onImport={onImport}
                 />
@@ -517,13 +620,11 @@ function EmptySearchHint() {
 function ResultRow({
   result,
   isPending,
-  isAnyPending,
   canImport,
   onImport,
 }: {
   result: ExternalDiscoveryResult
   isPending: boolean
-  isAnyPending: boolean
   canImport: boolean
   onImport: (r: ExternalDiscoveryResult) => void | Promise<void>
 }) {
@@ -605,7 +706,7 @@ function ResultRow({
             type="button"
             size="sm"
             className="rounded-full px-4 font-semibold"
-            disabled={!canImport || isAnyPending}
+            disabled={!canImport || isPending}
             onClick={() => onImport(result)}
           >
             {isPending ? (
@@ -623,6 +724,167 @@ function ResultRow({
         </div>
       </div>
     </li>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* CSV panel                                                          */
+/* ------------------------------------------------------------------ */
+
+function CsvPanel({
+  onImport,
+}: {
+  onImport: (files: File[]) => void | Promise<void>
+}) {
+  const csvInputRef = useRef<HTMLInputElement | null>(null)
+  const [files, setFiles] = useState<File[]>([])
+  const [preview, setPreview] = useState<CsvImportPreviewFile[]>([])
+  const [isPreviewing, setIsPreviewing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleCsvFiles = useCallback(async (incoming: FileList | File[]) => {
+    const accepted = Array.from(incoming).filter(isSupportedCsvFile)
+    if (accepted.length === 0) {
+      setError('Choose at least one CSV or TSV file.')
+      return
+    }
+
+    setFiles(accepted)
+    setPreview([])
+    setError(null)
+    setIsPreviewing(true)
+
+    try {
+      const result = await previewCsvImportFiles(accepted)
+      if (result.status === 'authenticated') {
+        setPreview(result.files)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'CSV preview failed.')
+    } finally {
+      setIsPreviewing(false)
+    }
+  }, [])
+
+  const trackCount = preview.reduce((total, file) => total + file.trackCount, 0)
+
+  return (
+    <section className="mx-auto mt-10 w-full max-w-3xl">
+      <div className="mx-auto max-w-2xl text-center">
+        <h1 className="text-3xl font-bold tracking-tight md:text-5xl">
+          Import playlists from CSV
+        </h1>
+        <p className="mt-3 text-sm text-muted-foreground md:text-base">
+          Upload one or more playlist exports and OnVibe will queue them through search.
+        </p>
+      </div>
+
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => csvInputRef.current?.click()}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            csvInputRef.current?.click()
+          }
+        }}
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => {
+          event.preventDefault()
+          if (event.dataTransfer.files.length > 0) {
+            void handleCsvFiles(event.dataTransfer.files)
+          }
+        }}
+        className="mt-8 cursor-pointer rounded-2xl border border-dashed border-border/70 bg-card/40 px-6 py-10 text-center transition-colors hover:border-border hover:bg-card/60"
+      >
+        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-xl bg-primary/10 text-primary">
+          <ListMusic className="h-6 w-6" />
+        </div>
+        <div className="mt-4 text-base font-semibold">
+          Drop CSV files here
+        </div>
+        <div className="mt-1 text-sm text-muted-foreground">
+          or click to browse
+        </div>
+      </div>
+
+      <input
+        ref={csvInputRef}
+        type="file"
+        accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values"
+        multiple
+        className="hidden"
+        onChange={(event) => {
+          if (event.target.files) {
+            void handleCsvFiles(event.target.files)
+          }
+          event.target.value = ''
+        }}
+      />
+
+      {error && (
+        <div className="mt-4 flex items-center justify-center gap-1.5 text-xs text-destructive">
+          <AlertCircle className="h-3.5 w-3.5" />
+          {error}
+        </div>
+      )}
+
+      {(files.length > 0 || isPreviewing) && (
+        <div className="mt-6 rounded-xl border border-border/60 bg-card/40">
+          <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
+            <div>
+              <div className="text-sm font-semibold">
+                {files.length} {files.length === 1 ? 'file' : 'files'}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {isPreviewing
+                  ? 'Reading rows'
+                  : `${trackCount} ${trackCount === 1 ? 'track' : 'tracks'} found`}
+              </div>
+            </div>
+            <Button
+              type="button"
+              className="rounded-full"
+              disabled={files.length === 0 || isPreviewing}
+              onClick={() => onImport(files)}
+            >
+              {isPreviewing ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Upload className="h-4 w-4" />
+              )}
+              Import CSVs
+            </Button>
+          </div>
+
+          <ul className="divide-y divide-border/60">
+            {(preview.length > 0 ? preview : files.map((file) => ({
+              fileName: file.name,
+              playlistName: file.name.replace(/\.[^.]+$/, ''),
+              trackCount: 0,
+              tracks: [],
+              warnings: [],
+            } satisfies CsvImportPreviewFile))).map((file) => (
+              <li key={file.fileName} className="flex items-center gap-3 px-4 py-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                  <ListMusic className="h-4 w-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-semibold">
+                    {file.playlistName}
+                  </div>
+                  <div className="truncate text-xs text-muted-foreground">
+                    {file.fileName}
+                    {file.trackCount > 0 ? ` - ${file.trackCount} tracks` : ''}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -740,7 +1002,7 @@ function UploadPanel({
       </div>
 
       <p className="mx-auto mt-5 max-w-2xl text-center text-xs text-muted-foreground">
-        Files upload to your authenticated Broadside server and become available
+        Files upload to your authenticated OnVibe server and become available
         across all your devices.
       </p>
     </section>
@@ -751,7 +1013,17 @@ function UploadPanel({
 /* Imports list                                                       */
 /* ------------------------------------------------------------------ */
 
-function ImportsList({ downloads }: { downloads: Download[] }) {
+function ImportsList({
+  downloads,
+  onCancelImport,
+  onMatchCsvImportItem,
+  onRetryCsvImport,
+}: {
+  downloads: Download[]
+  onCancelImport?: (download: Download) => void | Promise<void>
+  onMatchCsvImportItem?: (download: Download, item: CsvImportItem) => void
+  onRetryCsvImport?: (download: Download) => void | Promise<void>
+}) {
   const active = downloads.filter((d) => d.status === 'downloading').length
   return (
     <section className="mx-auto mt-14 max-w-3xl">
@@ -770,74 +1042,162 @@ function ImportsList({ downloads }: { downloads: Download[] }) {
         )}
       </div>
       <ul className="space-y-2">
-        {downloads.map((d) => (
-          <li
-            key={d.id}
-            className="overflow-hidden rounded-xl border border-border/50 bg-card/50 p-3"
-          >
-            <div className="flex items-center gap-3">
-              <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-lg bg-muted">
-                {d.thumbnailUrl ? (
-                  <img
-                    alt=""
-                    src={d.thumbnailUrl}
-                    className="h-full w-full object-cover"
-                    loading="lazy"
-                    referrerPolicy="no-referrer"
-                  />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center text-muted-foreground">
-                    <Music2 className="h-5 w-5" />
-                  </div>
-                )}
-                {d.status === 'downloading' && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-                    <Loader2 className="h-4 w-4 animate-spin text-white" />
-                  </div>
-                )}
-                {d.status === 'complete' && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-primary/80">
-                    <CheckCircle2 className="h-5 w-5 text-primary-foreground" />
-                  </div>
-                )}
-                {d.status === 'error' && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-destructive/80">
-                    <AlertCircle className="h-5 w-5 text-destructive-foreground" />
-                  </div>
-                )}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium">{d.title}</div>
-                <div className="truncate text-xs text-muted-foreground">
-                  {d.artist}
-                </div>
-                {d.status === 'downloading' && (
-                  <div className="mt-2 flex items-center gap-2">
-                    <Progress
-                      value={Math.round(d.progress * 100)}
-                      className="h-1 flex-1"
+        {downloads.map((d) => {
+          const retryableCount =
+            d.csvImportItems?.filter((item) => item.autoRetryable).length ?? 0
+          const pendingCsvCount =
+            d.csvImportItems?.filter((item) => item.status === 'pending')
+              .length ?? 0
+          const resumableCsvCount = retryableCount + pendingCsvCount
+          const manualMatchItems =
+            d.csvImportItems?.filter((item) => item.userMatchRequired) ?? []
+
+          return (
+            <li
+              key={d.id}
+              className="overflow-hidden rounded-xl border border-border/50 bg-card/50 p-3"
+            >
+              <div className="flex items-center gap-3">
+                <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-lg bg-muted">
+                  {d.thumbnailUrl ? (
+                    <img
+                      alt=""
+                      src={d.thumbnailUrl}
+                      className="h-full w-full object-cover"
+                      loading="lazy"
+                      referrerPolicy="no-referrer"
                     />
-                    <span className="w-9 text-right text-[11px] tabular-nums text-muted-foreground">
-                      {Math.round(d.progress * 100)}%
-                    </span>
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                      <Music2 className="h-5 w-5" />
+                    </div>
+                  )}
+                  {d.status === 'downloading' && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                      <Loader2 className="h-4 w-4 animate-spin text-white" />
+                    </div>
+                  )}
+                  {d.status === 'complete' && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-primary/80">
+                      <CheckCircle2 className="h-5 w-5 text-primary-foreground" />
+                    </div>
+                  )}
+                  {d.status === 'error' && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-destructive/80">
+                      <AlertCircle className="h-5 w-5 text-destructive-foreground" />
+                    </div>
+                  )}
+                  {d.status === 'canceled' && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-muted/90">
+                      <X className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">{d.title}</div>
+                  <div className="truncate text-xs text-muted-foreground">
+                    {d.artist}
                   </div>
-                )}
-                {d.status === 'complete' && (
-                  <div className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-primary">
-                    <CheckCircle2 className="h-3 w-3" />
-                    Added to your library
-                  </div>
-                )}
-                {d.status === 'error' && d.message && (
-                  <div className="mt-1 inline-flex items-center gap-1 text-xs text-destructive">
-                    <AlertCircle className="h-3 w-3" />
-                    {d.message}
-                  </div>
+                  {d.status === 'downloading' && (
+                    <div className="mt-2 flex items-center gap-2">
+                      <Progress
+                        value={Math.round(d.progress * 100)}
+                        className="h-1 flex-1"
+                      />
+                      <span className="w-9 text-right text-[11px] tabular-nums text-muted-foreground">
+                        {Math.round(d.progress * 100)}%
+                      </span>
+                    </div>
+                  )}
+                  {d.status === 'complete' && (
+                    <div className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-primary">
+                      <CheckCircle2 className="h-3 w-3" />
+                      Added to your library
+                    </div>
+                  )}
+                  {d.status === 'error' && d.message && (
+                    <div className="mt-1 inline-flex items-center gap-1 text-xs text-destructive">
+                      <AlertCircle className="h-3 w-3" />
+                      {d.message}
+                    </div>
+                  )}
+                  {d.status === 'canceled' && (
+                    <div className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground">
+                      <X className="h-3 w-3" />
+                      {d.message ?? 'Import canceled'}
+                    </div>
+                  )}
+                </div>
+                {d.status === 'downloading' && d.cancelable && onCancelImport && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
+                    disabled={d.canceling}
+                    onClick={() => {
+                      void onCancelImport(d)
+                    }}
+                    aria-label={`Cancel ${d.title}`}
+                  >
+                    {d.canceling ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <X className="h-4 w-4" />
+                    )}
+                  </Button>
                 )}
               </div>
-            </div>
-          </li>
-        ))}
+
+              {d.status === 'error' &&
+                (retryableCount > 0 || manualMatchItems.length > 0) && (
+                  <div className="mt-3 border-t border-border/50 pt-3">
+                    <div className="flex flex-wrap gap-2">
+                      {retryableCount > 0 && onRetryCsvImport && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          className="h-8 rounded-full px-3 text-xs"
+                          disabled={d.retrying}
+                          onClick={() => {
+                            void onRetryCsvImport(d)
+                          }}
+                        >
+                          {d.retrying ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <RefreshCcw className="h-3.5 w-3.5" />
+                          )}
+                          {pendingCsvCount > 0
+                            ? `Resume ${resumableCsvCount}`
+                            : `Retry ${retryableCount}`}
+                        </Button>
+                      )}
+                      {manualMatchItems.slice(0, 3).map((item) => (
+                        <Button
+                          key={item.id}
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-8 max-w-full rounded-full px-3 text-xs"
+                          onClick={() => onMatchCsvImportItem?.(d, item)}
+                        >
+                          <Search className="h-3.5 w-3.5" />
+                          <span className="truncate">{item.title}</span>
+                        </Button>
+                      ))}
+                      {manualMatchItems.length > 3 && (
+                        <span className="inline-flex h-8 items-center rounded-full px-2 text-xs text-muted-foreground">
+                          +{manualMatchItems.length - 3} more
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+            </li>
+          )
+        })}
       </ul>
     </section>
   )

@@ -153,6 +153,64 @@ describe("Phase 3 SQLite schema and repositories", () => {
       song_id: null
     });
   });
+
+  it("deleting all songs for a user clears account track references without touching other users", () => {
+    const { db, playlistRepository, songRepository, userRepository } = migratedInMemoryDatabase();
+    const user = userRepository.create({ id: "user-a", email: "a@example.com" });
+    const otherUser = userRepository.create({ id: "user-b", email: "b@example.com" });
+    const sharedStoragePath = "/data/audio/external/youtube/shared/original";
+    const first = songRepository.createSong({
+      id: "song-a",
+      userId: user.id,
+      title: "First Cleanup",
+      mimeType: "audio/mpeg",
+      sizeBytes: 10,
+      checksum: "sha256:first-cleanup",
+      storagePath: sharedStoragePath
+    });
+    const second = songRepository.createSong({
+      id: "song-b",
+      userId: user.id,
+      title: "Second Cleanup",
+      mimeType: "audio/mpeg",
+      sizeBytes: 10,
+      checksum: "sha256:second-cleanup",
+      storagePath: "/data/audio/user-a/song-b/original"
+    });
+    songRepository.createSong({
+      id: "song-other",
+      userId: otherUser.id,
+      title: "Still Here",
+      mimeType: "audio/mpeg",
+      sizeBytes: 10,
+      checksum: "sha256:other",
+      storagePath: sharedStoragePath
+    });
+    const playlist = playlistRepository.createPlaylist({
+      id: "playlist-a",
+      userId: user.id,
+      name: "Bulk Cleanup"
+    });
+
+    playlistRepository.addSong({ userId: user.id, playlistId: playlist.id, songId: first.id, position: 0 });
+    playlistRepository.addSong({ userId: user.id, playlistId: playlist.id, songId: second.id, position: 1 });
+    songRepository.likeSong({ userId: user.id, songId: first.id });
+    songRepository.setPlaybackState({ userId: user.id, songId: second.id, positionMs: 42 });
+    songRepository.createImportJob({ id: "import-a", userId: user.id, songId: first.id, status: "ready" });
+    songRepository.createImportJob({ id: "import-b", userId: user.id, songId: second.id, status: "ready" });
+
+    expect(songRepository.deleteAllSongsForUser(user.id)).toBe(2);
+
+    expect(songRepository.listSongsForUser(user.id)).toEqual([]);
+    expect(songRepository.listSongsForUser(otherUser.id).map((song) => song.title)).toEqual(["Still Here"]);
+    expect(countRows(db, "playlist_songs")).toBe(0);
+    expect(countRows(db, "likes")).toBe(0);
+    expect(countRows(db, "import_jobs")).toBe(0);
+    expect(db.prepare("SELECT song_id FROM playback_state WHERE user_id = ?").get(user.id)).toMatchObject({
+      song_id: null
+    });
+    expect(songRepository.countActiveSongsByStoragePath({ storagePath: sharedStoragePath })).toBe(1);
+  });
 });
 
 function migratedInMemoryDatabase() {

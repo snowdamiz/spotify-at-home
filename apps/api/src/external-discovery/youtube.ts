@@ -33,7 +33,8 @@ export class YouTubeDiscoveryError extends Error {
     readonly code: string,
     message: string,
     readonly statusCode: number,
-    readonly recoverable: boolean
+    readonly recoverable: boolean,
+    readonly details: Record<string, unknown> = {}
   ) {
     super(message);
   }
@@ -122,16 +123,21 @@ export class YouTubeDiscoveryProvider implements YouTubeDiscoveryClient {
           accept: "text/html,application/xhtml+xml",
           "accept-language": "en-US,en;q=0.9",
           "user-agent":
-            "Mozilla/5.0 (compatible; BroadsideDiscovery/1.0; +https://broadside.local)"
+            "Mozilla/5.0 (compatible; OnVibeDiscovery/1.0; +https://onvibe.local)"
         }
       });
 
       if (!response.ok) {
         throw new YouTubeDiscoveryError(
           "youtube_search_unavailable",
-          "YouTube search is temporarily unavailable.",
+          `YouTube search is temporarily unavailable (HTTP ${response.status}).`,
           502,
-          true
+          true,
+          {
+            upstreamStatus: response.status,
+            upstreamStatusText: response.statusText,
+            url: searchUrl.toString()
+          }
         );
       }
 
@@ -158,9 +164,13 @@ export class YouTubeDiscoveryProvider implements YouTubeDiscoveryClient {
 
       throw new YouTubeDiscoveryError(
         "youtube_search_unavailable",
-        "YouTube search is temporarily unavailable.",
+        `YouTube search is temporarily unavailable: ${messageForError(error)}.`,
         502,
-        true
+        true,
+        {
+          cause: messageForError(error),
+          url: searchUrl.toString()
+        }
       );
     }
   }
@@ -235,6 +245,14 @@ function emptyMetadata() {
     creator: null,
     thumbnailUrl: null
   };
+}
+
+function messageForError(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return typeof error === "string" ? error : "unknown error";
 }
 
 export function extractYouTubeInitialData(html: string): unknown | null {

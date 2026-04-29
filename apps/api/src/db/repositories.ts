@@ -100,6 +100,18 @@ export interface PlaylistSong extends Song {
   addedAt: Date;
 }
 
+export interface StorageObjectSummary {
+  storagePath: string;
+  songCount: number;
+  activeSongCount: number;
+  sizeBytes: number;
+  mimeType: string | null;
+  ownerEmails: string[];
+  sampleTitle: string | null;
+  earliestCreatedAt: Date;
+  latestUpdatedAt: Date;
+}
+
 export interface PlaybackState {
   userId: string;
   songId: string | null;
@@ -250,6 +262,20 @@ export class SQLiteSongRepository {
       .map(mapSong);
   }
 
+  listStoragePathsForUser(userId: string) {
+    return this.db
+      .prepare(
+        `
+          SELECT DISTINCT storage_path
+          FROM songs
+          WHERE user_id = ?
+            AND storage_path <> ''
+        `
+      )
+      .all(userId)
+      .map((row) => String((row as { storage_path: string }).storage_path));
+  }
+
   listReadySongsForUser(userId: string) {
     return this.db
       .prepare(
@@ -353,6 +379,93 @@ export class SQLiteSongRepository {
       | undefined;
 
     return Number(row?.count ?? 0);
+  }
+
+  countActiveSongsByStoragePath(input: { storagePath: string }) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM songs
+          WHERE storage_path = ?
+            AND deleted_at IS NULL
+        `
+      )
+      .get(input.storagePath) as { count?: number | bigint } | undefined;
+
+    return Number(row?.count ?? 0);
+  }
+
+  listStorageObjectsForAdmin(options: { limit?: number } = {}) {
+    const limit = Math.max(1, Math.min(2000, options.limit ?? 1000));
+
+    return this.db
+      .prepare(
+        `
+          SELECT
+            songs.storage_path AS storage_path,
+            COUNT(*) AS song_count,
+            SUM(CASE WHEN songs.deleted_at IS NULL THEN 1 ELSE 0 END) AS active_song_count,
+            MAX(songs.size_bytes) AS size_bytes,
+            MIN(songs.created_at) AS earliest_created_at,
+            MAX(songs.updated_at) AS latest_updated_at,
+            MAX(songs.mime_type) AS mime_type,
+            (
+              SELECT GROUP_CONCAT(DISTINCT users.email)
+              FROM songs s2
+              JOIN users ON users.id = s2.user_id
+              WHERE s2.storage_path = songs.storage_path
+            ) AS owner_emails,
+            (
+              SELECT s3.title
+              FROM songs s3
+              WHERE s3.storage_path = songs.storage_path
+              ORDER BY s3.deleted_at IS NULL DESC, s3.updated_at DESC
+              LIMIT 1
+            ) AS sample_title
+          FROM songs
+          WHERE songs.storage_path <> ''
+          GROUP BY songs.storage_path
+          ORDER BY MAX(songs.updated_at) DESC
+          LIMIT ?
+        `
+      )
+      .all(limit)
+      .map((row) => mapStorageObjectRow(row as Record<string, unknown>));
+  }
+
+  countStorageObjectsForAdmin() {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM (
+            SELECT storage_path
+            FROM songs
+            WHERE storage_path <> ''
+            GROUP BY storage_path
+          )
+        `
+      )
+      .get() as { count?: number | bigint } | undefined;
+
+    return Number(row?.count ?? 0);
+  }
+
+  clearDeletedSongStoragePath(storagePath: string, now = new Date()) {
+    const result = this.db
+      .prepare(
+        `
+          UPDATE songs
+          SET storage_path = '',
+              updated_at = ?
+          WHERE storage_path = ?
+            AND deleted_at IS NOT NULL
+        `
+      )
+      .run(toSqlDate(now), storagePath);
+
+    return Number(result.changes);
   }
 
   markSongReady(input: {
@@ -554,6 +667,81 @@ export class SQLiteSongRepository {
       this.db.exec("COMMIT;");
 
       return Number(result.changes) > 0;
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  deleteAllSongsForUser(userId: string, now = new Date()) {
+    const deletedAt = toSqlDate(now);
+
+    this.db.exec("BEGIN;");
+
+    try {
+      this.db
+        .prepare(
+          `
+            DELETE FROM playlist_songs
+            WHERE song_id IN (
+              SELECT id
+              FROM songs
+              WHERE user_id = ? AND deleted_at IS NULL
+            )
+          `
+        )
+        .run(userId);
+      this.db
+        .prepare(
+          `
+            DELETE FROM likes
+            WHERE song_id IN (
+              SELECT id
+              FROM songs
+              WHERE user_id = ? AND deleted_at IS NULL
+            )
+          `
+        )
+        .run(userId);
+      this.db
+        .prepare(
+          `
+            DELETE FROM import_jobs
+            WHERE song_id IN (
+              SELECT id
+              FROM songs
+              WHERE user_id = ? AND deleted_at IS NULL
+            )
+          `
+        )
+        .run(userId);
+      this.db
+        .prepare(
+          `
+            UPDATE playback_state
+            SET song_id = NULL, updated_at = ?
+            WHERE user_id = ?
+              AND song_id IN (
+                SELECT id
+                FROM songs
+                WHERE user_id = ? AND deleted_at IS NULL
+              )
+          `
+        )
+        .run(deletedAt, userId, userId);
+      const result = this.db
+        .prepare(
+          `
+            UPDATE songs
+            SET deleted_at = ?, updated_at = ?
+            WHERE user_id = ? AND deleted_at IS NULL
+          `
+        )
+        .run(deletedAt, deletedAt, userId);
+
+      this.db.exec("COMMIT;");
+
+      return Number(result.changes);
     } catch (error) {
       this.db.exec("ROLLBACK;");
       throw error;
@@ -1455,6 +1643,26 @@ function songSelectColumns(songAlias: string) {
     es.created_at AS external_source_created_at,
     es.updated_at AS external_source_updated_at
   `;
+}
+
+function mapStorageObjectRow(row: Record<string, unknown>): StorageObjectSummary {
+  const ownerEmailsRaw = row.owner_emails;
+  const ownerEmails =
+    typeof ownerEmailsRaw === "string" && ownerEmailsRaw.length > 0
+      ? Array.from(new Set(ownerEmailsRaw.split(",").map((email) => email.trim()).filter(Boolean)))
+      : [];
+
+  return {
+    storagePath: String(row.storage_path),
+    songCount: Number(row.song_count ?? 0),
+    activeSongCount: Number(row.active_song_count ?? 0),
+    sizeBytes: Number(row.size_bytes ?? 0),
+    mimeType: nullableString(row.mime_type),
+    ownerEmails,
+    sampleTitle: nullableString(row.sample_title),
+    earliestCreatedAt: fromSqlDate(row.earliest_created_at),
+    latestUpdatedAt: fromSqlDate(row.latest_updated_at)
+  };
 }
 
 function mapPlaylist(row: Record<string, unknown>): Playlist {

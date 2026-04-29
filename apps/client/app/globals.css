@@ -4,25 +4,26 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  /* Dark, Spotify-inspired palette (4 core colors) */
-  --background: oklch(0.08 0 0);
-  --foreground: oklch(0.98 0 0);
-  --card: oklch(0.21 0 0);
+  color-scheme: dark;
+  /* Dark, layered palette */
+  --background: oklch(0.06 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.16 0 0);
   --card-foreground: oklch(0.98 0 0);
-  --popover: oklch(0.21 0 0);
+  --popover: oklch(0.18 0 0);
   --popover-foreground: oklch(0.98 0 0);
   --primary: oklch(0.76 0.16 55);
   --primary-foreground: oklch(0.18 0.02 50);
-  --secondary: oklch(0.27 0 0);
+  --secondary: oklch(0.24 0 0);
   --secondary-foreground: oklch(0.98 0 0);
-  --muted: oklch(0.23 0 0);
-  --muted-foreground: oklch(0.72 0 0);
-  --accent: oklch(0.27 0 0);
+  --muted: oklch(0.2 0 0);
+  --muted-foreground: oklch(0.7 0 0);
+  --accent: oklch(0.22 0 0);
   --accent-foreground: oklch(0.98 0 0);
-  --destructive: oklch(0.6 0.22 25);
+  --destructive: oklch(0.62 0.22 25);
   --destructive-foreground: oklch(0.98 0 0);
-  --border: oklch(0.3 0 0);
-  --input: oklch(0.27 0 0);
+  --border: oklch(1 0 0 / 0.08);
+  --input: oklch(0.22 0 0);
   --ring: oklch(0.76 0.16 55);
   --chart-1: oklch(0.76 0.16 55);
   --chart-2: oklch(0.7 0 0);
@@ -30,14 +31,18 @@
   --chart-4: oklch(0.35 0 0);
   --chart-5: oklch(0.27 0 0);
   --radius: 0.75rem;
-  --sidebar: oklch(0.08 0 0);
-  --sidebar-foreground: oklch(0.98 0 0);
+  --sidebar: oklch(0.06 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.76 0.16 55);
   --sidebar-primary-foreground: oklch(0.18 0.02 50);
-  --sidebar-accent: oklch(0.21 0 0);
+  --sidebar-accent: oklch(0.16 0 0);
   --sidebar-accent-foreground: oklch(0.98 0 0);
-  --sidebar-border: oklch(0.3 0 0);
+  --sidebar-border: oklch(1 0 0 / 0.06);
   --sidebar-ring: oklch(0.76 0.16 55);
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
 }
 
 @theme inline {
@@ -85,8 +90,16 @@
   * {
     @apply border-border outline-ring/50;
   }
+  html {
+    background: var(--background);
+  }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
+    min-height: 100dvh;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
+    text-rendering: optimizeLegibility;
   }
   /* Hide scrollbars but keep scrolling for the mobile-style views */
   .no-scrollbar {
@@ -95,5 +108,147 @@
   }
   .no-scrollbar::-webkit-scrollbar {
     display: none;
+  }
+  /* Subtle, consistent focus ring */
+  :focus-visible {
+    outline: none;
+  }
+  ::selection {
+    background: oklch(0.76 0.16 55 / 0.35);
+    color: oklch(0.99 0 0);
+  }
+}
+
+@layer utilities {
+  .safe-x {
+    padding-left: var(--safe-left);
+    padding-right: var(--safe-right);
+  }
+
+  .safe-x-2 {
+    padding-left: calc(0.5rem + var(--safe-left));
+    padding-right: calc(0.5rem + var(--safe-right));
+  }
+
+  .safe-x-3 {
+    padding-left: calc(0.75rem + var(--safe-left));
+    padding-right: calc(0.75rem + var(--safe-right));
+  }
+
+  .safe-x-4 {
+    padding-left: calc(1rem + var(--safe-left));
+    padding-right: calc(1rem + var(--safe-right));
+  }
+
+  .safe-x-5 {
+    padding-left: calc(1.25rem + var(--safe-left));
+    padding-right: calc(1.25rem + var(--safe-right));
+  }
+
+  .safe-x-6 {
+    padding-left: calc(1.5rem + var(--safe-left));
+    padding-right: calc(1.5rem + var(--safe-right));
+  }
+
+  .safe-top-3 {
+    padding-top: calc(0.75rem + var(--safe-top));
+  }
+
+  .safe-top-5 {
+    padding-top: calc(1.25rem + var(--safe-top));
+  }
+
+  .safe-bottom-nav {
+    padding-bottom: var(--safe-bottom);
+  }
+
+  .safe-bottom-4 {
+    padding-bottom: calc(1rem + var(--safe-bottom));
+  }
+
+  .safe-bottom-5 {
+    padding-bottom: calc(1.25rem + var(--safe-bottom));
+  }
+
+  .safe-x-page {
+    padding-left: calc(1rem + var(--safe-left));
+    padding-right: calc(1rem + var(--safe-right));
+  }
+
+  .safe-fixed-bottom-3 {
+    right: calc(0.75rem + var(--safe-right));
+    bottom: calc(0.75rem + var(--safe-bottom));
+    left: calc(0.75rem + var(--safe-left));
+  }
+
+  @media (min-width: 768px) {
+    .safe-x-page {
+      padding-left: calc(2rem + var(--safe-left));
+      padding-right: calc(2rem + var(--safe-right));
+    }
+  }
+
+  /* Subtle hover-only thumb sliders for media controls */
+  .ov-slider {
+    --slider-track: color-mix(in oklab, var(--foreground) 18%, transparent);
+    --slider-fill: var(--foreground);
+    --slider-thumb: var(--foreground);
+  }
+  .ov-slider:hover,
+  .ov-slider:focus-within {
+    --slider-fill: oklch(0.76 0.16 55);
+    --slider-thumb: oklch(0.76 0.16 55);
+  }
+  .ov-slider input[type='range']::-webkit-slider-thumb {
+    appearance: none;
+    height: 0.75rem;
+    width: 0.75rem;
+    border-radius: 9999px;
+    background: var(--slider-thumb);
+    opacity: 0;
+    transition: opacity 120ms ease;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  }
+  .ov-slider:hover input[type='range']::-webkit-slider-thumb,
+  .ov-slider:focus-within input[type='range']::-webkit-slider-thumb {
+    opacity: 1;
+  }
+  .ov-slider input[type='range']::-moz-range-thumb {
+    height: 0.75rem;
+    width: 0.75rem;
+    border-radius: 9999px;
+    border: 0;
+    background: var(--slider-thumb);
+    opacity: 0;
+    transition: opacity 120ms ease;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  }
+  .ov-slider:hover input[type='range']::-moz-range-thumb,
+  .ov-slider:focus-within input[type='range']::-moz-range-thumb {
+    opacity: 1;
+  }
+
+  /* Cards that gently lift on hover */
+  .ov-card {
+    background: color-mix(in oklab, var(--card) 70%, transparent);
+    transition:
+      background-color 180ms ease,
+      box-shadow 180ms ease,
+      transform 180ms ease;
+  }
+  .ov-card:hover {
+    background: color-mix(in oklab, var(--card) 100%, transparent);
+    box-shadow: 0 18px 40px -20px rgba(0, 0, 0, 0.65);
+  }
+
+  /* Reusable: subtle inset divider line */
+  .ov-divider {
+    background: linear-gradient(
+      to right,
+      transparent,
+      color-mix(in oklab, var(--foreground) 12%, transparent),
+      transparent
+    );
+    height: 1px;
   }
 }

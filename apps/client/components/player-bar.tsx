@@ -62,7 +62,7 @@ export function PlayerBar(props: PlayerBarProps) {
   return (
     <>
       {/* Mobile mini player */}
-      <div className="flex w-full items-center gap-2 border-t border-border bg-card/90 p-2 backdrop-blur md:hidden">
+      <div className="safe-x-2 flex w-full items-center gap-2 border-t border-border/60 bg-card/80 py-2 backdrop-blur-md md:hidden">
         <button
           type="button"
           onClick={onExpand}
@@ -75,9 +75,12 @@ export function PlayerBar(props: PlayerBarProps) {
             title={song.title}
             size="md"
             rounded="md"
+            className="h-11 w-11"
           />
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium">{song.title}</div>
+            <div className="truncate text-sm font-medium tracking-tight">
+              {song.title}
+            </div>
             <div className="truncate text-xs text-muted-foreground">
               {song.artist}
             </div>
@@ -101,18 +104,18 @@ export function PlayerBar(props: PlayerBarProps) {
         <button
           type="button"
           onClick={onTogglePlay}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-foreground"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-foreground transition-transform active:scale-95"
           aria-label={isPlaying ? 'Pause' : 'Play'}
         >
           {isPlaying ? (
             <Pause className="h-6 w-6" fill="currentColor" />
           ) : (
-            <Play className="h-6 w-6" fill="currentColor" />
+            <Play className="h-6 w-6 translate-x-px" fill="currentColor" />
           )}
         </button>
       </div>
       {/* Mini progress bar (mobile) */}
-      <div className="md:hidden h-0.5 w-full bg-border">
+      <div className="md:hidden h-0.5 w-full bg-border/60">
         <div
           className="h-full bg-foreground/80 transition-[width]"
           style={{ width: `${duration ? (progress / duration) * 100 : 0}%` }}
@@ -120,7 +123,7 @@ export function PlayerBar(props: PlayerBarProps) {
       </div>
 
       {/* Desktop full player */}
-      <div className="hidden h-[90px] items-center gap-4 border-t border-border bg-background px-4 md:flex">
+      <div className="hidden h-[88px] items-center gap-4 border-t border-border/60 bg-background px-4 md:flex">
         {/* Left: now playing info */}
         <div className="flex w-1/4 min-w-0 items-center gap-3">
           <CoverArt
@@ -129,10 +132,13 @@ export function PlayerBar(props: PlayerBarProps) {
             title={song.title}
             size="md"
             rounded="md"
+            className="h-14 w-14"
           />
           <div className="min-w-0">
-            <div className="truncate text-sm font-medium">{song.title}</div>
-            <div className="truncate text-xs text-muted-foreground">
+            <div className="truncate text-sm font-medium tracking-tight">
+              {song.title}
+            </div>
+            <div className="truncate text-xs text-muted-foreground hover:underline">
               {song.artist}
             </div>
           </div>
@@ -142,7 +148,7 @@ export function PlayerBar(props: PlayerBarProps) {
               onClick={onToggleLike}
               disabled={isLikePending}
               className={cn(
-                'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-primary disabled:cursor-wait disabled:opacity-80',
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-all hover:scale-105 hover:text-primary disabled:cursor-wait disabled:opacity-80',
                 isLiked && 'text-primary',
               )}
               aria-label={isLiked ? `Unlike ${song.title}` : `Like ${song.title}`}
@@ -154,12 +160,13 @@ export function PlayerBar(props: PlayerBarProps) {
         </div>
 
         {/* Middle: controls + progress */}
-        <div className="flex flex-1 flex-col items-center gap-1.5">
-          <div className="flex items-center gap-4">
+        <div className="flex flex-1 flex-col items-center gap-2">
+          <div className="flex items-center gap-5">
             <button
               type="button"
               className="text-muted-foreground transition-colors hover:text-foreground"
               aria-label="Shuffle"
+              title="Shuffle"
             >
               <Shuffle className="h-4 w-4" />
             </button>
@@ -174,7 +181,7 @@ export function PlayerBar(props: PlayerBarProps) {
             <button
               type="button"
               onClick={onTogglePlay}
-              className="flex h-9 w-9 items-center justify-center rounded-full bg-foreground text-background transition-transform hover:scale-105"
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-foreground text-background shadow-md transition-transform hover:scale-105 active:scale-100"
               aria-label={isPlaying ? 'Pause' : 'Play'}
             >
               {isPlaying ? (
@@ -195,6 +202,7 @@ export function PlayerBar(props: PlayerBarProps) {
               type="button"
               className="text-muted-foreground transition-colors hover:text-foreground"
               aria-label="Repeat"
+              title="Repeat"
             >
               <Repeat className="h-4 w-4" />
             </button>
@@ -255,10 +263,10 @@ function Slider({
 }) {
   const pct = max > 0 ? Math.min(100, Math.max(0, (value / max) * 100)) : 0
   return (
-    <div className={cn('relative flex h-4 items-center', className)}>
-      <div className="absolute inset-x-0 h-1 rounded-full bg-border" />
+    <div className={cn('ov-slider group relative flex h-4 items-center', className)}>
+      <div className="absolute inset-x-0 h-1 rounded-full bg-[var(--slider-track)]" />
       <div
-        className="absolute h-1 rounded-full bg-foreground"
+        className="absolute h-1 rounded-full bg-[var(--slider-fill)] transition-colors"
         style={{ width: `${pct}%` }}
       />
       <input
@@ -268,9 +276,7 @@ function Slider({
         step={max > 1 ? 0.1 : 0.01}
         value={value}
         onChange={(e) => onChange(parseFloat(e.target.value))}
-        className="relative z-10 h-4 w-full cursor-pointer appearance-none bg-transparent
-          [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-foreground
-          [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-foreground"
+        className="relative z-10 h-4 w-full cursor-pointer appearance-none bg-transparent"
         aria-label="Slider"
       />
     </div>

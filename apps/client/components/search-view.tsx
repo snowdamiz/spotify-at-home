@@ -58,18 +58,18 @@ export function SearchView({
   }, [query, search.results.songs, songs])
 
   return (
-    <div className="px-4 pb-6 md:px-6">
-      <header className="pt-2 pb-4">
-        <h1 className="mb-3 text-2xl font-bold tracking-tight md:text-3xl">
+    <div className="px-4 pb-8 md:px-6">
+      <header className="pt-2 pb-5">
+        <h1 className="mb-4 text-3xl font-bold tracking-tight md:text-4xl">
           Search
         </h1>
-        <div className="relative">
-          <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <div className="relative md:max-w-md">
+          <SearchIcon className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Songs, artists, or genres"
-            className="h-11 w-full rounded-full bg-card pl-9 pr-4 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+            className="h-11 w-full rounded-full bg-card/70 pl-10 pr-4 text-sm text-foreground placeholder:text-muted-foreground transition-colors focus:bg-card focus:outline-none focus:ring-1 focus:ring-foreground/20"
             aria-label="Search"
           />
         </div>
@@ -82,7 +82,7 @@ export function SearchView({
           </div>
         ) : search.status === 'error' ? (
           <div className="py-10 text-center text-sm text-muted-foreground">
-            Could not reach the Broadside server.
+            Could not reach the OnVibe server.
           </div>
         ) : search.status === 'anonymous' ? (
           <div className="py-10 text-center text-sm text-muted-foreground">
@@ -90,7 +90,7 @@ export function SearchView({
           </div>
         ) : matches.length > 0 || search.results.playlists.length > 0 ? (
           <section>
-            <h2 className="mb-2 text-sm font-semibold text-muted-foreground">
+            <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
               Results
             </h2>
             <ul className="space-y-1">
@@ -101,7 +101,7 @@ export function SearchView({
                     onClick={() =>
                       onOpenCollection({ kind: 'playlist', id: playlist.id })
                     }
-                    className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-card/80"
+                    className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-card/60"
                   >
                     <CoverArt
                       colorClass={playlist.color ?? 'from-zinc-700 to-zinc-950'}
@@ -147,7 +147,9 @@ export function SearchView({
         )
       ) : (
         <>
-          <h2 className="mb-3 text-lg font-bold tracking-tight">Browse all</h2>
+          <h2 className="mb-4 text-xl font-bold tracking-tight md:text-2xl">
+            Browse all
+          </h2>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
             {CATEGORIES.map((cat) => (
               <button
@@ -155,15 +157,15 @@ export function SearchView({
                 onClick={() =>
                   onOpenCollection({ kind: 'category', id: cat.id })
                 }
-                className={`group relative aspect-[16/10] overflow-hidden rounded-lg bg-gradient-to-br ${cat.coverColor} p-3 text-left transition-transform hover:-translate-y-0.5`}
+                className={`group relative aspect-[16/10] overflow-hidden rounded-xl bg-gradient-to-br ${cat.coverColor} p-3.5 text-left shadow-md shadow-black/20 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-black/30`}
               >
-                <span className="text-base font-bold text-foreground">
+                <span className="text-base font-bold tracking-tight text-foreground drop-shadow">
                   {cat.name}
                 </span>
                 <CoverArt
                   colorClass={cat.coverColor}
                   title={cat.name}
-                  className="absolute -right-3 -bottom-3 h-16 w-16 rotate-[20deg] rounded-md shadow-lg"
+                  className="absolute -right-3 -bottom-3 h-16 w-16 rotate-[20deg] rounded-md shadow-lg transition-transform duration-200 group-hover:rotate-[24deg]"
                   rounded="md"
                 />
               </button>

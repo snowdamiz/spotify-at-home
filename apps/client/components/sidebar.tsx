@@ -1,11 +1,40 @@
 'use client'
 
-import { Heart, Home, Library, Plus, Search, Settings, ShieldCheck } from 'lucide-react'
+import { useState } from 'react'
+import {
+  Heart,
+  Home,
+  Library,
+  Loader2,
+  MoreHorizontal,
+  Plus,
+  Search,
+  Settings,
+  ShieldCheck,
+  Trash2,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { CoverArt } from '@/components/cover-art'
 import { playlistSubtitle, type ServerPlaylist } from '@/lib/api'
 import { type CollectionRef, type Song, type View } from '@/lib/music-types'
 import { Button } from '@/components/ui/button'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 
 type SidebarProps = {
   view: View
@@ -17,6 +46,7 @@ type SidebarProps = {
   onImportClick: () => void
   onCreatePlaylistClick: () => void
   onOpenCollection: (ref: CollectionRef) => void
+  onDeletePlaylist: (playlist: ServerPlaylist) => Promise<void> | void
   activeCollectionId: string | null
 }
 
@@ -30,12 +60,13 @@ export function Sidebar({
   onImportClick,
   onCreatePlaylistClick,
   onOpenCollection,
+  onDeletePlaylist,
   activeCollectionId,
 }: SidebarProps) {
   return (
     <aside className="hidden h-full w-64 shrink-0 flex-col gap-2 bg-sidebar p-2 md:flex">
       {/* Top nav card */}
-      <nav className="rounded-xl bg-card p-2">
+      <nav className="rounded-xl bg-card/60 p-1.5">
         <NavItem
           icon={<Home className="h-5 w-5" />}
           label="Home"
@@ -65,13 +96,15 @@ export function Sidebar({
       </nav>
 
       {/* Library card */}
-      <div className="flex min-h-0 flex-1 flex-col rounded-xl bg-card">
-        <div className="flex items-center justify-between p-3">
+      <div className="flex min-h-0 flex-1 flex-col rounded-xl bg-card/60">
+        <div className="flex items-center justify-between px-3 pt-3 pb-2">
           <button
             onClick={() => setView('library')}
             className={cn(
-              'flex items-center gap-3 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground',
-              view === 'library' && !activeCollectionId && 'text-foreground',
+              'group flex items-center gap-3 text-sm font-semibold tracking-tight transition-colors',
+              view === 'library' && !activeCollectionId
+                ? 'text-foreground'
+                : 'text-muted-foreground hover:text-foreground',
             )}
           >
             <Library className="h-5 w-5" />
@@ -88,10 +121,10 @@ export function Sidebar({
           </Button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 no-scrollbar">
+        <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-3 no-scrollbar">
           {/* Imported songs first */}
           {songs.length > 0 && (
-            <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <div className="mb-1.5 mt-1 px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/80">
               Your Songs
             </div>
           )}
@@ -99,7 +132,7 @@ export function Sidebar({
             <button
               key={song.id}
               onClick={() => setView('library')}
-              className="flex w-full items-center gap-3 rounded-lg p-2 text-left transition-colors hover:bg-accent"
+              className="group flex w-full items-center gap-3 rounded-lg p-1.5 text-left transition-colors hover:bg-accent/70"
             >
               <CoverArt
                 colorClass={song.coverColor}
@@ -107,6 +140,7 @@ export function Sidebar({
                 title={song.title}
                 size="md"
                 rounded="md"
+                className="h-12 w-12"
               />
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm font-medium">
@@ -120,28 +154,30 @@ export function Sidebar({
           ))}
 
           {/* Featured playlists */}
-          <div className="mb-2 mt-3 flex items-center justify-between px-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <div className="mb-1.5 mt-3 flex items-center justify-between px-2">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/80">
               Playlists
             </span>
             <Button
               size="icon"
               variant="ghost"
-              className="h-8 w-8 rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="h-7 w-7 rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
               onClick={onCreatePlaylistClick}
               aria-label="Create playlist"
             >
-              <Plus className="h-4 w-4" />
+              <Plus className="h-3.5 w-3.5" />
             </Button>
           </div>
           <button
             onClick={() => onOpenCollection({ kind: 'system', id: 'liked-songs' })}
             className={cn(
-              'flex w-full items-center gap-3 rounded-lg p-2 text-left transition-colors hover:bg-accent',
-              activeCollectionId === 'liked-songs' && 'bg-accent',
+              'group flex w-full items-center gap-3 rounded-lg p-1.5 text-left transition-colors',
+              activeCollectionId === 'liked-songs'
+                ? 'bg-accent/80'
+                : 'hover:bg-accent/70',
             )}
           >
-            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-fuchsia-600 to-zinc-950 text-foreground shadow-md">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-fuchsia-600 to-zinc-950 text-foreground shadow-sm">
               <Heart className="h-5 w-5" fill="currentColor" />
             </div>
             <div className="min-w-0 flex-1">
@@ -154,46 +190,128 @@ export function Sidebar({
                 Liked Songs
               </div>
               <div className="truncate text-xs text-muted-foreground">
-                {likedCount} {likedCount === 1 ? 'song' : 'songs'}
+                Playlist &middot; {likedCount}{' '}
+                {likedCount === 1 ? 'song' : 'songs'}
               </div>
             </div>
           </button>
           {playlists.map((p) => {
             const active = activeCollectionId === p.id
             return (
-              <button
+              <div
                 key={p.id}
-                onClick={() => onOpenCollection({ kind: 'playlist', id: p.id })}
                 className={cn(
-                  'flex w-full items-center gap-3 rounded-lg p-2 text-left transition-colors hover:bg-accent',
-                  active && 'bg-accent',
+                  'group flex w-full items-center gap-1 rounded-lg pr-1 transition-colors',
+                  active ? 'bg-accent/80' : 'hover:bg-accent/70',
                 )}
               >
-                <CoverArt
-                  colorClass={p.color ?? 'from-zinc-700 to-zinc-950'}
-                  title={p.name}
-                  size="md"
-                  rounded="md"
+                <button
+                  type="button"
+                  onClick={() => onOpenCollection({ kind: 'playlist', id: p.id })}
+                  className="flex min-w-0 flex-1 items-center gap-3 rounded-lg p-1.5 text-left"
+                >
+                  <CoverArt
+                    colorClass={p.color ?? 'from-zinc-700 to-zinc-950'}
+                    title={p.name}
+                    size="md"
+                    rounded="md"
+                    className="h-12 w-12"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div
+                      className={cn(
+                        'truncate text-sm font-medium',
+                        active && 'text-primary',
+                      )}
+                    >
+                      {p.name}
+                    </div>
+                    <div className="truncate text-xs text-muted-foreground">
+                      Playlist &middot; {playlistSubtitle(p)}
+                    </div>
+                  </div>
+                </button>
+                <SidebarPlaylistActions
+                  playlist={p}
+                  onDelete={() => onDeletePlaylist(p)}
                 />
-                <div className="min-w-0 flex-1">
-                  <div
-                    className={cn(
-                      'truncate text-sm font-medium',
-                      active && 'text-primary',
-                    )}
-                  >
-                    {p.name}
-                  </div>
-                  <div className="truncate text-xs text-muted-foreground">
-                    Playlist &middot; {playlistSubtitle(p)}
-                  </div>
-                </div>
-              </button>
+              </div>
             )
           })}
         </div>
       </div>
     </aside>
+  )
+}
+
+function SidebarPlaylistActions({
+  playlist,
+  onDelete,
+}: {
+  playlist: ServerPlaylist
+  onDelete: () => Promise<void> | void
+}) {
+  const [deleting, setDeleting] = useState(false)
+
+  const handleDelete = async () => {
+    if (deleting) return
+
+    setDeleting(true)
+    try {
+      await onDelete()
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <AlertDialog>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            disabled={deleting}
+            className="h-8 w-8 shrink-0 rounded-full text-muted-foreground opacity-100 hover:bg-accent hover:text-foreground sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"
+            aria-label={`More actions for ${playlist.name}`}
+          >
+            {deleting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <MoreHorizontal className="h-4 w-4" />
+            )}
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <AlertDialogTrigger asChild>
+            <DropdownMenuItem onSelect={(event) => event.preventDefault()}>
+              <Trash2 className="mr-2 h-4 w-4" />
+              Delete playlist
+            </DropdownMenuItem>
+          </AlertDialogTrigger>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this playlist?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This removes &ldquo;{playlist.name}&rdquo; permanently. The songs
+            stay in your library.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={deleting}
+            onClick={handleDelete}
+            className="bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/20"
+          >
+            {deleting ? 'Deleting...' : 'Delete'}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }
 
@@ -212,12 +330,19 @@ function NavItem({
     <button
       onClick={onClick}
       className={cn(
-        'flex w-full items-center gap-4 rounded-md px-3 py-2 text-sm font-semibold transition-colors',
+        'relative flex w-full items-center gap-4 rounded-md px-3 py-2 text-sm font-semibold tracking-tight transition-colors',
         active
           ? 'text-foreground'
           : 'text-muted-foreground hover:text-foreground',
       )}
     >
+      <span
+        aria-hidden
+        className={cn(
+          'absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-primary transition-opacity',
+          active ? 'opacity-100' : 'opacity-0',
+        )}
+      />
       {icon}
       {label}
     </button>

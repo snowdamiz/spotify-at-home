@@ -56,19 +56,19 @@ export function SettingsView({
   }
 
   return (
-    <div className="px-4 pb-6 md:px-6">
-      <header className="pt-2 pb-5">
-        <h1 className="text-2xl font-bold tracking-tight md:text-3xl">
+    <div className="px-4 pb-8 md:px-6">
+      <header className="pt-2 pb-6">
+        <h1 className="text-3xl font-bold tracking-tight md:text-4xl">
           Settings
         </h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Account, storage, and import controls for this Broadside client.
+        <p className="mt-2 text-sm text-muted-foreground">
+          Account, storage, and import controls for this OnVibe client.
         </p>
       </header>
 
       {importPolicy.policy.mode === 'open_test' && (
-        <section className="mb-4 rounded-lg bg-primary p-4 text-primary-foreground">
-          <div className="text-xs font-black uppercase tracking-wider">
+        <section className="mb-4 rounded-xl bg-primary p-4 text-primary-foreground shadow-lg shadow-primary/10">
+          <div className="text-[11px] font-bold uppercase tracking-[0.14em]">
             {importPolicy.policy.copy.badge}
           </div>
           <p className="mt-1 text-sm font-semibold">
@@ -77,14 +77,16 @@ export function SettingsView({
         </section>
       )}
 
-      <div className="grid gap-3">
-        <section className="rounded-lg bg-card p-4">
-          <div className="flex items-start gap-3">
+      <div className="grid gap-3 md:max-w-2xl">
+        <section className="rounded-xl border border-border/40 bg-card/60 p-5">
+          <div className="flex items-start gap-4">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
               <UserRound className="h-5 w-5" />
             </div>
             <div className="min-w-0 flex-1">
-              <h2 className="text-base font-bold">Account</h2>
+              <h2 className="text-base font-semibold tracking-tight">
+                Account
+              </h2>
               <p className="mt-1 truncate text-sm text-muted-foreground">
                 {user
                   ? `Signed in as ${user.displayName ?? user.email}`
@@ -94,7 +96,7 @@ export function SettingsView({
                 type="button"
                 onClick={user ? handleLogout : startGoogleSignIn}
                 variant={user ? 'secondary' : 'default'}
-                className="mt-4 rounded-full"
+                className="mt-4 h-9 rounded-full"
               >
                 {user ? (
                   <>
@@ -109,18 +111,20 @@ export function SettingsView({
           </div>
         </section>
 
-        <section className="rounded-lg bg-card p-4">
-          <div className="flex items-start gap-3">
+        <section className="rounded-xl border border-border/40 bg-card/60 p-5">
+          <div className="flex items-start gap-4">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-primary">
               <ShieldCheck className="h-5 w-5" />
             </div>
             <div className="min-w-0 flex-1">
-              <h2 className="text-base font-bold">Storage</h2>
+              <h2 className="text-base font-semibold tracking-tight">
+                Storage
+              </h2>
               <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                Imported music syncs through your self-hosted Broadside server and
+                Imported music syncs through your self-hosted OnVibe server and
                 can be saved locally on this browser for offline playback.
               </p>
-              <div className="mt-4 rounded-md border border-border bg-background/40 p-3">
+              <div className="mt-4 rounded-lg border border-border/60 bg-background/40 p-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 text-sm font-semibold">
@@ -152,7 +156,7 @@ export function SettingsView({
                   <Button
                     type="button"
                     variant={isSynced ? 'secondary' : 'default'}
-                    className="rounded-full"
+                    className="h-9 rounded-full"
                     disabled={isSyncing || totalCount === 0}
                     onClick={onSyncLibraryOffline}
                   >
@@ -185,8 +189,10 @@ export function SettingsView({
           </div>
         </section>
 
-        <section className="rounded-lg bg-card p-4">
-          <h2 className="text-base font-bold">Import policy</h2>
+        <section className="rounded-xl border border-border/40 bg-card/60 p-5">
+          <h2 className="text-base font-semibold tracking-tight">
+            Import policy
+          </h2>
           <p className="mt-1 text-sm text-muted-foreground">
             {importPolicy.policy.copy.label}
           </p>

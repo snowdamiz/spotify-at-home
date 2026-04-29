@@ -1,9 +1,9 @@
 'use client'
 
-import { requestSongCacheIntent } from '@/lib/api'
+import { apiFetch, requestSongCacheIntent } from '@/lib/api'
 import type { Song } from '@/lib/music-types'
 
-const DB_NAME = 'broadside-offline-audio'
+const DB_NAME = 'onvibe-offline-audio'
 const DB_VERSION = 1
 const STORE_NAME = 'tracks'
 
@@ -137,7 +137,7 @@ export async function downloadOfflineAudio(
     throw new Error('Could not prepare this song for offline download.')
   }
 
-  const response = await fetch(intent.cacheIntent.streamUrl, {
+  const response = await apiFetch(intent.cacheIntent.streamUrl, {
     credentials: 'include',
   })
 

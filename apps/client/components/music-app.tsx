@@ -19,6 +19,7 @@ import {
 import { LoginScreen } from '@/components/login-screen'
 import { EntryKeyScreen } from '@/components/entry-key-screen'
 import { AdminView } from '@/components/admin-view'
+import { OnVibeLogo } from '@/components/onvibe-logo'
 import {
   CreatePlaylistDialog,
   EditPlaylistDialog,
@@ -26,21 +27,29 @@ import {
 import { Button } from '@/components/ui/button'
 import {
   addSongToPlaylist,
+  cancelCsvImportBatch,
+  createCsvImportBatches,
   createPlaylist,
   deletePlaylist,
   deleteSong,
   discoverYouTubeUrl,
+  fetchCsvImportBatch,
+  importCsvImportItemDiscovery,
   importYouTubeDiscovery,
   importAudioFiles,
   likeSong,
   removeSongFromPlaylist,
   requestSongCacheIntent,
+  retryCsvImportBatch,
   searchYouTube,
   serverSongToSong,
   songStreamUrl,
   unlikeSong,
   updatePlaybackState,
   updatePlaylist,
+  type CsvImportBatch,
+  type CsvImportItem,
+  type ServerPlaylist,
   type ServerPlaylistDetail,
 } from '@/lib/api'
 import { AuthProvider, useAuth } from '@/lib/auth'
@@ -56,7 +65,6 @@ import {
   type OfflineAudioStateMap,
 } from '@/lib/offline-audio-cache'
 import {
-  pickCoverColor,
   type CollectionRef,
   type Song,
   type View,
@@ -98,6 +106,93 @@ function songLiked(song: Song) {
   return Boolean(song.serverSong?.liked ?? song.liked)
 }
 
+function wait(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+function summarizeCsvImportBatches(batches: CsvImportBatch[]) {
+  return batches.reduce(
+    (summary, batch) => ({
+      completedItems: summary.completedItems + batch.completedItems,
+      failedItems: summary.failedItems + batch.failedItems,
+      isRunning:
+        summary.isRunning ||
+        batch.status === 'pending' ||
+        batch.status === 'running',
+      pendingItems:
+        summary.pendingItems +
+        Math.max(0, batch.totalItems - batch.completedItems - batch.failedItems),
+      totalItems: summary.totalItems + batch.totalItems,
+    }),
+    {
+      completedItems: 0,
+      failedItems: 0,
+      isRunning: false,
+      pendingItems: 0,
+      totalItems: 0,
+    },
+  )
+}
+
+type CsvImportBatchState = {
+  batch: CsvImportBatch
+  items: CsvImportItem[]
+}
+
+type CsvManualMatchTarget = {
+  downloadId: string
+  item: CsvImportItem
+}
+
+function summarizeCsvImportStates(states: CsvImportBatchState[]) {
+  const summary = summarizeCsvImportBatches(states.map((state) => state.batch))
+  const items = states.flatMap((state) => state.items)
+
+  return {
+    ...summary,
+    autoRetryableItems: items.filter((item) => item.autoRetryable).length,
+    userMatchItems: items.filter((item) => item.userMatchRequired).length,
+  }
+}
+
+function csvImportStatusText(summary: ReturnType<typeof summarizeCsvImportStates>) {
+  if (!summary.isRunning && summary.pendingItems > 0 && summary.autoRetryableItems > 0) {
+    return `${summary.completedItems} done, ${summary.failedItems} failed, ${summary.pendingItems} paused`
+  }
+
+  return `${summary.completedItems} done, ${summary.failedItems} failed`
+}
+
+function csvImportFinalMessage(summary: ReturnType<typeof summarizeCsvImportStates>) {
+  if (summary.pendingItems > 0 && summary.autoRetryableItems > 0) {
+    return `${summary.completedItems} imported, ${summary.failedItems} failed, ${summary.pendingItems} waiting to retry`
+  }
+
+  return summary.failedItems > 0
+    ? `${summary.completedItems} imported, ${summary.failedItems} failed`
+    : 'CSV playlists imported'
+}
+
+function csvImportProgress(
+  summary: ReturnType<typeof summarizeCsvImportStates>,
+  fallback: number,
+) {
+  return summary.totalItems > 0
+    ? (summary.completedItems + summary.failedItems) / summary.totalItems
+    : fallback
+}
+
+function csvImportItemsForBatch(
+  existingItems: CsvImportItem[] | undefined,
+  batchId: string,
+  nextItems: CsvImportItem[],
+) {
+  return [
+    ...(existingItems?.filter((item) => item.batchId !== batchId) ?? []),
+    ...nextItems,
+  ]
+}
+
 export function MusicApp() {
   return (
     <AuthProvider>
@@ -112,7 +207,7 @@ function MusicAppInner() {
   if (status === 'loading') {
     return (
       <div className="flex min-h-[100dvh] items-center justify-center bg-background text-sm text-muted-foreground">
-        Loading Broadside...
+        Loading OnVibe...
       </div>
     )
   }
@@ -164,8 +259,9 @@ function AuthenticatedMusicApp() {
   const [externalResults, setExternalResults] = useState<
     ExternalDiscoveryResult[]
   >([])
+  const [csvManualMatchTarget, setCsvManualMatchTarget] =
+    useState<CsvManualMatchTarget | null>(null)
   const [isDiscoveringLink, setIsDiscoveringLink] = useState(false)
-  const [isImportingLink, setIsImportingLink] = useState(false)
   const [createPlaylistOpen, setCreatePlaylistOpen] = useState(false)
   const [pendingSongForPlaylist, setPendingSongForPlaylist] =
     useState<Song | null>(null)
@@ -174,6 +270,7 @@ function AuthenticatedMusicApp() {
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const playNextRef = useRef<() => void>(() => undefined)
+  const canceledCsvImportIdsRef = useRef<Set<string>>(new Set())
 
   const serverSongs = useMemo(
     () =>
@@ -567,6 +664,76 @@ function AuthenticatedMusicApp() {
     [currentSongId, deletingSongId, refreshLibrary],
   )
 
+  const handleTracksWiped = useCallback(
+    (songIds: string[]) => {
+      const wipedSongIds = new Set(songIds)
+
+      if (wipedSongIds.size > 0) {
+        setLocallyDeletedSongIds((current) => {
+          const next = new Set(current)
+
+          for (const songId of wipedSongIds) {
+            next.add(songId)
+          }
+
+          return next
+        })
+        setLikedOverrides((current) => {
+          const next = { ...current }
+
+          for (const songId of wipedSongIds) {
+            delete next[songId]
+          }
+
+          return next
+        })
+        setQueue((current) =>
+          current.filter((item) => !wipedSongIds.has(item.id)),
+        )
+        setOfflineAudio((states) => {
+          const next = { ...states }
+
+          for (const songId of wipedSongIds) {
+            next[songId] = { status: 'idle' }
+          }
+
+          return next
+        })
+        Promise.all(
+          songIds.map((songId) =>
+            deleteOfflineAudio(songId).catch(() => undefined),
+          ),
+        ).catch(() => undefined)
+      }
+
+      if (currentSongId && wipedSongIds.has(currentSongId)) {
+        const audio = audioRef.current
+        audio?.pause()
+        audio?.removeAttribute('src')
+        audio?.load()
+        setCurrentSongId(null)
+        setIsPlaying(false)
+        setProgress(0)
+        setDuration(0)
+        updatePlaybackState({
+          positionMs: 0,
+          repeatMode: 'off',
+          shuffleEnabled: false,
+          songId: null,
+        }).catch(() => undefined)
+      }
+
+      setLibrarySync({
+        completed: 0,
+        failed: 0,
+        status: 'idle',
+        total: 0,
+      })
+      refreshLibrary()
+    },
+    [currentSongId, refreshLibrary],
+  )
+
   const toggleSongLike = useCallback(
     async (song: Song) => {
       if (!song.serverSong || likingSongId) return
@@ -803,7 +970,7 @@ function AuthenticatedMusicApp() {
       const id = `upload-${Date.now()}`
       setDownloads((prev) => [
         {
-          artist: 'Broadside server',
+          artist: 'OnVibe server',
           id,
           platform: 'upload',
           progress: 0.2,
@@ -865,6 +1032,469 @@ function AuthenticatedMusicApp() {
       }
     },
     [importPolicy.policy.mode, refreshLibrary],
+  )
+
+  const monitorCsvImportBatches = useCallback(
+    async (downloadId: string, initialStates: CsvImportBatchState[]) => {
+      let states = initialStates
+      let summary = summarizeCsvImportStates(states)
+
+      setDownloads((prev) =>
+        prev.map((download) =>
+          download.id === downloadId
+            ? {
+                ...download,
+                artist: csvImportStatusText(summary),
+                csvImportBatches: states.map((state) => state.batch),
+                csvImportItems: states.flatMap((state) => state.items),
+                progress: csvImportProgress(summary, download.progress),
+              }
+            : download,
+        ),
+      )
+
+      let pollLostBatch = false
+
+      while (
+        summary.isRunning &&
+        !canceledCsvImportIdsRef.current.has(downloadId)
+      ) {
+        await wait(1500)
+
+        if (canceledCsvImportIdsRef.current.has(downloadId)) {
+          break
+        }
+
+        states = await Promise.all(
+          states.map(async (state) => {
+            if (
+              state.batch.status !== 'pending' &&
+              state.batch.status !== 'running'
+            ) {
+              return state
+            }
+
+            const next = await fetchCsvImportBatch(state.batch.id)
+
+            if (next.status !== 'authenticated' || !next.batch) {
+              pollLostBatch = true
+              return state
+            }
+
+            return {
+              batch: next.batch,
+              items: next.items,
+            }
+          }),
+        )
+
+        summary = summarizeCsvImportStates(states)
+        setDownloads((prev) =>
+          prev.map((download) =>
+            download.id === downloadId
+              ? {
+                  ...download,
+                  artist: csvImportStatusText(summary),
+                  csvImportBatches: states.map((state) => state.batch),
+                  csvImportItems: states.flatMap((state) => state.items),
+                  progress: csvImportProgress(summary, download.progress),
+                }
+              : download,
+          ),
+        )
+      }
+
+      if (canceledCsvImportIdsRef.current.has(downloadId)) {
+        return { canceled: true, states, summary }
+      }
+
+      if (pollLostBatch) {
+        throw new Error('CSV import status could not be refreshed.')
+      }
+
+      states = await Promise.all(
+        states.map(async (state) => {
+          if (state.items.length > 0) {
+            return state
+          }
+
+          const next = await fetchCsvImportBatch(state.batch.id)
+
+          if (next.status !== 'authenticated' || !next.batch) {
+            return state
+          }
+
+          return {
+            batch: next.batch,
+            items: next.items,
+          }
+        }),
+      )
+      summary = summarizeCsvImportStates(states)
+
+      setDownloads((prev) =>
+        prev.map((download) =>
+          download.id === downloadId
+            ? {
+                ...download,
+                canceling: false,
+                csvImportBatches: states.map((state) => state.batch),
+                csvImportItems: states.flatMap((state) => state.items),
+                message: csvImportFinalMessage(summary),
+                progress: csvImportProgress(summary, 1),
+                retrying: false,
+                status: summary.failedItems > 0 ? 'error' : 'complete',
+              }
+            : download,
+        ),
+      )
+      refreshLibrary()
+      setCollection(null)
+      setView('library')
+
+      if (summary.failedItems === 0) {
+        window.setTimeout(() => {
+          setDownloads((prev) =>
+            prev.filter((download) => download.id !== downloadId),
+          )
+        }, 5000)
+      }
+
+      return { canceled: false, states, summary }
+    },
+    [refreshLibrary],
+  )
+
+  const onCsvFilesSelected = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return
+
+      const id = `csv-import-${Date.now()}`
+      canceledCsvImportIdsRef.current.delete(id)
+      setDownloads((prev) => [
+        {
+          artist: 'CSV playlists',
+          batchIds: [],
+          cancelable: true,
+          canceling: false,
+          id,
+          platform: 'url',
+          progress: 0.05,
+          status: 'downloading',
+          title: files.length === 1 ? files[0].name : `${files.length} CSV files`,
+          url: '',
+        },
+        ...prev,
+      ])
+
+      try {
+        const result = await createCsvImportBatches(files)
+
+        if (result.status === 'anonymous' || result.batches.length === 0) {
+          setDownloads((prev) =>
+            prev.map((download) =>
+              download.id === id
+                ? {
+                    ...download,
+                    message: 'Sign in again to import CSV playlists.',
+                    progress: 1,
+                    status: 'error',
+                  }
+                : download,
+            ),
+          )
+          return
+        }
+
+        const batches = result.batches
+        const batchIds = batches.map((batch) => batch.id)
+
+        setDownloads((prev) =>
+          prev.map((download) =>
+            download.id === id
+              ? {
+                  ...download,
+                  batchIds,
+                }
+              : download,
+          ),
+        )
+
+        if (canceledCsvImportIdsRef.current.has(id)) {
+          const canceled = await Promise.all(
+            batchIds.map((batchId) => cancelCsvImportBatch(batchId)),
+          )
+          const canceledBatches = canceled
+            .map((item) => item.batch)
+            .filter((batch): batch is CsvImportBatch => Boolean(batch))
+          const canceledItems = canceled.flatMap((item) => item.items)
+          const canceledSummary = summarizeCsvImportBatches(canceledBatches)
+
+          setDownloads((prev) =>
+            prev.map((download) =>
+              download.id === id
+                ? {
+                    ...download,
+                    artist: `${canceledSummary.completedItems} done, ${canceledSummary.failedItems} canceled`,
+                    canceling: false,
+                    csvImportBatches: canceledBatches,
+                    csvImportItems: canceledItems,
+                    message: 'CSV import canceled.',
+                    progress:
+                      canceledSummary.totalItems > 0
+                        ? (canceledSummary.completedItems +
+                            canceledSummary.failedItems) /
+                          canceledSummary.totalItems
+                        : 1,
+                    status: 'canceled',
+                  }
+                : download,
+            ),
+          )
+          refreshLibrary()
+          return
+        }
+
+        const initialStates = batches.map((batch) => ({
+          batch,
+          items: [] as CsvImportItem[],
+        }))
+        const summary = summarizeCsvImportStates(initialStates)
+        setDownloads((prev) =>
+          prev.map((download) =>
+            download.id === id
+              ? {
+                  ...download,
+                  csvImportBatches: batches,
+                  artist: `${summary.totalItems} queued`,
+                  progress:
+                    summary.totalItems > 0
+                      ? (summary.completedItems + summary.failedItems) /
+                        summary.totalItems
+                      : 0.1,
+                }
+              : download,
+          ),
+        )
+
+        await monitorCsvImportBatches(id, initialStates)
+      } catch (error) {
+        if (canceledCsvImportIdsRef.current.has(id)) {
+          setDownloads((prev) =>
+            prev.map((download) =>
+              download.id === id
+                ? {
+                    ...download,
+                    artist: 'CSV import canceled',
+                    canceling: false,
+                    message: 'CSV import canceled.',
+                    progress: 1,
+                    status: 'canceled',
+                  }
+                : download,
+            ),
+          )
+          return
+        }
+
+        setDownloads((prev) =>
+          prev.map((download) =>
+            download.id === id
+              ? {
+                  ...download,
+                  message:
+                    error instanceof Error
+                      ? error.message
+                      : 'CSV import failed.',
+                  progress: 1,
+                  status: 'error',
+                }
+              : download,
+          ),
+        )
+      }
+    },
+    [monitorCsvImportBatches, refreshLibrary],
+  )
+
+  const cancelCsvImport = useCallback(
+    async (download: Download) => {
+      if (download.status !== 'downloading' || download.canceling) return
+
+      canceledCsvImportIdsRef.current.add(download.id)
+      setDownloads((prev) =>
+        prev.map((item) =>
+          item.id === download.id
+            ? {
+                ...item,
+                artist: 'Canceling CSV import',
+                canceling: true,
+                message: 'Canceling CSV import.',
+              }
+            : item,
+        ),
+      )
+
+      const batchIds = download.batchIds ?? []
+
+      if (batchIds.length === 0) {
+        return
+      }
+
+      try {
+        const results = await Promise.all(
+          batchIds.map((batchId) => cancelCsvImportBatch(batchId)),
+        )
+        const batches = results
+          .map((result) => result.batch)
+          .filter((batch): batch is CsvImportBatch => Boolean(batch))
+        const items = results.flatMap((result) => result.items)
+        const summary = summarizeCsvImportBatches(batches)
+
+        setDownloads((prev) =>
+          prev.map((item) =>
+            item.id === download.id
+              ? {
+                  ...item,
+                  artist: `${summary.completedItems} done, ${summary.failedItems} canceled`,
+                  canceling: false,
+                  csvImportBatches: batches,
+                  csvImportItems: items,
+                  message: 'CSV import canceled.',
+                  progress:
+                    summary.totalItems > 0
+                      ? (summary.completedItems + summary.failedItems) /
+                        summary.totalItems
+                      : 1,
+                  status: 'canceled',
+                }
+              : item,
+          ),
+        )
+        refreshLibrary()
+      } catch (error) {
+        canceledCsvImportIdsRef.current.delete(download.id)
+        setDownloads((prev) =>
+          prev.map((item) =>
+            item.id === download.id
+              ? {
+                  ...item,
+                  canceling: false,
+                  message:
+                    error instanceof Error
+                      ? error.message
+                      : 'CSV import could not be canceled.',
+                }
+              : item,
+          ),
+        )
+        toast({
+          title: 'Could not cancel CSV import',
+          description:
+            error instanceof Error ? error.message : 'Try again in a moment.',
+          variant: 'destructive',
+        })
+      }
+    },
+    [refreshLibrary],
+  )
+
+  const retryCsvImport = useCallback(
+    async (download: Download) => {
+      const batchIds = download.batchIds ?? []
+
+      if (download.retrying || batchIds.length === 0) return
+
+      canceledCsvImportIdsRef.current.delete(download.id)
+      setDownloads((prev) =>
+        prev.map((item) =>
+          item.id === download.id
+            ? {
+                ...item,
+                artist: 'Retrying CSV import',
+                message: undefined,
+                retrying: true,
+                status: 'downloading',
+              }
+            : item,
+        ),
+      )
+
+      try {
+        const results = await Promise.all(
+          batchIds.map((batchId) => retryCsvImportBatch(batchId)),
+        )
+        const states = results
+          .filter((result) => result.status === 'authenticated' && result.batch)
+          .map((result) => ({
+            batch: result.batch as CsvImportBatch,
+            items: result.items,
+          }))
+        const retriedItems = results.reduce(
+          (total, result) => total + result.retriedItems,
+          0,
+        )
+        const pendingItems = states
+          .flatMap((state) => state.items)
+          .filter((item) => item.status === 'pending').length
+
+        if (states.length === 0) {
+          setDownloads((prev) =>
+            prev.map((item) =>
+              item.id === download.id
+                ? {
+                    ...item,
+                    message: 'Sign in again to retry CSV imports.',
+                    progress: 1,
+                    retrying: false,
+                    status: 'error',
+                  }
+                : item,
+            ),
+          )
+          return
+        }
+
+        if (retriedItems === 0 && pendingItems === 0) {
+          setDownloads((prev) =>
+            prev.map((item) =>
+              item.id === download.id
+                ? {
+                    ...item,
+                    csvImportBatches: states.map((state) => state.batch),
+                    csvImportItems: states.flatMap((state) => state.items),
+                    message: 'No retryable CSV rows remain.',
+                    progress: 1,
+                    retrying: false,
+                    status: 'error',
+                  }
+                : item,
+            ),
+          )
+          return
+        }
+
+        await monitorCsvImportBatches(download.id, states)
+      } catch (error) {
+        setDownloads((prev) =>
+          prev.map((item) =>
+            item.id === download.id
+              ? {
+                  ...item,
+                  message:
+                    error instanceof Error
+                      ? error.message
+                      : 'CSV import retry failed.',
+                  progress: 1,
+                  retrying: false,
+                  status: 'error',
+                }
+              : item,
+          ),
+        )
+      }
+    },
+    [monitorCsvImportBatches],
   )
 
   const onSubmitUrl = useCallback(async (rawInput: string) => {
@@ -951,11 +1581,115 @@ function AuthenticatedMusicApp() {
     }
   }, [])
 
+  const openCsvManualMatch = useCallback(
+    (download: Download, item: CsvImportItem) => {
+      setCsvManualMatchTarget({ downloadId: download.id, item })
+      setAddOpen(true)
+      void onSubmitUrl(item.searchQuery)
+    },
+    [onSubmitUrl],
+  )
+
+  const clearCsvManualMatch = useCallback(() => {
+    setCsvManualMatchTarget(null)
+  }, [])
+
+  const onImportCsvMatch = useCallback(
+    async (item: CsvImportItem, result: ExternalDiscoveryResult) => {
+      const target = csvManualMatchTarget
+
+      if (!target || target.item.id !== item.id) return
+
+      let matched: Awaited<ReturnType<typeof importCsvImportItemDiscovery>>
+
+      try {
+        matched = await importCsvImportItemDiscovery({
+          batchId: item.batchId,
+          discovery: result,
+          itemId: item.id,
+        })
+      } catch (error) {
+        toast({
+          title: 'Could not import CSV match',
+          description:
+            error instanceof Error ? error.message : 'Try another result.',
+          variant: 'destructive',
+        })
+        return
+      }
+
+      if (matched.status !== 'authenticated' || !matched.batch) {
+        toast({
+          title: 'Could not import CSV match',
+          description: 'Sign in again and try the match once more.',
+          variant: 'destructive',
+        })
+        return
+      }
+
+      const items = csvImportItemsForBatch(
+        downloads.find((download) => download.id === target.downloadId)
+          ?.csvImportItems,
+        matched.batch.id,
+        matched.items,
+      )
+      const batches = [
+        ...(downloads
+          .find((download) => download.id === target.downloadId)
+          ?.csvImportBatches?.filter((batch) => batch.id !== matched.batch.id) ??
+          []),
+        matched.batch,
+      ]
+      const summary = summarizeCsvImportStates(
+        batches.map((batch) => ({
+          batch,
+          items: items.filter((csvItem) => csvItem.batchId === batch.id),
+        })),
+      )
+
+      setDownloads((prev) =>
+        prev.map((download) =>
+              download.id === target.downloadId
+                ? {
+                    ...download,
+                    artist: csvImportStatusText(summary),
+                    csvImportBatches: batches,
+                    csvImportItems: items,
+                    message: csvImportFinalMessage(summary),
+                    progress: csvImportProgress(summary, 1),
+                    status: summary.failedItems > 0 ? 'error' : 'complete',
+                  }
+                : download,
+        ),
+      )
+      setExternalResults((prev) =>
+        prev.filter((discovery) => discovery.sourceId !== result.sourceId),
+      )
+      setCsvManualMatchTarget(null)
+      refreshLibrary()
+      setCollection(null)
+      setView('library')
+
+      if (summary.failedItems === 0) {
+        window.setTimeout(() => {
+          setDownloads((prev) =>
+            prev.filter((download) => download.id !== target.downloadId),
+          )
+        }, 5000)
+      }
+
+      toast({
+        title: 'CSV match imported',
+        description: `"${item.title}" was added.`,
+      })
+    },
+    [csvManualMatchTarget, downloads, refreshLibrary],
+  )
+
   const onImportExternalResult = useCallback(
     async (result: ExternalDiscoveryResult) => {
       const id = `link-import-${result.sourceId}-${Date.now()}`
 
-      setIsImportingLink(true)
       setDownloads((prev) => [
         {
           artist: result.creator ?? 'YouTube',
@@ -1028,8 +1762,6 @@ function AuthenticatedMusicApp() {
               : download,
           ),
         )
-      } finally {
-        setIsImportingLink(false)
       }
     },
     [refreshLibrary],
@@ -1213,7 +1945,7 @@ function AuthenticatedMusicApp() {
   )
 
   const handleDeletePlaylist = useCallback(
-    async (playlist: ServerPlaylistDetail) => {
+    async (playlist: ServerPlaylist) => {
       try {
         const result = await deletePlaylist(playlist.id)
 
@@ -1263,7 +1995,7 @@ function AuthenticatedMusicApp() {
   }, [])
 
   return (
-    <div className="flex h-[100dvh] w-full flex-col overflow-hidden bg-background text-foreground">
+    <div className="safe-x flex h-[100dvh] w-full flex-col overflow-hidden bg-background text-foreground">
       <div className="flex min-h-0 flex-1">
         <Sidebar
           view={view}
@@ -1275,11 +2007,12 @@ function AuthenticatedMusicApp() {
           onImportClick={() => setAddOpen(true)}
           onCreatePlaylistClick={openCreatePlaylist}
           onOpenCollection={openCollection}
+          onDeletePlaylist={handleDeletePlaylist}
           activeCollectionId={activeCollectionId}
         />
 
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col rounded-none md:m-2 md:ml-0 md:rounded-xl md:bg-card/40 md:backdrop-blur">
-          <header className="flex items-center justify-between gap-3 px-4 pt-[max(env(safe-area-inset-top),12px)] pb-2 md:hidden">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col rounded-none md:m-2 md:ml-0 md:rounded-xl md:border md:border-border/40 md:bg-card/30 md:backdrop-blur">
+          <header className="safe-top-3 flex items-center justify-between gap-3 px-4 pb-3 md:hidden">
             <BrandLockup />
             <div className="flex items-center gap-1">
               <Button
@@ -1307,7 +2040,7 @@ function AuthenticatedMusicApp() {
             <div className="flex items-center gap-2">
               <Button
                 onClick={() => setAddOpen(true)}
-                className="rounded-full bg-foreground text-background hover:bg-foreground/90"
+                className="h-9 rounded-full bg-foreground px-4 text-background shadow-sm transition-transform hover:bg-foreground/90 hover:scale-[1.02] active:scale-100"
               >
                 <Plus className="mr-2 h-4 w-4" />
                 Add music
@@ -1386,6 +2119,7 @@ function AuthenticatedMusicApp() {
                 onAddSongToPlaylist={handleAddSongToPlaylist}
                 onCreatePlaylistWithSong={openCreatePlaylistWithSong}
                 onCreatePlaylistClick={openCreatePlaylist}
+                onDeletePlaylist={handleDeletePlaylist}
                 deletingSongId={deletingSongId}
                 likingSongId={likingSongId}
                 onImportClick={() => setAddOpen(true)}
@@ -1400,7 +2134,7 @@ function AuthenticatedMusicApp() {
                 onSyncLibraryOffline={syncLibraryToDevice}
               />
             ) : view === 'admin' && user?.isAdmin ? (
-              <AdminView />
+              <AdminView songs={userSongs} onTracksWiped={handleTracksWiped} />
             ) : (
               <SearchView
                 songs={userSongs}
@@ -1470,13 +2204,24 @@ function AuthenticatedMusicApp() {
 
       <AddMusicDialog
         open={addOpen}
-        onOpenChange={setAddOpen}
+        onOpenChange={(open) => {
+          setAddOpen(open)
+          if (!open) {
+            clearCsvManualMatch()
+          }
+        }}
         downloads={downloads}
         externalResults={externalResults}
         isDiscoveringLink={isDiscoveringLink}
-        isImportingLink={isImportingLink}
+        manualMatchItem={csvManualMatchTarget?.item ?? null}
+        onCancelImport={cancelCsvImport}
+        onClearManualMatch={clearCsvManualMatch}
+        onCsvFilesSelected={onCsvFilesSelected}
         onFilesSelected={onFilesSelected}
+        onImportCsvMatch={onImportCsvMatch}
         onImportExternalResult={onImportExternalResult}
+        onMatchCsvImportItem={openCsvManualMatch}
+        onRetryCsvImport={retryCsvImport}
         onSubmitUrl={onSubmitUrl}
       />
 
@@ -1509,16 +2254,10 @@ function AuthenticatedMusicApp() {
 
 function BrandLockup() {
   return (
-    <div className="flex items-center gap-2">
-      <div
-        className={`flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br ${pickCoverColor(
-          'Broadside',
-        )} font-bold text-foreground`}
-      >
-        T
-      </div>
+    <div className="flex items-center gap-2.5">
+      <OnVibeLogo className="h-8 w-8 rounded-lg shadow-md shadow-primary/15" />
       <span className="text-base font-bold tracking-tight md:text-lg">
-        Broadside
+        OnVibe
       </span>
     </div>
   )

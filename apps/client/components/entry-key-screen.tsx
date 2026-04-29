@@ -37,7 +37,7 @@ export function EntryKeyScreen() {
       setUser(result.user)
       toast({
         title: 'Entry key accepted',
-        description: 'This account can now use Broadside.',
+        description: 'This account can now use OnVibe.',
       })
     } catch (error) {
       toast({
@@ -57,15 +57,19 @@ export function EntryKeyScreen() {
   }
 
   return (
-    <main className="flex min-h-[100dvh] items-center justify-center bg-background px-5 text-foreground">
-      <section className="w-full max-w-md rounded-xl bg-card p-8 shadow-2xl shadow-black/30">
-        <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/10">
+    <main className="safe-x-5 safe-top-5 safe-bottom-5 relative flex min-h-[100dvh] items-center justify-center overflow-hidden bg-background text-foreground">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-32 left-1/2 h-[60vh] w-[80vw] max-w-3xl -translate-x-1/2 rounded-full bg-primary/15 blur-3xl"
+      />
+      <section className="relative w-full max-w-md rounded-2xl border border-border/40 bg-card/70 p-8 shadow-2xl shadow-black/40 backdrop-blur">
+        <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/20">
           <KeyRound className="h-9 w-9" />
         </div>
-        <div className="mt-6 text-center text-xs font-black uppercase tracking-[0.24em] text-primary">
-          Broadside
+        <div className="mt-7 text-center text-[11px] font-bold uppercase tracking-[0.22em] text-primary">
+          OnVibe
         </div>
-        <h1 className="mt-3 text-center text-3xl font-black tracking-tight">
+        <h1 className="mt-3 text-center text-3xl font-bold tracking-tight">
           Enter your access key
         </h1>
         <p className="mx-auto mt-3 max-w-sm text-center text-sm leading-6 text-muted-foreground">
@@ -82,14 +86,14 @@ export function EntryKeyScreen() {
             inputMode="text"
             maxLength={5}
             spellCheck={false}
-            className="h-12 rounded-full text-center text-base font-black uppercase tracking-[0.28em]"
+            className="h-12 rounded-full text-center text-base font-bold uppercase tracking-[0.28em]"
             placeholder="A1B2C"
             required
           />
           <Button
             type="submit"
             disabled={submitting || !keyReady}
-            className="h-12 w-full rounded-full bg-primary text-sm font-black text-primary-foreground hover:bg-primary/90"
+            className="h-12 w-full rounded-full bg-primary text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/20 transition-transform hover:bg-primary/90 hover:scale-[1.01] active:scale-100"
           >
             {submitting ? (
               <>

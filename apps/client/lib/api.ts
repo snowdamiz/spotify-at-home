@@ -30,6 +30,39 @@ export interface EntryKeySummary {
   consumedAt: string | null
 }
 
+export interface AccountTrackWipeDeletion {
+  clearedStorageReferences: number
+  deletedTracks: number
+  deletedStoredObjects: number
+  failedStoredObjects: number
+  retainedStoredObjects: number
+  storageCandidates: number
+  storageDeleteRequested: boolean
+}
+
+export interface StorageObjectSummary {
+  storagePath: string
+  location: 'r2' | 'local'
+  songCount: number
+  activeSongCount: number
+  sizeBytes: number
+  declaredSizeBytes: number
+  exists: boolean
+  mimeType: string | null
+  ownerEmails: string[]
+  sampleTitle: string | null
+  earliestCreatedAt: string
+  latestUpdatedAt: string
+}
+
+export interface AdminStorageOverview {
+  driver: 'r2' | 'local'
+  objects: StorageObjectSummary[]
+  returnedObjects: number
+  totalBytes: number
+  totalObjects: number
+}
+
 export interface ServerSong {
   id: string
   userId?: string
@@ -87,7 +120,80 @@ export interface ServerImportPolicy {
   openTestAllowed: boolean
 }
 
+export interface CsvImportPreviewTrack {
+  album: string | null
+  artist: string | null
+  artworkUrl: string | null
+  durationMs: number | null
+  isrc: string | null
+  sourceKey: string
+  sourceUrl: string | null
+  title: string
+}
+
+export interface CsvImportPreviewFile {
+  fileName: string
+  playlistName: string
+  trackCount: number
+  tracks: CsvImportPreviewTrack[]
+  warnings: string[]
+}
+
+export interface CsvImportBatch {
+  completedAt: string | null
+  completedItems: number
+  createdAt: string
+  failedItems: number
+  id: string
+  importPolicyMode: ImportPolicyMode
+  startedAt: string | null
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  totalItems: number
+  userId: string
+}
+
+export interface CsvImportItem {
+  album: string | null
+  artist: string | null
+  autoRetryable: boolean
+  batchId: string
+  createdAt: string
+  errorCode: string | null
+  errorMessage: string | null
+  fileName: string
+  id: string
+  likeAfterImport: boolean
+  playlistTargets: Array<{
+    playlistId: string
+    playlistName: string
+    position: number
+  }>
+  playlistName: string
+  searchQuery: string
+  songId: string | null
+  sourceKey: string
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+  title: string
+  updatedAt: string
+  userId: string
+  userMatchRequired: boolean
+  youtubeSourceId: string | null
+}
+
 type ApiStatus = 'anonymous' | 'authenticated'
+type ApiFetchOptions = {
+  retryOnUnauthorized?: boolean
+}
+type CsvUploadedFileRef = {
+  id: string
+  fileName: string
+}
+
+const CSV_UPLOAD_BATCH_TARGET_BYTES = 700_000
+const CSV_UPLOAD_CHUNK_BYTES = 512 * 1024
+
+let refreshSessionPromise: Promise<boolean> | null = null
+const csvUploadReferences = new WeakMap<File, Promise<CsvUploadedFileRef>>()
 
 export function apiBaseUrl() {
   return (
@@ -111,10 +217,49 @@ export function apiUrl(pathOrUrl: string) {
   return `${baseUrl.replace(/\/$/, '')}/${pathOrUrl.replace(/^\//, '')}`
 }
 
-export async function fetchCurrentUser() {
-  const response = await fetch(apiUrl('/api/me'), {
+export async function apiFetch(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  options: ApiFetchOptions = {},
+) {
+  const response = await fetch(input, withCredentials(init))
+
+  if (response.status !== 401 || options.retryOnUnauthorized === false) {
+    return response
+  }
+
+  const refreshed = await refreshAuthSession()
+
+  if (!refreshed) {
+    return response
+  }
+
+  return fetch(input, withCredentials(init))
+}
+
+async function refreshAuthSession() {
+  refreshSessionPromise ??= fetch(apiUrl('/api/auth/refresh'), {
     credentials: 'include',
+    method: 'POST',
   })
+    .then((response) => response.ok)
+    .catch(() => false)
+    .finally(() => {
+      refreshSessionPromise = null
+    })
+
+  return refreshSessionPromise
+}
+
+function withCredentials(init: RequestInit): RequestInit {
+  return {
+    credentials: 'include',
+    ...init,
+  }
+}
+
+export async function fetchCurrentUser() {
+  const response = await apiFetch(apiUrl('/api/me'))
 
   if (response.status === 401) {
     return null
@@ -142,14 +287,14 @@ export function startGoogleSignIn() {
 }
 
 export async function logout() {
-  await fetch(apiUrl('/api/auth/logout'), {
+  await apiFetch(apiUrl('/api/auth/logout'), {
     credentials: 'include',
     method: 'POST',
   })
 }
 
 export async function redeemEntryKey(key: string) {
-  const response = await fetch(apiUrl('/api/entry-keys/redeem'), {
+  const response = await apiFetch(apiUrl('/api/entry-keys/redeem'), {
     body: JSON.stringify({ key }),
     credentials: 'include',
     headers: {
@@ -175,7 +320,7 @@ export async function redeemEntryKey(key: string) {
 }
 
 export async function fetchAdminEntryKeys() {
-  const response = await fetch(apiUrl('/api/admin/entry-keys'), {
+  const response = await apiFetch(apiUrl('/api/admin/entry-keys'), {
     credentials: 'include',
   })
 
@@ -200,7 +345,7 @@ export async function fetchAdminEntryKeys() {
 }
 
 export async function createAdminEntryKey(label: string | null) {
-  const response = await fetch(apiUrl('/api/admin/entry-keys'), {
+  const response = await apiFetch(apiUrl('/api/admin/entry-keys'), {
     body: JSON.stringify({ label }),
     credentials: 'include',
     headers: {
@@ -236,8 +381,69 @@ export async function createAdminEntryKey(label: string | null) {
   }
 }
 
+export async function fetchAdminStorageObjects() {
+  const response = await apiFetch(apiUrl('/api/admin/storage-objects'), {
+    credentials: 'include',
+  })
+
+  if (response.status === 403) {
+    return { status: 'forbidden' as const, storage: null }
+  }
+
+  if (response.status === 401) {
+    return { status: 'anonymous' as const, storage: null }
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      (await readApiErrorMessage(response)) ??
+        `Storage objects request failed with status ${response.status}`,
+    )
+  }
+
+  const payload = (await response.json()) as { storage: AdminStorageOverview }
+
+  return { status: 'authenticated' as const, storage: payload.storage }
+}
+
+export async function wipeAdminAccountTracks(input: {
+  deleteStoredAudio: boolean
+}) {
+  const response = await apiFetch(apiUrl('/api/account/tracks/wipe'), {
+    body: JSON.stringify({
+      deleteStoredAudio: input.deleteStoredAudio,
+    }),
+    credentials: 'include',
+    headers: {
+      'content-type': 'application/json',
+    },
+    method: 'POST',
+  })
+
+  if (response.status === 403) {
+    return { deletion: null, status: 'forbidden' as const }
+  }
+
+  if (response.status === 401) {
+    return { deletion: null, status: 'anonymous' as const }
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      (await readApiErrorMessage(response)) ??
+        `Track wipe failed with status ${response.status}`,
+    )
+  }
+
+  const payload = (await response.json()) as {
+    deletion: AccountTrackWipeDeletion
+  }
+
+  return { deletion: payload.deletion, status: 'authenticated' as const }
+}
+
 export async function fetchSongs() {
-  const response = await fetch(apiUrl('/api/songs'), {
+  const response = await apiFetch(apiUrl('/api/songs'), {
     credentials: 'include',
   })
 
@@ -255,7 +461,7 @@ export async function fetchSongs() {
 }
 
 export async function fetchLibrarySummary() {
-  const response = await fetch(apiUrl('/api/library/summary'), {
+  const response = await apiFetch(apiUrl('/api/library/summary'), {
     credentials: 'include',
   })
 
@@ -278,7 +484,7 @@ export async function fetchLibrarySummary() {
 }
 
 export async function fetchImportPolicy() {
-  const response = await fetch(apiUrl('/api/import-policy'), {
+  const response = await apiFetch(apiUrl('/api/import-policy'), {
     credentials: 'include',
   })
 
@@ -289,6 +495,232 @@ export async function fetchImportPolicy() {
   const payload = (await response.json()) as { importPolicy: ServerImportPolicy }
 
   return payload.importPolicy
+}
+
+export async function previewCsvImportFiles(files: File[]) {
+  const batches = await csvUploadReferenceBatches(files)
+  const previewFiles: CsvImportPreviewFile[] = []
+  let totalTracks = 0
+
+  for (const batch of batches) {
+    const response = await postCsvImportUploads('/api/csv-imports/preview', batch)
+
+    if (response.status === 401) {
+      return {
+        files: [],
+        status: 'anonymous' as const,
+        totalTracks: 0,
+      }
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        (await readApiErrorMessage(response)) ??
+          `CSV preview failed with status ${response.status}`,
+      )
+    }
+
+    const payload = (await response.json()) as {
+      csvImport: {
+        files: CsvImportPreviewFile[]
+        totalTracks: number
+      }
+    }
+
+    previewFiles.push(...payload.csvImport.files)
+    totalTracks += payload.csvImport.totalTracks
+  }
+
+  return {
+    files: previewFiles,
+    status: 'authenticated' as const,
+    totalTracks,
+  }
+}
+
+export async function createCsvImportBatches(files: File[]) {
+  const uploadBatches = await csvUploadReferenceBatches(files)
+  const batches: CsvImportBatch[] = []
+
+  try {
+    for (const batchPayload of uploadBatches) {
+      const response = await postCsvImportUploads(
+        '/api/csv-imports/batches',
+        batchPayload,
+      )
+
+      if (response.status === 401) {
+        return { batches, status: 'anonymous' as const }
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          (await readApiErrorMessage(response)) ??
+            `CSV import failed with status ${response.status}`,
+        )
+      }
+
+      const payload = (await response.json()) as { batch: CsvImportBatch }
+      batches.push(payload.batch)
+    }
+  } finally {
+    for (const file of files) {
+      csvUploadReferences.delete(file)
+    }
+  }
+
+  return { batches, status: 'accepted' as const }
+}
+
+export async function fetchCsvImportBatch(batchId: string) {
+  const response = await apiFetch(
+    apiUrl(`/api/csv-imports/batches/${encodeURIComponent(batchId)}`),
+    {
+      credentials: 'include',
+    },
+  )
+
+  if (response.status === 401) {
+    return { batch: null, items: [], status: 'anonymous' as const }
+  }
+
+  if (response.status === 404) {
+    return { batch: null, items: [], status: 'not-found' as const }
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      (await readApiErrorMessage(response)) ??
+        `CSV import batch failed with status ${response.status}`,
+    )
+  }
+
+  const payload = (await response.json()) as {
+    batch: CsvImportBatch
+    items: CsvImportItem[]
+  }
+
+  return { ...payload, status: 'authenticated' as const }
+}
+
+export async function cancelCsvImportBatch(batchId: string) {
+  const response = await apiFetch(
+    apiUrl(`/api/csv-imports/batches/${encodeURIComponent(batchId)}/cancel`),
+    {
+      credentials: 'include',
+      method: 'POST',
+    },
+  )
+
+  if (response.status === 401) {
+    return { batch: null, items: [], status: 'anonymous' as const }
+  }
+
+  if (response.status === 404) {
+    return { batch: null, items: [], status: 'not-found' as const }
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      (await readApiErrorMessage(response)) ??
+        `CSV import cancel failed with status ${response.status}`,
+    )
+  }
+
+  const payload = (await response.json()) as {
+    batch: CsvImportBatch
+    items: CsvImportItem[]
+  }
+
+  return { ...payload, status: 'authenticated' as const }
+}
+
+export async function retryCsvImportBatch(batchId: string) {
+  const response = await apiFetch(
+    apiUrl(`/api/csv-imports/batches/${encodeURIComponent(batchId)}/retry`),
+    {
+      credentials: 'include',
+      method: 'POST',
+    },
+  )
+
+  if (response.status === 401) {
+    return {
+      batch: null,
+      items: [],
+      retriedItems: 0,
+      status: 'anonymous' as const,
+    }
+  }
+
+  if (response.status === 404) {
+    return {
+      batch: null,
+      items: [],
+      retriedItems: 0,
+      status: 'not-found' as const,
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      (await readApiErrorMessage(response)) ??
+        `CSV import retry failed with status ${response.status}`,
+    )
+  }
+
+  const payload = (await response.json()) as {
+    batch: CsvImportBatch
+    items: CsvImportItem[]
+    retriedItems: number
+  }
+
+  return { ...payload, status: 'authenticated' as const }
+}
+
+export async function importCsvImportItemDiscovery(input: {
+  batchId: string
+  discovery: ExternalDiscoveryResult
+  itemId: string
+}) {
+  const response = await apiFetch(
+    apiUrl(
+      `/api/csv-imports/batches/${encodeURIComponent(
+        input.batchId,
+      )}/items/${encodeURIComponent(input.itemId)}/import`,
+    ),
+    {
+      body: JSON.stringify({ discovery: input.discovery }),
+      credentials: 'include',
+      headers: {
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    },
+  )
+
+  if (response.status === 401) {
+    return { batch: null, item: null, items: [], status: 'anonymous' as const }
+  }
+
+  if (response.status === 404) {
+    return { batch: null, item: null, items: [], status: 'not-found' as const }
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      (await readApiErrorMessage(response)) ??
+        `CSV import item failed with status ${response.status}`,
+    )
+  }
+
+  const payload = (await response.json()) as {
+    batch: CsvImportBatch
+    item: CsvImportItem
+    items: CsvImportItem[]
+  }
+
+  return { ...payload, status: 'authenticated' as const }
 }
 
 export async function searchLibrary(
@@ -305,7 +737,7 @@ export async function searchLibrary(
     params.set('limit', String(options.limit))
   }
 
-  const response = await fetch(apiUrl(`/api/search?${params.toString()}`), {
+  const response = await apiFetch(apiUrl(`/api/search?${params.toString()}`), {
     credentials: 'include',
   })
 
@@ -338,7 +770,7 @@ export async function createPlaylist(input: {
   description?: string | null
   color?: string | null
 }) {
-  const response = await fetch(apiUrl('/api/playlists'), {
+  const response = await apiFetch(apiUrl('/api/playlists'), {
     body: JSON.stringify(input),
     credentials: 'include',
     headers: {
@@ -374,7 +806,7 @@ export async function updatePlaylist(
     color?: string | null
   },
 ) {
-  const response = await fetch(
+  const response = await apiFetch(
     apiUrl(`/api/playlists/${encodeURIComponent(playlistId)}`),
     {
       body: JSON.stringify(input),
@@ -404,7 +836,7 @@ export async function updatePlaylist(
 }
 
 export async function deletePlaylist(playlistId: string) {
-  const response = await fetch(
+  const response = await apiFetch(
     apiUrl(`/api/playlists/${encodeURIComponent(playlistId)}`),
     {
       credentials: 'include',
@@ -424,7 +856,7 @@ export async function deletePlaylist(playlistId: string) {
 }
 
 export async function addSongToPlaylist(playlistId: string, songId: string) {
-  const response = await fetch(
+  const response = await apiFetch(
     apiUrl(`/api/playlists/${encodeURIComponent(playlistId)}/songs`),
     {
       body: JSON.stringify({ songId }),
@@ -459,7 +891,7 @@ export async function removeSongFromPlaylist(
   playlistId: string,
   songId: string,
 ) {
-  const response = await fetch(
+  const response = await apiFetch(
     apiUrl(
       `/api/playlists/${encodeURIComponent(playlistId)}/songs/${encodeURIComponent(songId)}`,
     ),
@@ -487,7 +919,7 @@ export async function removeSongFromPlaylist(
 }
 
 export async function fetchPlaylist(playlistId: string) {
-  const response = await fetch(
+  const response = await apiFetch(
     apiUrl(`/api/playlists/${encodeURIComponent(playlistId)}`),
     {
       credentials: 'include',
@@ -512,7 +944,7 @@ export async function fetchPlaylist(playlistId: string) {
 }
 
 export async function likeSong(songId: string) {
-  const response = await fetch(apiUrl(`/api/songs/${encodeURIComponent(songId)}/like`), {
+  const response = await apiFetch(apiUrl(`/api/songs/${encodeURIComponent(songId)}/like`), {
     credentials: 'include',
     method: 'POST',
   })
@@ -533,7 +965,7 @@ export async function likeSong(songId: string) {
 }
 
 export async function unlikeSong(songId: string) {
-  const response = await fetch(apiUrl(`/api/songs/${encodeURIComponent(songId)}/like`), {
+  const response = await apiFetch(apiUrl(`/api/songs/${encodeURIComponent(songId)}/like`), {
     credentials: 'include',
     method: 'DELETE',
   })
@@ -554,7 +986,7 @@ export async function unlikeSong(songId: string) {
 }
 
 export async function deleteSong(songId: string) {
-  const response = await fetch(apiUrl(`/api/songs/${encodeURIComponent(songId)}`), {
+  const response = await apiFetch(apiUrl(`/api/songs/${encodeURIComponent(songId)}`), {
     credentials: 'include',
     method: 'DELETE',
   })
@@ -580,7 +1012,7 @@ export async function updatePlaybackState(input: {
   shuffleEnabled: boolean
   repeatMode: 'off' | 'one' | 'all'
 }) {
-  await fetch(apiUrl('/api/playback-state'), {
+  await apiFetch(apiUrl('/api/playback-state'), {
     body: JSON.stringify(input),
     credentials: 'include',
     headers: {
@@ -591,7 +1023,7 @@ export async function updatePlaybackState(input: {
 }
 
 export async function requestSongCacheIntent(songId: string) {
-  const response = await fetch(
+  const response = await apiFetch(
     apiUrl(`/api/songs/${encodeURIComponent(songId)}/cache-intent`),
     {
       credentials: 'include',
@@ -642,7 +1074,7 @@ export async function importAudioFiles(
 
   for (const file of files) {
     const contentBase64 = await blobToBase64(file)
-    const response = await fetch(apiUrl('/api/songs/import'), {
+    const response = await apiFetch(apiUrl('/api/songs/import'), {
       body: JSON.stringify({
         album: null,
         artist: null,
@@ -688,7 +1120,7 @@ async function discoverYouTube(requestPayload: {
   query?: string
   url?: string
 }) {
-  const response = await fetch(apiUrl('/api/external-discovery/youtube'), {
+  const response = await apiFetch(apiUrl('/api/external-discovery/youtube'), {
     body: JSON.stringify(requestPayload),
     credentials: 'include',
     headers: {
@@ -719,7 +1151,7 @@ async function discoverYouTube(requestPayload: {
 }
 
 export async function importYouTubeDiscovery(discovery: ExternalDiscoveryResult) {
-  const response = await fetch(apiUrl('/api/external-imports/youtube'), {
+  const response = await apiFetch(apiUrl('/api/external-imports/youtube'), {
     body: JSON.stringify({ discovery }),
     credentials: 'include',
     headers: {
@@ -762,7 +1194,7 @@ export async function importYouTubeDiscovery(discovery: ExternalDiscoveryResult)
 }
 
 export async function fetchExternalImportJob(jobId: string) {
-  const response = await fetch(
+  const response = await apiFetch(
     apiUrl(`/api/external-import-jobs/${encodeURIComponent(jobId)}`),
     {
       credentials: 'include',
@@ -842,6 +1274,16 @@ export function isSupportedAudioFile(file: File) {
   return typeAllowed || /\.(aac|flac|m4a|mp3|oga|ogg|wav)$/i.test(file.name)
 }
 
+export function isSupportedCsvFile(file: File) {
+  const type = file.type.toLowerCase()
+
+  return (
+    type === 'text/csv' ||
+    type === 'text/tab-separated-values' ||
+    /\.(csv|tsv|txt)$/i.test(file.name)
+  )
+}
+
 export function playlistSubtitle(playlist: ServerPlaylist) {
   return `${playlist.songCount} ${playlist.songCount === 1 ? 'song' : 'songs'}`
 }
@@ -882,6 +1324,117 @@ function blobToBase64(blob: Blob) {
     }
     reader.readAsDataURL(blob)
   })
+}
+
+async function postCsvImportUploads(path: string, uploads: CsvUploadedFileRef[]) {
+  return apiFetch(apiUrl(path), {
+    body: JSON.stringify({ uploads }),
+    credentials: 'include',
+    headers: {
+      'content-type': 'application/json',
+    },
+    method: 'POST',
+  })
+}
+
+async function csvUploadReferenceBatches(files: File[]) {
+  const batches: CsvUploadedFileRef[][] = []
+  let current: CsvUploadedFileRef[] = []
+
+  for (const file of files) {
+    const upload = await csvUploadReference(file)
+    const nextBytes = csvUploadEnvelopeBytes([...current, upload])
+
+    if (
+      current.length > 0 &&
+      nextBytes > CSV_UPLOAD_BATCH_TARGET_BYTES
+    ) {
+      batches.push(current)
+      current = [upload]
+    } else {
+      current.push(upload)
+    }
+  }
+
+  if (current.length > 0) {
+    batches.push(current)
+  }
+
+  return batches
+}
+
+function csvUploadReference(file: File) {
+  let upload = csvUploadReferences.get(file)
+
+  if (!upload) {
+    upload = uploadCsvFile(file)
+    csvUploadReferences.set(file, upload)
+  }
+
+  return upload
+}
+
+async function uploadCsvFile(file: File): Promise<CsvUploadedFileRef> {
+  const start = await apiFetch(apiUrl('/api/csv-imports/uploads'), {
+    body: JSON.stringify({ fileName: file.name }),
+    credentials: 'include',
+    headers: {
+      'content-type': 'application/json',
+    },
+    method: 'POST',
+  })
+
+  if (!start.ok) {
+    throw new Error(
+      (await readApiErrorMessage(start)) ??
+        `CSV upload failed with status ${start.status}`,
+    )
+  }
+
+  const started = (await start.json()) as {
+    upload: CsvUploadedFileRef & { receivedBytes: number }
+  }
+  let chunkIndex = 0
+
+  for (
+    let offset = 0;
+    offset < file.size;
+    offset += CSV_UPLOAD_CHUNK_BYTES
+  ) {
+    const chunk = file.slice(offset, offset + CSV_UPLOAD_CHUNK_BYTES)
+    const response = await apiFetch(
+      apiUrl(`/api/csv-imports/uploads/${encodeURIComponent(started.upload.id)}/chunks`),
+      {
+        body: JSON.stringify({
+          chunkIndex,
+          contentBase64: await blobToBase64(chunk),
+        }),
+        credentials: 'include',
+        headers: {
+          'content-type': 'application/json',
+        },
+        method: 'POST',
+      },
+    )
+
+    if (!response.ok) {
+      throw new Error(
+        (await readApiErrorMessage(response)) ??
+          `CSV upload chunk failed with status ${response.status}`,
+      )
+    }
+
+    chunkIndex += 1
+  }
+
+  return {
+    fileName: started.upload.fileName,
+    id: started.upload.id,
+  }
+}
+
+function csvUploadEnvelopeBytes(uploads: CsvUploadedFileRef[]) {
+  return JSON.stringify({ uploads }).length
 }
 
 function stripExtension(fileName: string) {

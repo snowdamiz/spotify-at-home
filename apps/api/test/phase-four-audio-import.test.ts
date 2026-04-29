@@ -18,18 +18,23 @@ const authConfig = {
 
 const tinyMp3 = Buffer.from("ID3 broadside test audio");
 
-function createGoogleClient(): GoogleOAuthClient {
+function createGoogleClient(identity: Partial<{
+  avatarUrl: string | null;
+  displayName: string;
+  email: string;
+  sub: string;
+}> = {}): GoogleOAuthClient {
   return {
     exchangeCodeForTokens: vi.fn(async () => ({ idToken: "mock-google-id-token" })),
     verifyIdToken: vi.fn(async () => ({
       iss: "https://accounts.google.com",
       aud: authConfig.googleClientId,
       exp: Math.floor(Date.now() / 1000) + 300,
-      sub: "google-subject-1",
-      email: "ada@example.com",
+      sub: identity.sub ?? "google-subject-1",
+      email: identity.email ?? "ada@example.com",
       emailVerified: true,
-      displayName: "Ada Lovelace",
-      avatarUrl: "https://example.com/ada.png"
+      displayName: identity.displayName ?? "Ada Lovelace",
+      avatarUrl: identity.avatarUrl ?? "https://example.com/ada.png"
     }))
   };
 }
@@ -253,8 +258,226 @@ describe("Phase 4 audio imports and private storage", () => {
     expect(library.json()).toEqual({ songs: [] });
   });
 
+  it("blocks non-admin accounts from wiping account tracks", async () => {
+    const { app } = createTestApp({
+      googleIdentity: {
+        displayName: "Linus",
+        email: "linus@example.com",
+        sub: "google-linus-subject"
+      }
+    });
+    const token = await signIn(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/account/tracks/wipe",
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      payload: {
+        deleteStoredAudio: false
+      }
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({
+      error: {
+        code: "admin_required"
+      }
+    });
+  });
+
+  it("lets admins wipe all account tracks while leaving stored audio in place", async () => {
+    const { app } = createTestApp();
+    const token = await signIn(app);
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/songs/import",
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      payload: mp3Payload({ title: "First wipe target" })
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/songs/import",
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      payload: mp3Payload({ title: "Second wipe target" })
+    });
+    const firstPath = String(first.json().song.storagePath);
+    const secondPath = String(second.json().song.storagePath);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/account/tracks/wipe",
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      payload: {
+        deleteStoredAudio: false
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      deletion: {
+        deletedTracks: 2,
+        deletedStoredObjects: 0,
+        failedStoredObjects: 0,
+        retainedStoredObjects: 0,
+        storageCandidates: 0,
+        storageDeleteRequested: false
+      }
+    });
+    expect(existsSync(firstPath)).toBe(true);
+    expect(existsSync(secondPath)).toBe(true);
+
+    const library = await app.inject({
+      method: "GET",
+      url: "/api/songs",
+      headers: {
+        authorization: `Bearer ${token}`
+      }
+    });
+
+    expect(library.statusCode).toBe(200);
+    expect(library.json()).toEqual({ songs: [] });
+  });
+
+  it("lets admins wipe all account tracks and delete unreferenced stored audio", async () => {
+    const { app } = createTestApp();
+    const token = await signIn(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/songs/import",
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      payload: mp3Payload({ title: "Stored wipe target" })
+    });
+    const storagePath = String(imported.json().song.storagePath);
+
+    expect(existsSync(storagePath)).toBe(true);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/account/tracks/wipe",
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      payload: {
+        deleteStoredAudio: true
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      deletion: {
+        deletedTracks: 1,
+        deletedStoredObjects: 1,
+        failedStoredObjects: 0,
+        retainedStoredObjects: 0,
+        storageCandidates: 1,
+        storageDeleteRequested: true
+      }
+    });
+    expect(existsSync(storagePath)).toBe(false);
+  });
+
+  it("cleans already orphaned local storage references during an admin storage wipe", async () => {
+    const { app } = createTestApp();
+    const token = await signIn(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/songs/import",
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      payload: mp3Payload({ title: "Already orphaned target" })
+    });
+    const song = imported.json().song;
+
+    const removedFromLibrary = await app.inject({
+      method: "DELETE",
+      url: `/api/songs/${song.id}`,
+      headers: {
+        authorization: `Bearer ${token}`
+      }
+    });
+
+    expect(removedFromLibrary.statusCode).toBe(204);
+    expect(existsSync(song.storagePath)).toBe(true);
+
+    const storageBefore = await app.inject({
+      method: "GET",
+      url: "/api/admin/storage-objects",
+      headers: {
+        authorization: `Bearer ${token}`
+      }
+    });
+
+    expect(storageBefore.statusCode).toBe(200);
+    expect(storageBefore.json()).toMatchObject({
+      storage: {
+        totalObjects: 1,
+        objects: [
+          {
+            activeSongCount: 0,
+            storagePath: song.storagePath
+          }
+        ]
+      }
+    });
+
+    const wipe = await app.inject({
+      method: "POST",
+      url: "/api/account/tracks/wipe",
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      payload: {
+        deleteStoredAudio: true
+      }
+    });
+
+    expect(wipe.statusCode).toBe(200);
+    expect(wipe.json()).toMatchObject({
+      deletion: {
+        clearedStorageReferences: 1,
+        deletedStoredObjects: 1,
+        failedStoredObjects: 0,
+        storageDeleteRequested: true
+      }
+    });
+    expect(existsSync(song.storagePath)).toBe(false);
+
+    const storageAfter = await app.inject({
+      method: "GET",
+      url: "/api/admin/storage-objects",
+      headers: {
+        authorization: `Bearer ${token}`
+      }
+    });
+
+    expect(storageAfter.statusCode).toBe(200);
+    expect(storageAfter.json()).toMatchObject({
+      storage: {
+        totalObjects: 0,
+        objects: []
+      }
+    });
+  });
+
   function createTestApp(options: {
     audioStorage?: AudioStorage;
+    googleIdentity?: Partial<{
+      avatarUrl: string | null;
+      displayName: string;
+      email: string;
+      sub: string;
+    }>;
     maxFileSizeBytes?: number;
   } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "broadside-phase-four-"));
@@ -264,7 +487,7 @@ describe("Phase 4 audio imports and private storage", () => {
       db,
       auth: {
         ...authConfig,
-        googleOAuthClient: createGoogleClient()
+        googleOAuthClient: createGoogleClient(options.googleIdentity)
       },
       songs: {
         audioStorage: options.audioStorage,

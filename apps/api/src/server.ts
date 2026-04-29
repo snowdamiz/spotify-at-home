@@ -7,6 +7,10 @@ const apiRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 loadEnv({ path: resolve(apiRoot, ".env") });
 loadEnv({ path: resolve(apiRoot, "../..", ".env") });
 
+if (!process.env.BROADSIDE_DATABASE_PATH) {
+  process.env.BROADSIDE_DATABASE_PATH = resolve(apiRoot, "../..", "data", "broadside.sqlite");
+}
+
 const port = Number(process.env.PORT ?? 3001);
 const host = process.env.HOST ?? "0.0.0.0";
 const app = createApiApp();
