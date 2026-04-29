@@ -40,5 +40,5 @@ primary_region = "ord"
 
 [[vm]]
   cpu_kind = "shared"
-  cpus = 2
-  memory = "2gb"
+  cpus = 4
+  memory = "4gb"
