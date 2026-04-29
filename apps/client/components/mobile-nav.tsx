@@ -1,28 +1,43 @@
 'use client'
 
-import { Home, Library, Search, Settings } from 'lucide-react'
+import { Home, Library, Search, Settings, ShieldCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { View } from '@/lib/music-types'
 
 type MobileNavProps = {
+  isAdmin: boolean
   view: View
   setView: (v: View) => void
 }
 
-const items: { id: View; label: string; icon: React.ReactNode }[] = [
+const primaryItems: { id: View; label: string; icon: React.ReactNode }[] = [
   { id: 'home', label: 'Home', icon: <Home className="h-5 w-5" /> },
   { id: 'search', label: 'Search', icon: <Search className="h-5 w-5" /> },
   { id: 'library', label: 'Library', icon: <Library className="h-5 w-5" /> },
   { id: 'settings', label: 'Settings', icon: <Settings className="h-5 w-5" /> },
 ]
 
-export function MobileNav({ view, setView }: MobileNavProps) {
+export function MobileNav({ isAdmin, view, setView }: MobileNavProps) {
+  const items = isAdmin
+    ? [
+        ...primaryItems.slice(0, 3),
+        { id: 'admin' as const, label: 'Admin', icon: <ShieldCheck className="h-5 w-5" /> },
+        primaryItems[3],
+      ]
+    : primaryItems
+
   return (
     <nav
       className="md:hidden border-t border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80"
       aria-label="Primary"
     >
-      <ul className="grid grid-cols-4 pb-[env(safe-area-inset-bottom)]">
+      <ul
+        className={
+          isAdmin
+            ? 'grid grid-cols-5 pb-[env(safe-area-inset-bottom)]'
+            : 'grid grid-cols-4 pb-[env(safe-area-inset-bottom)]'
+        }
+      >
         {items.map((item) => {
           const active = view === item.id
           return (

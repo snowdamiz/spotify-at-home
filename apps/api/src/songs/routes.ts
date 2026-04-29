@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
-import { join } from "node:path";
 import {
   AUDIO_IMPORT_LIMITS,
   isImportPolicyMode,
@@ -9,7 +8,7 @@ import {
   validateAudioImportMetadata,
   type ImportPolicyMode,
   type AudioImportValidationError
-} from "@tunely/shared";
+} from "@broadside/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomToken } from "../auth/crypto.js";
 import { AuthError, type AuthService, type PublicUser } from "../auth/service.js";
@@ -22,7 +21,7 @@ import {
   type ImportPolicyRuntimeConfig
 } from "../import-policy/policy.js";
 import { parseRangeHeader } from "./range.js";
-import { LocalAudioStorage, type AudioStorage } from "./storage.js";
+import { createAudioStorageFromEnv, type AudioStorage, type AudioStorageReadRange } from "./storage.js";
 
 export interface SongRoutesOptions {
   authService: AuthService;
@@ -48,7 +47,7 @@ interface ImportPayload {
 export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOptions) {
   const audioStorage =
     options.audioStorage ??
-    new LocalAudioStorage(options.storageRoot ?? process.env.TUNELY_AUDIO_STORAGE_PATH ?? join(process.cwd(), "data", "audio"));
+    createAudioStorageFromEnv({ storageRoot: options.storageRoot });
   const maxFileSizeBytes = options.maxFileSizeBytes ?? AUDIO_IMPORT_LIMITS.maxFileSizeBytes;
   const userQuotaBytes = options.userQuotaBytes ?? AUDIO_IMPORT_LIMITS.defaultUserQuotaBytes;
   const importPolicyConfig = options.importPolicyConfig ?? readImportPolicyRuntimeConfig();
@@ -138,8 +137,10 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
       status: "pending"
     });
 
+    let storedPath: string | null = null;
+
     try {
-      const storagePath = await audioStorage.writeOriginal({
+      storedPath = await audioStorage.writeOriginal({
         userId: user.id,
         songId: song.id,
         content
@@ -149,14 +150,14 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
         userId: user.id,
         songId: song.id,
         checksum,
-        storagePath
+        storagePath: storedPath
       });
       const readySong = options.songRepository.findSongForUser(user.id, song.id);
 
       return reply.code(201).send({ song: readySong ? serializeSong(readySong) : serializeSong(song) });
     } catch {
-      if (expectedStoragePath || song.storagePath) {
-        await audioStorage.deleteOriginal(expectedStoragePath || song.storagePath);
+      if (storedPath) {
+        await deleteStoredAudioIfUnreferenced(options.songRepository, audioStorage, storedPath, song.id);
       }
       options.songRepository.markSongImportFailed({
         userId: user.id,
@@ -221,7 +222,7 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
     let fileSize: number;
 
     try {
-      fileSize = (await stat(song.storagePath)).size;
+      fileSize = (await statStoredAudio(audioStorage, song.storagePath)).sizeBytes;
     } catch {
       return sendSongError(reply, "audio_file_missing", "Audio file is not available.", 404);
     }
@@ -243,16 +244,11 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
       reply.code(206);
       reply.header("content-length", String(contentLength));
       reply.header("content-range", `bytes ${parsedRange.start}-${parsedRange.end}/${fileSize}`);
-      return reply.send(
-        createReadStream(song.storagePath, {
-          start: parsedRange.start,
-          end: parsedRange.end
-        })
-      );
+      return reply.send(await readStoredAudio(audioStorage, song.storagePath, parsedRange));
     }
 
     reply.header("content-length", String(fileSize));
-    return reply.send(createReadStream(song.storagePath));
+    return reply.send(await readStoredAudio(audioStorage, song.storagePath));
   });
 
   app.post("/api/songs/:id/cache-intent", async (request, reply) => {
@@ -274,6 +270,9 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
 
     return reply.code(202).send({
       cacheIntent: {
+        checksum: song.checksum,
+        mimeType: song.mimeType,
+        sizeBytes: song.sizeBytes,
         songId: song.id,
         streamUrl: `/api/songs/${encodeURIComponent(song.id)}/stream`
       }
@@ -320,11 +319,7 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
       return sendSongError(reply, "song_not_found", "Song not found.", 404);
     }
 
-    const deleted = options.songRepository.deleteSongForUser(user.id, song.id);
-
-    if (deleted) {
-      await audioStorage.deleteOriginal(song.storagePath);
-    }
+    options.songRepository.deleteSongForUser(user.id, song.id);
 
     return reply.code(204).send();
   });
@@ -447,6 +442,37 @@ function headerValue(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
 }
 
+async function statStoredAudio(audioStorage: AudioStorage, storagePath: string) {
+  if (audioStorage.statOriginal) {
+    return audioStorage.statOriginal(storagePath);
+  }
+
+  return { sizeBytes: (await stat(storagePath)).size };
+}
+
+async function readStoredAudio(
+  audioStorage: AudioStorage,
+  storagePath: string,
+  range?: AudioStorageReadRange
+) {
+  if (audioStorage.readOriginal) {
+    return audioStorage.readOriginal({ storagePath, range });
+  }
+
+  return createReadStream(storagePath, range);
+}
+
+async function deleteStoredAudioIfUnreferenced(
+  songRepository: SQLiteSongRepository,
+  audioStorage: AudioStorage,
+  storagePath: string,
+  exceptSongId?: string
+) {
+  if (songRepository.countSongsByStoragePath({ storagePath, exceptSongId }) === 0) {
+    await audioStorage.deleteOriginal(storagePath);
+  }
+}
+
 function serializeSong(song: Song) {
   return {
     id: song.id,
@@ -461,6 +487,7 @@ function serializeSong(song: Song) {
     storagePath: song.storagePath,
     importStatus: song.importStatus,
     externalSource: song.externalSource ? serializeExternalSource(song.externalSource) : null,
+    liked: song.liked,
     createdAt: song.createdAt.toISOString(),
     updatedAt: song.updatedAt.toISOString()
   };

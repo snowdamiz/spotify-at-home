@@ -1,7 +1,7 @@
 export {
-  closeTunelyDatabase,
-  configureTunelyDatabase,
-  openTunelyDatabase
+  closeBroadsideDatabase,
+  configureBroadsideDatabase,
+  openBroadsideDatabase
 } from "./connection.js";
 export type { SqliteDatabase } from "./connection.js";
 export { migrations, runMigrations } from "./migrations.js";

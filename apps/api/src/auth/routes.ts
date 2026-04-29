@@ -78,7 +78,7 @@ export function registerAuthRoutes(app: FastifyInstance, options: AuthRoutesOpti
   app.post("/api/auth/refresh", async (request, reply) => {
     const body = asRecord(request.body);
     const refreshToken =
-      typeof body.refreshToken === "string" ? body.refreshToken : readCookie(request, "tunely_refresh");
+      typeof body.refreshToken === "string" ? body.refreshToken : readCookie(request, "broadside_refresh");
 
     try {
       const result = await authService.refreshSession(refreshToken ?? "");
@@ -92,15 +92,57 @@ export function registerAuthRoutes(app: FastifyInstance, options: AuthRoutesOpti
   app.post("/api/auth/logout", async (request, reply) => {
     await authService.logout({
       accessToken: readAccessToken(request),
-      refreshToken: readCookie(request, "tunely_refresh")
+      refreshToken: readCookie(request, "broadside_refresh")
     });
     clearSessionCookies(reply, cookieSecure);
     return reply.code(204).send();
   });
 
+  app.post("/api/entry-keys/redeem", async (request, reply) => {
+    const body = asRecord(request.body);
+
+    try {
+      const user = await authService.redeemEntryKey({
+        accessToken: readAccessToken(request),
+        key: typeof body.key === "string" ? body.key : ""
+      });
+
+      return { user };
+    } catch (error) {
+      return sendAuthError(reply, error);
+    }
+  });
+
+  app.get("/api/admin/entry-keys", async (request, reply) => {
+    try {
+      const entryKeys = await authService.listEntryKeysForAccessToken(readAccessToken(request));
+
+      return { entryKeys };
+    } catch (error) {
+      return sendAuthError(reply, error);
+    }
+  });
+
+  app.post("/api/admin/entry-keys", async (request, reply) => {
+    const body = asRecord(request.body);
+
+    try {
+      const result = await authService.createEntryKey({
+        accessToken: readAccessToken(request),
+        label: typeof body.label === "string" ? body.label : null
+      });
+
+      return reply.code(201).send(result);
+    } catch (error) {
+      return sendAuthError(reply, error);
+    }
+  });
+
   app.get("/api/me", async (request, reply) => {
     try {
-      const user = await authService.getUserForAccessToken(readAccessToken(request));
+      const user = await authService.getUserForAccessToken(readAccessToken(request), {
+        requireEntryKeyAccess: false
+      });
       return { user };
     } catch (error) {
       return sendAuthError(reply, error);
@@ -110,14 +152,14 @@ export function registerAuthRoutes(app: FastifyInstance, options: AuthRoutesOpti
 
 function setSessionCookies(reply: FastifyReply, session: IssuedSession, secure: boolean) {
   reply.header("set-cookie", [
-    serializeCookie("tunely_access", session.accessToken, {
+    serializeCookie("broadside_access", session.accessToken, {
       httpOnly: true,
       secure,
       sameSite: "Lax",
       path: "/",
       maxAge: 60 * 15
     }),
-    serializeCookie("tunely_refresh", session.refreshToken, {
+    serializeCookie("broadside_refresh", session.refreshToken, {
       httpOnly: true,
       secure,
       sameSite: "Lax",
@@ -129,14 +171,14 @@ function setSessionCookies(reply: FastifyReply, session: IssuedSession, secure: 
 
 function clearSessionCookies(reply: FastifyReply, secure: boolean) {
   reply.header("set-cookie", [
-    serializeCookie("tunely_access", "", {
+    serializeCookie("broadside_access", "", {
       httpOnly: true,
       secure,
       sameSite: "Lax",
       path: "/",
       maxAge: 0
     }),
-    serializeCookie("tunely_refresh", "", {
+    serializeCookie("broadside_refresh", "", {
       httpOnly: true,
       secure,
       sameSite: "Lax",
@@ -153,7 +195,7 @@ export function readAccessToken(request: FastifyRequest) {
     return authorization.slice("Bearer ".length);
   }
 
-  return readCookie(request, "tunely_access");
+  return readCookie(request, "broadside_access");
 }
 
 function readCookie(request: FastifyRequest, name: string) {
@@ -219,14 +261,14 @@ function normalizeReturnTo(
   mode: "web" | "mobile",
   allowedOrigins: string[]
 ) {
-  const fallback = mode === "mobile" ? "tunely://auth/callback" : (allowedOrigins[0] ?? "/");
+  const fallback = mode === "mobile" ? "broadside://auth/callback" : (allowedOrigins[0] ?? "/");
 
   if (!returnTo) {
     return fallback;
   }
 
   if (mode === "mobile") {
-    return returnTo.startsWith("tunely://") ? returnTo : fallback;
+    return returnTo.startsWith("broadside://") ? returnTo : fallback;
   }
 
   if (returnTo.startsWith("/") && !returnTo.startsWith("//")) {

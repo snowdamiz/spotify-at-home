@@ -1,6 +1,7 @@
 'use client'
 
 import {
+  Heart,
   Pause,
   Play,
   Repeat,
@@ -22,12 +23,14 @@ type PlayerBarProps = {
   volume: number
   muted: boolean
   onTogglePlay: () => void
+  onToggleLike?: () => void
   onSeek: (value: number) => void
   onPrev: () => void
   onNext: () => void
   onVolumeChange: (value: number) => void
   onToggleMute: () => void
   onExpand: () => void
+  isLikePending?: boolean
 }
 
 export function PlayerBar(props: PlayerBarProps) {
@@ -39,17 +42,22 @@ export function PlayerBar(props: PlayerBarProps) {
     volume,
     muted,
     onTogglePlay,
+    onToggleLike,
     onSeek,
     onPrev,
     onNext,
     onVolumeChange,
     onToggleMute,
     onExpand,
+    isLikePending = false,
   } = props
 
   if (!song) {
     return null
   }
+
+  const canLike = Boolean(onToggleLike && !song.isMock && song.serverSong)
+  const isLiked = Boolean(song.serverSong?.liked ?? song.liked)
 
   return (
     <>
@@ -63,6 +71,7 @@ export function PlayerBar(props: PlayerBarProps) {
         >
           <CoverArt
             colorClass={song.coverColor}
+            imageUrl={song.coverImageUrl}
             title={song.title}
             size="md"
             rounded="md"
@@ -74,6 +83,21 @@ export function PlayerBar(props: PlayerBarProps) {
             </div>
           </div>
         </button>
+        {canLike && (
+          <button
+            type="button"
+            onClick={onToggleLike}
+            disabled={isLikePending}
+            className={cn(
+              'flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-primary disabled:cursor-wait disabled:opacity-80',
+              isLiked && 'text-primary',
+            )}
+            aria-label={isLiked ? `Unlike ${song.title}` : `Like ${song.title}`}
+            title={isLiked ? 'Remove from Liked Songs' : 'Add to Liked Songs'}
+          >
+            <Heart className="h-5 w-5" fill={isLiked ? 'currentColor' : 'none'} />
+          </button>
+        )}
         <button
           type="button"
           onClick={onTogglePlay}
@@ -101,6 +125,7 @@ export function PlayerBar(props: PlayerBarProps) {
         <div className="flex w-1/4 min-w-0 items-center gap-3">
           <CoverArt
             colorClass={song.coverColor}
+            imageUrl={song.coverImageUrl}
             title={song.title}
             size="md"
             rounded="md"
@@ -111,6 +136,21 @@ export function PlayerBar(props: PlayerBarProps) {
               {song.artist}
             </div>
           </div>
+          {canLike && (
+            <button
+              type="button"
+              onClick={onToggleLike}
+              disabled={isLikePending}
+              className={cn(
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-primary disabled:cursor-wait disabled:opacity-80',
+                isLiked && 'text-primary',
+              )}
+              aria-label={isLiked ? `Unlike ${song.title}` : `Like ${song.title}`}
+              title={isLiked ? 'Remove from Liked Songs' : 'Add to Liked Songs'}
+            >
+              <Heart className="h-4 w-4" fill={isLiked ? 'currentColor' : 'none'} />
+            </button>
+          )}
         </div>
 
         {/* Middle: controls + progress */}

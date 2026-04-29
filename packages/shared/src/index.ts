@@ -1,4 +1,4 @@
-export const APP_NAME = "Tunely" as const;
+export const APP_NAME = "Broadside" as const;
 
 export const IMPORT_POLICY_MODES = [
   "open_test",
@@ -36,7 +36,7 @@ export interface ImportEligibility {
 export const IMPORT_POLICY_MODE_COPY: Record<ImportPolicyMode, ImportPolicyModeCopy> = {
   licensed_only: {
     badge: "Licensed only",
-    description: "External imports are limited to sources Tunely has approved for licensed use.",
+    description: "External imports are limited to sources Broadside has approved for licensed use.",
     label: "Licensed-only imports"
   },
   open_test: {

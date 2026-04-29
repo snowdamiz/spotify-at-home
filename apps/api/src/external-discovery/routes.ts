@@ -1,4 +1,4 @@
-import type { ExternalDiscoveryResponse, ImportPolicyMode } from "@tunely/shared";
+import type { ExternalDiscoveryResponse, ImportPolicyMode } from "@broadside/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { readAccessToken } from "../auth/routes.js";
 import { AuthError, type AuthService, type PublicUser } from "../auth/service.js";
@@ -12,7 +12,8 @@ import type { SQLiteSongRepository } from "../db/repositories.js";
 import {
   YouTubeDiscoveryError,
   YouTubeDiscoveryProvider,
-  type YouTubeDiscoveryClient
+  type YouTubeDiscoveryClient,
+  type YouTubeSearchOptions
 } from "./youtube.js";
 
 const defaultDiscoveryRateLimit = {
@@ -83,6 +84,8 @@ export function registerExternalDiscoveryRoutes(
         sourcePolicies: options.songRepository?.listEnabledSourcePolicies("youtube"),
         user,
         importPolicyConfig,
+        limit: body.limit,
+        query: body.query,
         url: body.url
       });
 
@@ -142,6 +145,8 @@ export function registerExternalDiscoveryRoutes(
         sourcePolicies: options.songRepository?.listEnabledSourcePolicies("youtube"),
         user,
         importPolicyConfig,
+        limit: query.limit,
+        query: query.query,
         url: query.url
       });
 
@@ -165,51 +170,110 @@ export function registerExternalDiscoveryRoutes(
 
 async function resolveYouTubeDiscovery(input: {
   provider: YouTubeDiscoveryClient;
+  query: unknown;
   url: unknown;
+  limit: unknown;
   importPolicyMode: ImportPolicyMode;
   importPolicyConfig: ImportPolicyRuntimeConfig;
   sourcePolicies?: ReturnType<SQLiteSongRepository["listEnabledSourcePolicies"]>;
   user: PublicUser;
 }): Promise<ExternalDiscoveryResponse> {
   const url = typeof input.url === "string" ? input.url.trim() : "";
+  const query = typeof input.query === "string" ? input.query.trim() : "";
+  const limit = normalizeSearchLimit(input.limit);
 
   if (url) {
     const result = await input.provider.normalizeUrl(url, input.importPolicyMode);
-    const matchingPolicy = input.sourcePolicies?.find(
-      (policy) =>
-        policy.provider === result.provider &&
-        policy.action === "allow" &&
-        ((policy.scopeType === "source" && policy.scopeValue === result.sourceId.toLowerCase()) ||
-          (policy.scopeType === "provider" && policy.scopeValue === result.provider) ||
-          (policy.scopeType === "domain" &&
-            policy.scopeValue === hostnameForUrl(result.canonicalUrl)))
-    );
 
     return {
       nextPageToken: null,
       results: [
-        {
-          ...result,
-          attributionText: matchingPolicy?.attributionText ?? null,
-          eligibility: evaluateExternalImportEligibility({
-            config: input.importPolicyConfig,
-            discovery: result,
-            sourcePolicies: input.sourcePolicies,
-            user: input.user
-          }),
-          licenseType: matchingPolicy?.licenseType ?? null,
-          licenseUrl: matchingPolicy?.licenseUrl ?? null
-        }
+        withPolicyMetadata({
+          discovery: result,
+          importPolicyConfig: input.importPolicyConfig,
+          sourcePolicies: input.sourcePolicies,
+          user: input.user
+        })
       ]
+    };
+  }
+
+  if (query) {
+    if (!input.provider.search) {
+      throw new YouTubeDiscoveryError(
+        "youtube_search_unavailable",
+        "YouTube search is temporarily unavailable.",
+        503,
+        true
+      );
+    }
+
+    const discovery = await input.provider.search(query, input.importPolicyMode, { limit });
+
+    return {
+      nextPageToken: discovery.nextPageToken,
+      results: discovery.results.map((result) =>
+        withPolicyMetadata({
+          discovery: result,
+          importPolicyConfig: input.importPolicyConfig,
+          sourcePolicies: input.sourcePolicies,
+          user: input.user
+        })
+      )
     };
   }
 
   throw new YouTubeDiscoveryError(
     "youtube_url_required",
-    "A YouTube URL is required.",
+    "A YouTube URL or search query is required.",
     400,
     false
   );
+}
+
+function withPolicyMetadata(input: {
+  discovery: ExternalDiscoveryResponse["results"][number];
+  importPolicyConfig: ImportPolicyRuntimeConfig;
+  sourcePolicies?: ReturnType<SQLiteSongRepository["listEnabledSourcePolicies"]>;
+  user: PublicUser;
+}) {
+  const matchingPolicy = input.sourcePolicies?.find(
+    (policy) =>
+      policy.provider === input.discovery.provider &&
+      policy.action === "allow" &&
+      ((policy.scopeType === "source" &&
+        policy.scopeValue === input.discovery.sourceId.toLowerCase()) ||
+        (policy.scopeType === "provider" && policy.scopeValue === input.discovery.provider) ||
+        (policy.scopeType === "domain" &&
+          policy.scopeValue === hostnameForUrl(input.discovery.canonicalUrl)))
+  );
+
+  return {
+    ...input.discovery,
+    attributionText: matchingPolicy?.attributionText ?? null,
+    eligibility: evaluateExternalImportEligibility({
+      config: input.importPolicyConfig,
+      discovery: input.discovery,
+      sourcePolicies: input.sourcePolicies,
+      user: input.user
+    }),
+    licenseType: matchingPolicy?.licenseType ?? null,
+    licenseUrl: matchingPolicy?.licenseUrl ?? null
+  };
+}
+
+function normalizeSearchLimit(value: unknown): YouTubeSearchOptions["limit"] {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  return undefined;
 }
 
 function hostnameForUrl(value: string) {

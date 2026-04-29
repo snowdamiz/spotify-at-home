@@ -5,9 +5,10 @@ import type { GoogleOAuthClient } from "../src/auth/google";
 const authConfig = {
   googleClientId: "google-client-id",
   googleClientSecret: "google-client-secret",
-  googleRedirectUri: "https://api.tunely.test/api/auth/google/callback",
+  googleRedirectUri: "https://api.broadside.test/api/auth/google/callback",
   cookieSecure: true,
-  allowedReturnToOrigins: ["https://tunely.test"]
+  allowedReturnToOrigins: ["https://broadside.test"],
+  adminEmails: ["ada@example.com", "grace@example.com"]
 };
 
 const tinyMp3 = Buffer.from("ID3 open test policy");
@@ -183,7 +184,7 @@ describe("YouTube Music Phase 0 import policy gate", () => {
 async function signIn(app: ReturnType<typeof createApiApp>) {
   const start = await app.inject({
     method: "GET",
-    url: "/api/auth/google/start?mode=mobile&returnTo=tunely%3A%2F%2Fauth%2Fcallback"
+    url: "/api/auth/google/start?mode=mobile&returnTo=broadside%3A%2F%2Fauth%2Fcallback"
   });
   const state = new URL(String(start.headers.location)).searchParams.get("state");
   const callback = await app.inject({

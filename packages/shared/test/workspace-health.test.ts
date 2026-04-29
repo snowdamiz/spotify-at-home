@@ -4,11 +4,11 @@ import {
   getImportPolicyModeCopy,
   isImportPolicyMode,
   parseImportPolicyMode
-} from "@tunely/shared";
+} from "@broadside/shared";
 
 describe("workspace health", () => {
-  it("exports the Tunely app name from the shared package", () => {
-    expect(APP_NAME).toBe("Tunely");
+  it("exports the Broadside app name from the shared package", () => {
+    expect(APP_NAME).toBe("Broadside");
   });
 
   it("defines the YouTube import policy modes and shared copy", () => {

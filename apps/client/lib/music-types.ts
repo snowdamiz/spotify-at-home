@@ -10,7 +10,9 @@ export type Song = {
   duration: number // seconds
   url: string // object URL from imported file; empty string for mock songs
   coverColor: string // tailwind gradient class for the artwork tile
+  coverImageUrl?: string
   dateAdded: number
+  liked?: boolean
   playlistIds?: string[]
   category?: string
   isMock?: boolean
@@ -19,7 +21,7 @@ export type Song = {
   serverSong?: ServerSong
 }
 
-export type View = 'home' | 'search' | 'library' | 'settings'
+export type View = 'home' | 'search' | 'library' | 'settings' | 'admin'
 
 export type Playlist = {
   id: string
@@ -176,7 +178,7 @@ export function getSongsForCategory(categoryId: string): Song[] {
 
 export type CollectionRef =
   | { kind: 'playlist'; id: string }
-  | { kind: 'system'; id: 'liked-songs' | 'imported-songs' }
+  | { kind: 'system'; id: 'liked-songs' }
   | { kind: 'category'; id: string }
 
 export function getCollectionMeta(ref: CollectionRef) {

@@ -4,18 +4,18 @@ import { DatabaseSync } from "node:sqlite";
 
 export type SqliteDatabase = DatabaseSync;
 
-export function openTunelyDatabase(path = process.env.TUNELY_DATABASE_PATH ?? ":memory:") {
+export function openBroadsideDatabase(path = process.env.BROADSIDE_DATABASE_PATH ?? ":memory:") {
   if (path !== ":memory:") {
     mkdirSync(dirname(path), { recursive: true });
   }
 
   const db = new DatabaseSync(path);
-  configureTunelyDatabase(db, path);
+  configureBroadsideDatabase(db, path);
 
   return db;
 }
 
-export function configureTunelyDatabase(db: SqliteDatabase, path = ":memory:") {
+export function configureBroadsideDatabase(db: SqliteDatabase, path = ":memory:") {
   db.exec(`
     PRAGMA foreign_keys = ON;
     PRAGMA busy_timeout = 5000;
@@ -28,7 +28,7 @@ export function configureTunelyDatabase(db: SqliteDatabase, path = ":memory:") {
   }
 }
 
-export function closeTunelyDatabase(db: SqliteDatabase) {
+export function closeBroadsideDatabase(db: SqliteDatabase) {
   if (db.isOpen) {
     db.close();
   }

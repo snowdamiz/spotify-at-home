@@ -13,10 +13,10 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@tunely/shared": fileURLToPath(new URL("./packages/shared/src/index.ts", import.meta.url)),
-      "@tunely/shared/": fileURLToPath(new URL("./packages/shared/src/", import.meta.url)),
-      "@tunely/app/": fileURLToPath(new URL("./apps/app/src/", import.meta.url)),
-      "@tunely/api/": fileURLToPath(new URL("./apps/api/src/", import.meta.url))
+      "@broadside/shared": fileURLToPath(new URL("./packages/shared/src/index.ts", import.meta.url)),
+      "@broadside/shared/": fileURLToPath(new URL("./packages/shared/src/", import.meta.url)),
+      "@broadside/app/": fileURLToPath(new URL("./apps/app/src/", import.meta.url)),
+      "@broadside/api/": fileURLToPath(new URL("./apps/api/src/", import.meta.url))
     }
   },
   root

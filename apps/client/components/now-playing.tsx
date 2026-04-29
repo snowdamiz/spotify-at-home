@@ -23,9 +23,11 @@ type NowPlayingProps = {
   duration: number
   onClose: () => void
   onTogglePlay: () => void
+  onToggleLike?: () => void
   onSeek: (value: number) => void
   onPrev: () => void
   onNext: () => void
+  isLikePending?: boolean
 }
 
 export function NowPlaying(props: NowPlayingProps) {
@@ -37,15 +39,19 @@ export function NowPlaying(props: NowPlayingProps) {
     duration,
     onClose,
     onTogglePlay,
+    onToggleLike,
     onSeek,
     onPrev,
     onNext,
+    isLikePending = false,
   } = props
 
   if (!song) return null
 
   // Pull the gradient base from the cover for a colored backdrop
   const gradient = song.coverColor
+  const canLike = Boolean(onToggleLike && !song.isMock && song.serverSong)
+  const isLiked = Boolean(song.serverSong?.liked ?? song.liked)
 
   return (
     <div
@@ -93,6 +99,7 @@ export function NowPlaying(props: NowPlayingProps) {
         <div className="flex flex-1 items-center justify-center px-8">
           <CoverArt
             colorClass={song.coverColor}
+            imageUrl={song.coverImageUrl}
             title={song.title}
             size="full"
             rounded="2xl"
@@ -109,13 +116,18 @@ export function NowPlaying(props: NowPlayingProps) {
                 {song.artist}
               </div>
             </div>
-            <button
-              type="button"
-              className="rounded-full p-2 text-foreground/90 hover:bg-foreground/10"
-              aria-label="Like"
-            >
-              <Heart className="h-6 w-6" />
-            </button>
+            {canLike && (
+              <button
+                type="button"
+                onClick={onToggleLike}
+                disabled={isLikePending}
+                className="rounded-full p-2 text-foreground/90 hover:bg-foreground/10 disabled:cursor-wait disabled:opacity-70"
+                aria-label={isLiked ? `Unlike ${song.title}` : `Like ${song.title}`}
+                title={isLiked ? 'Remove from Liked Songs' : 'Add to Liked Songs'}
+              >
+                <Heart className="h-6 w-6" fill={isLiked ? 'currentColor' : 'none'} />
+              </button>
+            )}
           </div>
 
           {/* Progress */}

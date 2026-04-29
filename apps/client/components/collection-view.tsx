@@ -1,6 +1,17 @@
 'use client'
 
-import { ArrowLeft, Pause, Play, Shuffle } from 'lucide-react'
+import {
+  ArrowLeft,
+  CheckCircle2,
+  Download,
+  Loader2,
+  MoreHorizontal,
+  Pause,
+  Pencil,
+  Play,
+  Shuffle,
+  Trash2,
+} from 'lucide-react'
 import { CoverArt } from '@/components/cover-art'
 import { SongRow } from '@/components/song-row'
 import {
@@ -8,6 +19,7 @@ import {
   serverSongToSong,
   type LibrarySummary,
   type ServerPlaylist,
+  type ServerPlaylistDetail,
 } from '@/lib/api'
 import { usePlaylist } from '@/lib/library-hooks'
 import {
@@ -16,6 +28,25 @@ import {
   type CollectionRef,
   type Song,
 } from '@/lib/music-types'
+import type { OfflineAudioStateMap } from '@/lib/offline-audio-cache'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
+import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 
 type CollectionViewProps = {
   collection: CollectionRef
@@ -24,9 +55,22 @@ type CollectionViewProps = {
   playlists: ServerPlaylist[]
   currentSongId: string | null
   isPlaying: boolean
+  offlineAudio: OfflineAudioStateMap
+  revision: number
   onBack: () => void
   onPlay: (song: Song, queue: Song[]) => void
   onPlayAll: (queue: Song[], shuffle?: boolean) => void
+  onToggleCollectionOffline: (songs: Song[]) => void
+  onToggleSongLike?: (song: Song) => void
+  onToggleSongOffline: (song: Song) => void
+  onDeleteSong: (song: Song) => void
+  onAddSongToPlaylist: (song: Song, playlistId: string) => void
+  onCreatePlaylistWithSong: (song: Song) => void
+  onRemoveSongFromPlaylist: (playlistId: string, song: Song) => void
+  onEditPlaylist: (playlist: ServerPlaylistDetail) => void
+  onDeletePlaylist: (playlist: ServerPlaylistDetail) => void
+  deletingSongId: string | null
+  likingSongId?: string | null
 }
 
 export function CollectionView({
@@ -36,12 +80,26 @@ export function CollectionView({
   playlists,
   currentSongId,
   isPlaying,
+  offlineAudio,
+  revision,
   onBack,
   onPlay,
   onPlayAll,
+  onToggleCollectionOffline,
+  onToggleSongLike,
+  onToggleSongOffline,
+  onDeleteSong,
+  onAddSongToPlaylist,
+  onCreatePlaylistWithSong,
+  onRemoveSongFromPlaylist,
+  onEditPlaylist,
+  onDeletePlaylist,
+  deletingSongId,
+  likingSongId,
 }: CollectionViewProps) {
   const playlistState = usePlaylist(
     collection.kind === 'playlist' ? collection.id : undefined,
+    revision,
   )
   const meta = resolveCollectionMeta({
     collection,
@@ -50,6 +108,10 @@ export function CollectionView({
     songs,
     summary,
   })
+  const userPlaylist =
+    collection.kind === 'playlist' && playlistState.status === 'authenticated'
+      ? playlistState.playlist
+      : null
 
   if (!meta) {
     return (
@@ -59,7 +121,7 @@ export function CollectionView({
           : playlistState.status === 'anonymous'
             ? 'Log in to view server-backed playlists.'
             : playlistState.status === 'error'
-              ? 'Could not reach the Tunely server.'
+              ? 'Could not reach the Broadside server.'
               : 'Collection not found.'}
       </div>
     )
@@ -68,6 +130,15 @@ export function CollectionView({
   const totalSeconds = meta.songs.reduce((acc, s) => acc + s.duration, 0)
   const isCollectionPlaying =
     isPlaying && meta.songs.some((s) => s.id === currentSongId)
+  const downloadableSongs = meta.songs.filter((song) => !song.isMock && song.serverSong)
+  const downloadedCount = downloadableSongs.filter(
+    (song) => offlineAudio[song.id]?.status === 'downloaded',
+  ).length
+  const isCollectionDownloading = downloadableSongs.some(
+    (song) => offlineAudio[song.id]?.status === 'downloading',
+  )
+  const isCollectionDownloaded =
+    downloadableSongs.length > 0 && downloadedCount === downloadableSongs.length
 
   return (
     <div>
@@ -138,6 +209,39 @@ export function CollectionView({
           >
             <Shuffle className="h-5 w-5" />
           </button>
+          {downloadableSongs.length > 0 && (
+            <button
+              type="button"
+              onClick={() => onToggleCollectionOffline(meta.songs)}
+              disabled={isCollectionDownloading}
+              title={
+                isCollectionDownloaded
+                  ? 'Remove collection downloads'
+                  : 'Download collection for offline listening'
+              }
+              className="flex h-10 w-10 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground disabled:cursor-wait disabled:opacity-80"
+              aria-label={
+                isCollectionDownloaded
+                  ? 'Remove collection downloads'
+                  : 'Download collection for offline listening'
+              }
+            >
+              {isCollectionDownloading ? (
+                <Loader2 className="h-5 w-5 animate-spin" />
+              ) : isCollectionDownloaded ? (
+                <CheckCircle2 className="h-5 w-5 text-primary" />
+              ) : (
+                <Download className="h-5 w-5" />
+              )}
+            </button>
+          )}
+          {userPlaylist && (
+            <PlaylistHeaderMenu
+              playlist={userPlaylist}
+              onEdit={() => onEditPlaylist(userPlaylist)}
+              onDelete={() => onDeletePlaylist(userPlaylist)}
+            />
+          )}
         </div>
       )}
 
@@ -158,7 +262,25 @@ export function CollectionView({
                   song={song}
                   isActive={currentSongId === song.id}
                   isPlaying={isPlaying && currentSongId === song.id}
+                  offlineState={offlineAudio[song.id]}
                   onPlay={() => onPlay(song, meta.songs)}
+                  onToggleLike={
+                    onToggleSongLike ? () => onToggleSongLike(song) : undefined
+                  }
+                  onToggleOffline={() => onToggleSongOffline(song)}
+                  onDelete={() => onDeleteSong(song)}
+                  isDeleting={deletingSongId === song.id}
+                  isLiking={likingSongId === song.id}
+                  playlists={playlists}
+                  onAddToPlaylist={(playlistId) =>
+                    onAddSongToPlaylist(song, playlistId)
+                  }
+                  onCreatePlaylistWithSong={() => onCreatePlaylistWithSong(song)}
+                  onRemoveFromPlaylist={
+                    userPlaylist
+                      ? () => onRemoveSongFromPlaylist(userPlaylist.id, song)
+                      : undefined
+                  }
                 />
               </li>
             ))}
@@ -166,6 +288,64 @@ export function CollectionView({
         )}
       </div>
     </div>
+  )
+}
+
+function PlaylistHeaderMenu({
+  playlist,
+  onEdit,
+  onDelete,
+}: {
+  playlist: ServerPlaylistDetail
+  onEdit: () => void
+  onDelete: () => void
+}) {
+  return (
+    <AlertDialog>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="h-10 w-10 rounded-full text-muted-foreground hover:text-foreground"
+            aria-label={`More actions for ${playlist.name}`}
+          >
+            <MoreHorizontal className="h-5 w-5" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onSelect={onEdit}>
+            <Pencil className="mr-2 h-4 w-4" />
+            Edit details
+          </DropdownMenuItem>
+          <AlertDialogTrigger asChild>
+            <DropdownMenuItem onSelect={(event) => event.preventDefault()}>
+              <Trash2 className="mr-2 h-4 w-4" />
+              Delete playlist
+            </DropdownMenuItem>
+          </AlertDialogTrigger>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this playlist?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This removes &ldquo;{playlist.name}&rdquo; permanently. The songs
+            stay in your library.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={onDelete}
+            className="bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/20"
+          >
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }
 
@@ -183,33 +363,26 @@ function resolveCollectionMeta({
   summary: LibrarySummary
 }) {
   if (collection.kind === 'system') {
-    if (collection.id === 'liked-songs') {
-      return {
-        coverColor: 'from-fuchsia-600 to-zinc-950',
-        kindLabel: 'Playlist',
-        songs: summary.likedSongs.map(serverSongToSong),
-        subtitle: 'Favorites backed by your private likes.',
-        subtitleDetail: `${summary.counts.likedSongs} liked`,
-        title: 'Liked Songs',
-      }
-    }
-
     return {
-      coverColor: 'from-amber-500 to-orange-950',
+      coverColor: 'from-fuchsia-600 to-zinc-950',
       kindLabel: 'Playlist',
-      songs,
-      subtitle: 'Songs stored privately on your Tunely server.',
-      subtitleDetail: `${summary.counts.songs} imported`,
-      title: 'Imported Songs',
+      songs: summary.likedSongs.map(serverSongToSong),
+      subtitle: 'Favorites backed by your private likes.',
+      subtitleDetail: `${summary.counts.likedSongs} liked`,
+      title: 'Liked Songs',
     }
   }
 
   if (collection.kind === 'playlist') {
     if (playlistState.status === 'authenticated') {
+      const songsById = new Map(songs.map((song) => [song.id, song]))
+
       return {
         coverColor: playlistState.playlist.color ?? 'from-zinc-700 to-zinc-950',
         kindLabel: 'Playlist',
-        songs: playlistState.playlist.songs.map(serverSongToSong),
+        songs: playlistState.playlist.songs.map(
+          (song) => songsById.get(song.id) ?? serverSongToSong(song),
+        ),
         subtitle:
           playlistState.playlist.description ??
           playlistSubtitle(playlistState.playlist),

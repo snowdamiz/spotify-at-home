@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  closeTunelyDatabase,
+  closeBroadsideDatabase,
   migrations,
-  openTunelyDatabase,
+  openBroadsideDatabase,
   runMigrations,
   SQLitePlaylistRepository,
   SQLiteSongRepository,
@@ -19,7 +19,7 @@ const createdDirs: string[] = [];
 describe("Phase 3 SQLite schema and repositories", () => {
   afterEach(() => {
     while (createdDatabases.length > 0) {
-      closeTunelyDatabase(createdDatabases.pop()!);
+      closeBroadsideDatabase(createdDatabases.pop()!);
     }
 
     while (createdDirs.length > 0) {
@@ -156,7 +156,7 @@ describe("Phase 3 SQLite schema and repositories", () => {
 });
 
 function migratedInMemoryDatabase() {
-  const db = openTunelyDatabase();
+  const db = openBroadsideDatabase();
   createdDatabases.push(db);
   runMigrations(db);
 
@@ -169,9 +169,9 @@ function migratedInMemoryDatabase() {
 }
 
 function openTestFileDatabase() {
-  const dir = mkdtempSync(join(tmpdir(), "tunely-sqlite-"));
+  const dir = mkdtempSync(join(tmpdir(), "broadside-sqlite-"));
   createdDirs.push(dir);
-  const db = openTunelyDatabase(join(dir, "tunely.sqlite"));
+  const db = openBroadsideDatabase(join(dir, "broadside.sqlite"));
   createdDatabases.push(db);
 
   return db;

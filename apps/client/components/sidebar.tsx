@@ -1,6 +1,6 @@
 'use client'
 
-import { Heart, Home, Library, Plus, Search, Settings } from 'lucide-react'
+import { Heart, Home, Library, Plus, Search, Settings, ShieldCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { CoverArt } from '@/components/cover-art'
 import { playlistSubtitle, type ServerPlaylist } from '@/lib/api'
@@ -13,7 +13,9 @@ type SidebarProps = {
   songs: Song[]
   playlists: ServerPlaylist[]
   likedCount: number
+  isAdmin: boolean
   onImportClick: () => void
+  onCreatePlaylistClick: () => void
   onOpenCollection: (ref: CollectionRef) => void
   activeCollectionId: string | null
 }
@@ -24,7 +26,9 @@ export function Sidebar({
   songs,
   playlists,
   likedCount,
+  isAdmin,
   onImportClick,
+  onCreatePlaylistClick,
   onOpenCollection,
   activeCollectionId,
 }: SidebarProps) {
@@ -50,6 +54,14 @@ export function Sidebar({
           active={view === 'settings' && !activeCollectionId}
           onClick={() => setView('settings')}
         />
+        {isAdmin && (
+          <NavItem
+            icon={<ShieldCheck className="h-5 w-5" />}
+            label="Admin"
+            active={view === 'admin' && !activeCollectionId}
+            onClick={() => setView('admin')}
+          />
+        )}
       </nav>
 
       {/* Library card */}
@@ -91,6 +103,7 @@ export function Sidebar({
             >
               <CoverArt
                 colorClass={song.coverColor}
+                imageUrl={song.coverImageUrl}
                 title={song.title}
                 size="md"
                 rounded="md"
@@ -107,8 +120,19 @@ export function Sidebar({
           ))}
 
           {/* Featured playlists */}
-          <div className="mb-2 mt-3 px-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Playlists
+          <div className="mb-2 mt-3 flex items-center justify-between px-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Playlists
+            </span>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8 rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
+              onClick={onCreatePlaylistClick}
+              aria-label="Create playlist"
+            >
+              <Plus className="h-4 w-4" />
+            </Button>
           </div>
           <button
             onClick={() => onOpenCollection({ kind: 'system', id: 'liked-songs' })}

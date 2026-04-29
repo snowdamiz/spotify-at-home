@@ -215,6 +215,43 @@ export const migrations: Migration[] = [
       CREATE INDEX idx_source_policy_audit_policy ON source_policy_audit_entries(policy_id, created_at DESC);
       CREATE INDEX idx_import_jobs_failed ON import_jobs(status, updated_at DESC);
     `
+  },
+  {
+    version: 4,
+    name: "soft_deleted_song_library_entries",
+    up: `
+      ALTER TABLE songs
+        ADD COLUMN deleted_at TEXT;
+
+      CREATE INDEX idx_songs_user_deleted_library
+        ON songs(user_id, deleted_at, import_status, created_at DESC);
+    `
+  },
+  {
+    version: 5,
+    name: "entry_keys",
+    up: `
+      ALTER TABLE users
+        ADD COLUMN entry_key_redeemed_at TEXT;
+
+      CREATE TABLE entry_keys (
+        id TEXT PRIMARY KEY,
+        key_hash TEXT NOT NULL UNIQUE,
+        key_prefix TEXT NOT NULL,
+        label TEXT,
+        created_by_user_id TEXT,
+        created_at TEXT NOT NULL,
+        consumed_by_user_id TEXT,
+        consumed_at TEXT,
+        FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL,
+        FOREIGN KEY (consumed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX idx_entry_keys_created_at
+        ON entry_keys(created_at DESC);
+      CREATE INDEX idx_entry_keys_consumed_by_user_id
+        ON entry_keys(consumed_by_user_id);
+    `
   }
 ];
 

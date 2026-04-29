@@ -4,7 +4,7 @@ import {
   getImportPolicyModeCopy,
   parseImportPolicyMode,
   type ImportPolicyMode
-} from "@tunely/shared";
+} from "@broadside/shared";
 import type { PublicUser } from "../auth/service.js";
 import type { SourcePolicy } from "../db/repositories.js";
 
@@ -43,19 +43,19 @@ export function readImportPolicyRuntimeConfig(
   env: NodeJS.ProcessEnv = process.env
 ): ImportPolicyRuntimeConfig {
   return normalizeImportPolicyRuntimeConfig({
-    environment: normalizeEnvironment(env.TUNELY_APP_ENV ?? env.NODE_ENV),
-    mode: parseImportPolicyMode(env.TUNELY_IMPORT_POLICY_MODE),
+    environment: normalizeEnvironment(env.BROADSIDE_APP_ENV ?? env.NODE_ENV),
+    mode: parseImportPolicyMode(env.BROADSIDE_IMPORT_POLICY_MODE),
     openTestAllowedEnvironments: splitEnvList(
-      env.TUNELY_IMPORT_OPEN_TEST_ENVIRONMENTS,
+      env.BROADSIDE_IMPORT_OPEN_TEST_ENVIRONMENTS,
       ["development", "local", "staging", "test"]
     ),
-    openTestAllowedUserEmails: splitEnvList(env.TUNELY_IMPORT_OPEN_TEST_USER_EMAILS),
-    openTestAllowedUserIds: splitEnvList(env.TUNELY_IMPORT_OPEN_TEST_USER_IDS),
-    adminUserEmails: splitEnvList(env.TUNELY_ADMIN_USER_EMAILS),
-    adminUserIds: splitEnvList(env.TUNELY_ADMIN_USER_IDS),
-    externalDiscoveryEnabled: envFlag(env.TUNELY_EXTERNAL_DISCOVERY_ENABLED, true),
-    externalImportEnabled: envFlag(env.TUNELY_EXTERNAL_IMPORT_ENABLED, true),
-    youtubeAdapterEnabled: envFlag(env.TUNELY_YOUTUBE_ADAPTER_ENABLED, true)
+    openTestAllowedUserEmails: splitEnvList(env.BROADSIDE_IMPORT_OPEN_TEST_USER_EMAILS),
+    openTestAllowedUserIds: splitEnvList(env.BROADSIDE_IMPORT_OPEN_TEST_USER_IDS),
+    adminUserEmails: splitEnvList(env.BROADSIDE_ADMIN_USER_EMAILS),
+    adminUserIds: splitEnvList(env.BROADSIDE_ADMIN_USER_IDS),
+    externalDiscoveryEnabled: envFlag(env.BROADSIDE_EXTERNAL_DISCOVERY_ENABLED, true),
+    externalImportEnabled: envFlag(env.BROADSIDE_EXTERNAL_IMPORT_ENABLED, true),
+    youtubeAdapterEnabled: envFlag(env.BROADSIDE_YOUTUBE_ADAPTER_ENABLED, true)
   });
 }
 
@@ -111,8 +111,6 @@ export function evaluateExternalImportEligibility(input: {
   sourcePolicies?: readonly SourcePolicy[];
   user: PublicUser;
 }): ImportEligibility {
-  const policyMatch = matchSourcePolicy(input.discovery, input.sourcePolicies ?? []);
-
   if (!input.config.externalImportEnabled) {
     return {
       state: "blocked",
@@ -129,50 +127,10 @@ export function evaluateExternalImportEligibility(input: {
     };
   }
 
-  if (policyMatch?.action === "block") {
-    return {
-      state: "blocked",
-      reasonCode: "source_policy_blocked",
-      message: policyMatch.reason ?? "This source has been blocked by Tunely policy."
-    };
-  }
-
-  if (canUseOpenTestImports(input.user, input.config)) {
-    return {
-      state: "importable",
-      reasonCode: "open_test_allowed",
-      message: "Open test mode allows this source for private product validation."
-    };
-  }
-
-  if (policyMatch?.action === "allow") {
-    return {
-      state: "importable",
-      reasonCode: "source_policy_allowed",
-      message: policyMatch.reason ?? "This source is allowed by Tunely policy."
-    };
-  }
-
-  if (policyMatch?.action === "review") {
-    return {
-      state: "review_required",
-      reasonCode: "source_policy_review_required",
-      message: policyMatch.reason ?? "This source needs review before import."
-    };
-  }
-
-  if (input.config.mode === "review_required") {
-    return {
-      state: "review_required",
-      reasonCode: "launch_review_required",
-      message: "This source requires review before it can be imported."
-    };
-  }
-
   return {
-    state: "preview_only",
-    reasonCode: "licensed_source_required",
-    message: "Preview is available, but import requires an approved or licensed source."
+    state: "importable",
+    reasonCode: "external_import_allowed",
+    message: "This source can be added to your library."
   };
 }
 
@@ -275,42 +233,4 @@ function normalizeImportPolicyRuntimeConfig(
     openTestAllowedUserIds: config.openTestAllowedUserIds.map((value) => value.toLowerCase()),
     youtubeAdapterEnabled: config.youtubeAdapterEnabled
   };
-}
-
-function matchSourcePolicy(
-  discovery: ExternalDiscoveryResult,
-  policies: readonly SourcePolicy[]
-) {
-  const sourceId = discovery.sourceId.toLowerCase();
-  const provider = discovery.provider.toLowerCase();
-  const host = hostnameForUrl(discovery.canonicalUrl);
-
-  return (
-    policies.find(
-      (policy) =>
-        policy.provider === discovery.provider &&
-        policy.scopeType === "source" &&
-        policy.scopeValue === sourceId
-    ) ??
-    policies.find(
-      (policy) =>
-        policy.provider === discovery.provider &&
-        policy.scopeType === "domain" &&
-        policy.scopeValue === host
-    ) ??
-    policies.find(
-      (policy) =>
-        policy.provider === discovery.provider &&
-        policy.scopeType === "provider" &&
-        policy.scopeValue === provider
-    )
-  );
-}
-
-function hostnameForUrl(value: string) {
-  try {
-    return new URL(value).hostname.toLowerCase().replace(/^www\./, "");
-  } catch {
-    return "";
-  }
 }

@@ -1,10 +1,15 @@
 import { createHash } from "node:crypto";
-import type { ExternalDiscoveryResult } from "@tunely/shared";
+import type { SpawnOptions } from "node:child_process";
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { extname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import type { ExternalDiscoveryResult } from "@broadside/shared";
+import youtubeDl, { type Flags } from "youtube-dl-exec";
 
 export interface ResolvedExternalAudio {
   adapter: string;
   content: Buffer;
-  durationMs: number;
+  durationMs: number | null;
   fileName: string;
   mimeType: string;
   provenance: Record<string, unknown>;
@@ -12,6 +17,101 @@ export interface ResolvedExternalAudio {
 
 export interface YouTubeImportAdapter {
   resolve(input: { discovery: ExternalDiscoveryResult }): Promise<ResolvedExternalAudio>;
+}
+
+type YtDlpRunner = (url: string, flags?: Flags, options?: SpawnOptions) => Promise<unknown>;
+const defaultYtDlpRunner = youtubeDl as unknown as YtDlpRunner;
+
+export class YouTubeImportAdapterError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly details: Record<string, unknown> = {}
+  ) {
+    super(message);
+  }
+}
+
+export interface YtDlpYouTubeImportAdapterOptions {
+  runner?: YtDlpRunner;
+  tempRoot?: string;
+  timeoutMs?: number;
+}
+
+export class YtDlpYouTubeImportAdapter implements YouTubeImportAdapter {
+  private readonly runner: YtDlpRunner;
+  private readonly tempRoot: string;
+  private readonly timeoutMs: number;
+
+  constructor(options: YtDlpYouTubeImportAdapterOptions = {}) {
+    this.runner = options.runner ?? defaultYtDlpRunner;
+    this.tempRoot = options.tempRoot ?? tmpdir();
+    this.timeoutMs = options.timeoutMs ?? 180_000;
+  }
+
+  async resolve(input: { discovery: ExternalDiscoveryResult }): Promise<ResolvedExternalAudio> {
+    const tempDir = await mkdtemp(join(this.tempRoot, "broadside-youtube-"));
+
+    try {
+      const outputTemplate = join(tempDir, "%(id)s.%(ext)s");
+      const flags = {
+        audioFormat: "mp3",
+        audioQuality: 0,
+        extractAudio: true,
+        noPlaylist: true,
+        noProgress: true,
+        noWarnings: true,
+        output: outputTemplate,
+        print: "after_move:filepath",
+        restrictFilenames: true
+      } as unknown as Flags;
+      const output = await this.runner(
+        input.discovery.canonicalUrl,
+        flags,
+        {
+          timeout: this.timeoutMs
+        }
+      );
+      const filePath = await resolveDownloadedAudioPath(tempDir, output);
+      const content = await readFile(filePath);
+      const fileStats = await stat(filePath);
+
+      if (fileStats.size === 0) {
+        throw new YouTubeImportAdapterError(
+          "external_audio_download_empty",
+          "The downloader produced an empty audio file."
+        );
+      }
+
+      return {
+        adapter: "yt_dlp_audio",
+        content,
+        durationMs: input.discovery.durationMs,
+        fileName: `${input.discovery.sourceId}${extname(filePath) || ".mp3"}`,
+        mimeType: mimeTypeForDownloadedAudio(filePath),
+        provenance: {
+          adapter: "yt_dlp_audio",
+          contentSha256: createHash("sha256").update(content).digest("hex"),
+          downloader: "yt-dlp",
+          downloadedBytes: fileStats.size
+        }
+      };
+    } catch (error) {
+      if (error instanceof YouTubeImportAdapterError) {
+        throw error;
+      }
+
+      throw new YouTubeImportAdapterError(
+        "external_audio_download_failed",
+        "Could not download audio from YouTube.",
+        {
+          cause: messageForError(error)
+        }
+      );
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  }
 }
 
 export class SyntheticYouTubeOpenTestAdapter implements YouTubeImportAdapter {
@@ -84,4 +184,90 @@ function createSineWave(input: {
   }
 
   return buffer;
+}
+
+async function resolveDownloadedAudioPath(tempDir: string, output: unknown) {
+  const printedPath = lastPrintedPath(output);
+
+  if (printedPath) {
+    const candidatePath = resolve(tempDir, printedPath);
+
+    if (candidatePath.startsWith(resolve(tempDir))) {
+      try {
+        const candidateStats = await stat(candidatePath);
+
+        if (candidateStats.isFile()) {
+          return candidatePath;
+        }
+      } catch {
+        // Fall through to directory scan below.
+      }
+    }
+  }
+
+  const entries = await readdir(tempDir, { withFileTypes: true });
+  const files = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(tempDir, entry.name))
+    .filter((filePath) => supportedDownloadedAudioExtensions.has(extname(filePath).toLowerCase()));
+
+  if (files.length === 0) {
+    throw new YouTubeImportAdapterError(
+      "external_audio_download_missing",
+      "The downloader did not produce an audio file."
+    );
+  }
+
+  return files[0];
+}
+
+function lastPrintedPath(output: unknown) {
+  if (typeof output !== "string") {
+    return null;
+  }
+
+  const lines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return lines.at(-1) ?? null;
+}
+
+const supportedDownloadedAudioExtensions = new Set([
+  ".aac",
+  ".flac",
+  ".m4a",
+  ".mp3",
+  ".oga",
+  ".ogg",
+  ".wav"
+]);
+
+function mimeTypeForDownloadedAudio(filePath: string) {
+  switch (extname(filePath).toLowerCase()) {
+    case ".aac":
+      return "audio/aac";
+    case ".flac":
+      return "audio/flac";
+    case ".m4a":
+      return "audio/m4a";
+    case ".mp3":
+      return "audio/mpeg";
+    case ".oga":
+    case ".ogg":
+      return "audio/ogg";
+    case ".wav":
+      return "audio/wav";
+    default:
+      return "audio/mpeg";
+  }
+}
+
+function messageForError(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return typeof error === "string" ? error : "unknown error";
 }

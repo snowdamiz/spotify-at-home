@@ -8,10 +8,10 @@
     "moduleResolution": "NodeNext",
     "noEmitOnError": true,
     "paths": {
-      "@tunely/shared": [
+      "@broadside/shared": [
         "./packages/shared/src/index.ts"
       ],
-      "@tunely/shared/*": [
+      "@broadside/shared/*": [
         "./packages/shared/src/*"
       ]
     },

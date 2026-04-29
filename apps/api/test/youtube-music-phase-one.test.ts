@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  closeTunelyDatabase,
+  closeBroadsideDatabase,
   migrations,
-  openTunelyDatabase,
+  openBroadsideDatabase,
   runMigrations,
   SQLiteSongRepository,
   SQLiteUserRepository,
@@ -81,7 +81,7 @@ describe("YouTube Music Phase 1 external import data model", () => {
       });
       expect(tableNames(db)).toContain("external_sources");
     } finally {
-      closeTunelyDatabase(db);
+      closeBroadsideDatabase(db);
     }
   });
 
@@ -139,12 +139,12 @@ describe("YouTube Music Phase 1 external import data model", () => {
         })
       ).toMatchObject({ id: "source-second-reimport" });
     } finally {
-      closeTunelyDatabase(db);
+      closeBroadsideDatabase(db);
     }
   });
 
   it("adds external import metadata without disturbing existing uploaded songs", () => {
-    const db = openTunelyDatabase();
+    const db = openBroadsideDatabase();
 
     try {
       applyOnlyInitialMigration(db);
@@ -172,13 +172,13 @@ describe("YouTube Music Phase 1 external import data model", () => {
       expect(tableNames(db)).toEqual(expect.arrayContaining(["songs", "import_jobs", "external_sources"]));
       expect(Number(db.prepare("SELECT COUNT(*) AS count FROM songs").get()?.count)).toBe(1);
     } finally {
-      closeTunelyDatabase(db);
+      closeBroadsideDatabase(db);
     }
   });
 });
 
 function migratedInMemoryDatabase() {
-  const db = openTunelyDatabase();
+  const db = openBroadsideDatabase();
   runMigrations(db);
 
   return {

@@ -6,9 +6,6 @@
     },
     {
       "path": "./apps/api"
-    },
-    {
-      "path": "./apps/app"
     }
   ]
 }

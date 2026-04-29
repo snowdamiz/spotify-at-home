@@ -134,7 +134,7 @@ const emptySearchResults: LibrarySearchResults = {
   songs: [],
 }
 
-export function useLibrarySearch(query: string): LibrarySearchState {
+export function useLibrarySearch(query: string, revision = 0): LibrarySearchState {
   const [state, setState] = useState<LibrarySearchState>({
     results: emptySearchResults,
     status: 'idle',
@@ -167,7 +167,7 @@ export function useLibrarySearch(query: string): LibrarySearchState {
     return () => {
       mounted = false
     }
-  }, [trimmedQuery])
+  }, [trimmedQuery, revision])
 
   return state
 }
@@ -179,7 +179,7 @@ export type PlaylistState =
   | { status: 'not-found'; playlist: ServerPlaylistDetail | null }
   | { status: 'error'; playlist: ServerPlaylistDetail | null }
 
-export function usePlaylist(playlistId?: string): PlaylistState {
+export function usePlaylist(playlistId?: string, revision = 0): PlaylistState {
   const [state, setState] = useState<PlaylistState>({
     playlist: null,
     status: 'loading',
@@ -211,7 +211,7 @@ export function usePlaylist(playlistId?: string): PlaylistState {
     return () => {
       mounted = false
     }
-  }, [playlistId])
+  }, [playlistId, revision])
 
   return state
 }

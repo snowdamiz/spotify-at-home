@@ -11,12 +11,20 @@ import {
   type CollectionRef,
   type Song,
 } from '@/lib/music-types'
+import type { OfflineAudioStateMap } from '@/lib/offline-audio-cache'
 
 type SearchViewProps = {
   songs: Song[]
   currentSongId: string | null
   isPlaying: boolean
+  offlineAudio: OfflineAudioStateMap
+  revision: number
   onPlay: (song: Song, queue: Song[]) => void
+  onToggleSongLike?: (song: Song) => void
+  onToggleSongOffline: (song: Song) => void
+  onDeleteSong: (song: Song) => void
+  deletingSongId: string | null
+  likingSongId?: string | null
   onOpenCollection: (ref: CollectionRef) => void
 }
 
@@ -24,15 +32,25 @@ export function SearchView({
   songs,
   currentSongId,
   isPlaying,
+  offlineAudio,
+  revision,
   onPlay,
+  onToggleSongLike,
+  onToggleSongOffline,
+  onDeleteSong,
+  deletingSongId,
+  likingSongId,
   onOpenCollection,
 }: SearchViewProps) {
   const [query, setQuery] = useState('')
-  const search = useLibrarySearch(query)
+  const search = useLibrarySearch(query, revision)
 
   const matches = useMemo(() => {
     if (!query.trim()) return []
-    const serverMatches = search.results.songs.map(serverSongToSong)
+    const songsById = new Map(songs.map((song) => [song.id, song]))
+    const serverMatches = search.results.songs.map(
+      (serverSong) => songsById.get(serverSong.id) ?? serverSongToSong(serverSong),
+    )
     const knownIds = new Set(serverMatches.map((song) => song.id))
     const localMatches = songs.filter((song) => !knownIds.has(song.id))
 
@@ -64,7 +82,7 @@ export function SearchView({
           </div>
         ) : search.status === 'error' ? (
           <div className="py-10 text-center text-sm text-muted-foreground">
-            Could not reach the Tunely server.
+            Could not reach the Broadside server.
           </div>
         ) : search.status === 'anonymous' ? (
           <div className="py-10 text-center text-sm text-muted-foreground">
@@ -108,7 +126,15 @@ export function SearchView({
                     song={song}
                     isActive={currentSongId === song.id}
                     isPlaying={isPlaying && currentSongId === song.id}
+                    offlineState={offlineAudio[song.id]}
                     onPlay={() => onPlay(song, matches)}
+                    onToggleLike={
+                      onToggleSongLike ? () => onToggleSongLike(song) : undefined
+                    }
+                    onToggleOffline={() => onToggleSongOffline(song)}
+                    onDelete={() => onDeleteSong(song)}
+                    isDeleting={deletingSongId === song.id}
+                    isLiking={likingSongId === song.id}
                   />
                 </li>
               ))}

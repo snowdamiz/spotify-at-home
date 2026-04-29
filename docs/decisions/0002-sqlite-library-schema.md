@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-Tunely stores private user libraries on the self-hosted API. The first durable schema needs to cover authentication-owned users and sessions, imported songs, playlists, likes, playback state, and import jobs while keeping all user-owned reads scoped by user ID.
+Broadside stores private user libraries on the self-hosted API. The first durable schema needs to cover authentication-owned users and sessions, imported songs, playlists, likes, playback state, and import jobs while keeping all user-owned reads scoped by user ID.
 
 ## Decision
 
@@ -20,12 +20,11 @@ Repository methods for user-owned song data require `userId` alongside resource 
 
 ## Delete Behavior
 
-Deleting a song removes rows that only make sense while the song exists:
+Deleting a song from a library soft-deletes the `songs` row with `deleted_at` so shared audio artifacts can remain reusable for future imports:
 
-- `external_sources` cascades on song delete.
-- `playlist_songs` cascades on song delete.
-- `likes` cascades on song delete.
-- `import_jobs` cascades on song delete.
+- `external_sources` stays attached to the soft-deleted song as reusable source metadata.
+- `playlist_songs`, `likes`, and `import_jobs` for that user/song are removed.
 - `playback_state.song_id` is set to `NULL` so the user's playback preferences and last position row can survive without referencing deleted media.
+- R2/local audio storage is not deleted by the user-facing delete route.
 
 Deleting a user cascades through that user's OAuth accounts, sessions, songs, playlists, likes, playback state, and import jobs.

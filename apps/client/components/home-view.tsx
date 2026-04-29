@@ -1,6 +1,6 @@
 'use client'
 
-import { Heart, Link2, Play, Plus, Upload } from 'lucide-react'
+import { Play, Plus } from 'lucide-react'
 import { CoverArt } from '@/components/cover-art'
 import { Button } from '@/components/ui/button'
 import { playlistSubtitle, type LibraryLoadStatus, type LibrarySummary, type ServerPlaylist } from '@/lib/api'
@@ -49,54 +49,6 @@ export function HomeView({
         </p>
       </header>
 
-      {/* Quick access tiles */}
-      <section>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          <button
-            onClick={onImportClick}
-            className="group flex items-center gap-3 overflow-hidden rounded-md bg-card pr-4 text-left transition-colors hover:bg-accent"
-          >
-            <div className="flex h-16 w-16 shrink-0 items-center justify-center bg-gradient-to-br from-amber-400 to-orange-700 text-primary-foreground">
-              <Upload className="h-6 w-6" />
-            </div>
-            <span className="font-semibold">Upload from device</span>
-          </button>
-          <button
-            onClick={() => onOpenCollection({ kind: 'system', id: 'liked-songs' })}
-            className="group flex items-center gap-3 overflow-hidden rounded-md bg-card pr-4 text-left transition-colors hover:bg-accent"
-          >
-            <div className="flex h-16 w-16 shrink-0 items-center justify-center bg-gradient-to-br from-fuchsia-600 to-zinc-950 text-foreground">
-              <Heart className="h-6 w-6" fill="currentColor" />
-            </div>
-            <span className="font-semibold">Liked Songs</span>
-          </button>
-          <button
-            onClick={onImportClick}
-            className="group flex items-center gap-3 overflow-hidden rounded-md bg-card pr-4 text-left transition-colors hover:bg-accent"
-          >
-            <div className="flex h-16 w-16 shrink-0 items-center justify-center bg-gradient-to-br from-rose-500 to-amber-700 text-foreground">
-              <Link2 className="h-6 w-6" />
-            </div>
-            <span className="font-semibold">Import from a link</span>
-          </button>
-          {playlists.slice(0, 3).map((p) => (
-            <button
-              key={p.id}
-              onClick={() => onOpenCollection({ kind: 'playlist', id: p.id })}
-              className="group flex items-center gap-3 overflow-hidden rounded-md bg-card pr-4 text-left transition-colors hover:bg-accent"
-            >
-              <CoverArt
-                colorClass={p.color ?? 'from-zinc-700 to-zinc-950'}
-                title={p.name}
-                className="h-16 w-16 rounded-none"
-                rounded="md"
-              />
-              <span className="font-semibold">{p.name}</span>
-            </button>
-          ))}
-        </div>
-      </section>
-
       {/* Recently added */}
       {recent.length > 0 && (
         <section>
@@ -113,6 +65,7 @@ export function HomeView({
                 <div className="relative">
                   <CoverArt
                     colorClass={song.coverColor}
+                    imageUrl={song.coverImageUrl}
                     title={song.title}
                     size="full"
                     rounded="md"
@@ -160,24 +113,6 @@ export function HomeView({
               {summary.counts.likedSongs === 1 ? 'song' : 'songs'}
             </div>
           </button>
-          <button
-            onClick={() => onOpenCollection({ kind: 'system', id: 'imported-songs' })}
-            className="group rounded-lg bg-card p-3 text-left transition-colors hover:bg-accent"
-          >
-            <CoverArt
-              colorClass="from-amber-500 to-orange-950"
-              title="Imported Songs"
-              size="full"
-              rounded="md"
-            />
-            <div className="mt-3 truncate text-sm font-semibold">
-              Imported Songs
-            </div>
-            <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
-              {summary.counts.songs}{' '}
-              {summary.counts.songs === 1 ? 'song' : 'songs'} on your server
-            </div>
-          </button>
           {playlists.map((p) => (
             <button
               key={p.id}
@@ -207,7 +142,7 @@ export function HomeView({
         </section>
       ) : libraryStatus === 'error' ? (
         <section className="rounded-lg bg-card/60 p-5 text-sm text-muted-foreground">
-          Could not reach the Tunely server.
+          Could not reach the Broadside server.
         </section>
       ) : songs.length === 0 ? (
         <section className="rounded-2xl border border-dashed border-border bg-card/40 p-6 text-center">

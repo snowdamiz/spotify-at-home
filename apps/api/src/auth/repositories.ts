@@ -14,6 +14,7 @@ export interface User {
   email: string;
   displayName: string | null;
   avatarUrl: string | null;
+  entryKeyRedeemedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -46,6 +47,18 @@ export interface PendingSessionExchange {
   userAgent: string | null;
   ipAddress: string | null;
   expiresAt: Date;
+  consumedAt: Date | null;
+}
+
+export interface EntryKey {
+  id: string;
+  keyHash: string;
+  keyPrefix: string;
+  label: string | null;
+  createdByUserId: string | null;
+  createdAt: Date;
+  consumedByUserId: string | null;
+  consumedByUserEmail: string | null;
   consumedAt: Date | null;
 }
 
@@ -84,6 +97,15 @@ export interface AuthRepository {
   revokeSessionByRefreshTokenHash(refreshTokenHash: string, now: Date): Promise<boolean>;
   savePendingSessionExchange(exchange: PendingSessionExchange): Promise<void>;
   consumePendingSessionExchange(codeHash: string, now: Date): Promise<PendingSessionExchange | null>;
+  createEntryKey(input: {
+    keyHash: string;
+    keyPrefix: string;
+    label: string | null;
+    createdByUserId: string;
+    now: Date;
+  }): Promise<EntryKey>;
+  listEntryKeys(): Promise<EntryKey[]>;
+  redeemEntryKey(input: { keyHash: string; userId: string; now: Date }): Promise<User | null>;
 }
 
 export class InMemoryOAuthStateStore implements OAuthStateStore {
@@ -110,6 +132,7 @@ export class InMemoryAuthRepository implements AuthRepository {
   private readonly accounts = new Map<string, OAuthAccount>();
   private readonly sessions = new Map<string, Session>();
   private readonly exchanges = new Map<string, PendingSessionExchange>();
+  private readonly entryKeys = new Map<string, EntryKey>();
 
   async upsertUserFromGoogle(input: {
     providerSubject: string;
@@ -144,6 +167,7 @@ export class InMemoryAuthRepository implements AuthRepository {
       email: input.email,
       displayName: input.displayName,
       avatarUrl: input.avatarUrl,
+      entryKeyRedeemedAt: null,
       createdAt: input.now,
       updatedAt: input.now
     };
@@ -290,6 +314,66 @@ export class InMemoryAuthRepository implements AuthRepository {
 
     return exchange;
   }
+
+  async createEntryKey(input: {
+    keyHash: string;
+    keyPrefix: string;
+    label: string | null;
+    createdByUserId: string;
+    now: Date;
+  }) {
+    const entryKey: EntryKey = {
+      id: randomToken(16),
+      keyHash: input.keyHash,
+      keyPrefix: input.keyPrefix,
+      label: input.label,
+      createdByUserId: input.createdByUserId,
+      createdAt: input.now,
+      consumedByUserId: null,
+      consumedByUserEmail: null,
+      consumedAt: null
+    };
+
+    this.entryKeys.set(entryKey.keyHash, entryKey);
+
+    return entryKey;
+  }
+
+  async listEntryKeys() {
+    return [...this.entryKeys.values()]
+      .map((entryKey) => ({
+        ...entryKey,
+        consumedByUserEmail: entryKey.consumedByUserId
+          ? (this.users.get(entryKey.consumedByUserId)?.email ?? null)
+          : null
+      }))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
+  async redeemEntryKey(input: { keyHash: string; userId: string; now: Date }) {
+    const entryKey = this.entryKeys.get(input.keyHash);
+    const user = this.users.get(input.userId);
+
+    if (!entryKey || entryKey.consumedAt !== null || !user) {
+      return null;
+    }
+
+    this.entryKeys.set(input.keyHash, {
+      ...entryKey,
+      consumedByUserId: user.id,
+      consumedByUserEmail: user.email,
+      consumedAt: input.now
+    });
+
+    const updatedUser = {
+      ...user,
+      entryKeyRedeemedAt: user.entryKeyRedeemedAt ?? input.now,
+      updatedAt: input.now
+    };
+    this.users.set(user.id, updatedUser);
+
+    return updatedUser;
+  }
 }
 
 export class SQLiteAuthRepository implements AuthRepository {
@@ -340,6 +424,7 @@ export class SQLiteAuthRepository implements AuthRepository {
       email: input.email,
       displayName: input.displayName,
       avatarUrl: input.avatarUrl,
+      entryKeyRedeemedAt: null,
       createdAt: input.now,
       updatedAt: input.now
     };
@@ -575,6 +660,128 @@ export class SQLiteAuthRepository implements AuthRepository {
 
     return mapPendingSessionExchange(row);
   }
+
+  async createEntryKey(input: {
+    keyHash: string;
+    keyPrefix: string;
+    label: string | null;
+    createdByUserId: string;
+    now: Date;
+  }) {
+    const id = randomToken(16);
+
+    this.db
+      .prepare(
+        `
+          INSERT INTO entry_keys (
+            id, key_hash, key_prefix, label, created_by_user_id, created_at,
+            consumed_by_user_id, consumed_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `
+      )
+      .run(
+        id,
+        input.keyHash,
+        input.keyPrefix,
+        input.label,
+        input.createdByUserId,
+        toSqlDate(input.now),
+        null,
+        null
+      );
+
+    const entryKey = this.findEntryKeyById(id);
+
+    if (!entryKey) {
+      throw new Error("Created entry key could not be loaded");
+    }
+
+    return entryKey;
+  }
+
+  async listEntryKeys() {
+    return this.db
+      .prepare(
+        `
+          SELECT entry_keys.*, consumed_user.email AS consumed_by_user_email
+          FROM entry_keys
+          LEFT JOIN users AS consumed_user
+            ON consumed_user.id = entry_keys.consumed_by_user_id
+          ORDER BY entry_keys.created_at DESC
+        `
+      )
+      .all()
+      .map((row) => mapEntryKey(row as Record<string, unknown>));
+  }
+
+  async redeemEntryKey(input: { keyHash: string; userId: string; now: Date }) {
+    this.db.exec("BEGIN IMMEDIATE;");
+
+    try {
+      const entryKey = this.db
+        .prepare("SELECT * FROM entry_keys WHERE key_hash = ? AND consumed_at IS NULL")
+        .get(input.keyHash) as Record<string, unknown> | undefined;
+      const user = this.db.prepare("SELECT * FROM users WHERE id = ?").get(input.userId) as
+        | Record<string, unknown>
+        | undefined;
+
+      if (!entryKey || !user) {
+        this.db.exec("ROLLBACK;");
+        return null;
+      }
+
+      const consumedAt = toSqlDate(input.now);
+      const consumeResult = this.db
+        .prepare(
+          `
+            UPDATE entry_keys
+            SET consumed_by_user_id = ?, consumed_at = ?
+            WHERE id = ? AND consumed_at IS NULL
+          `
+        )
+        .run(input.userId, consumedAt, String(entryKey.id));
+
+      if (Number(consumeResult.changes) === 0) {
+        this.db.exec("ROLLBACK;");
+        return null;
+      }
+
+      this.db
+        .prepare(
+          `
+            UPDATE users
+            SET entry_key_redeemed_at = COALESCE(entry_key_redeemed_at, ?),
+                updated_at = ?
+            WHERE id = ?
+          `
+        )
+        .run(consumedAt, consumedAt, input.userId);
+
+      this.db.exec("COMMIT;");
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+
+    return this.findUserById(input.userId);
+  }
+
+  private findEntryKeyById(id: string) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT entry_keys.*, consumed_user.email AS consumed_by_user_email
+          FROM entry_keys
+          LEFT JOIN users AS consumed_user
+            ON consumed_user.id = entry_keys.consumed_by_user_id
+          WHERE entry_keys.id = ?
+        `
+      )
+      .get(id) as Record<string, unknown> | undefined;
+
+    return row ? mapEntryKey(row) : null;
+  }
 }
 
 function mapUser(row: Record<string, unknown>): User {
@@ -583,6 +790,7 @@ function mapUser(row: Record<string, unknown>): User {
     email: String(row.email),
     displayName: nullableString(row.display_name),
     avatarUrl: nullableString(row.avatar_url),
+    entryKeyRedeemedAt: row.entry_key_redeemed_at ? fromSqlDate(row.entry_key_redeemed_at) : null,
     createdAt: fromSqlDate(row.created_at),
     updatedAt: fromSqlDate(row.updated_at)
   };
@@ -610,6 +818,20 @@ function mapPendingSessionExchange(row: Record<string, unknown>): PendingSession
     userAgent: nullableString(row.user_agent),
     ipAddress: nullableString(row.ip_address),
     expiresAt: fromSqlDate(row.expires_at),
+    consumedAt: row.consumed_at ? fromSqlDate(row.consumed_at) : null
+  };
+}
+
+function mapEntryKey(row: Record<string, unknown>): EntryKey {
+  return {
+    id: String(row.id),
+    keyHash: String(row.key_hash),
+    keyPrefix: String(row.key_prefix),
+    label: nullableString(row.label),
+    createdByUserId: nullableString(row.created_by_user_id),
+    createdAt: fromSqlDate(row.created_at),
+    consumedByUserId: nullableString(row.consumed_by_user_id),
+    consumedByUserEmail: nullableString(row.consumed_by_user_email),
     consumedAt: row.consumed_at ? fromSqlDate(row.consumed_at) : null
   };
 }

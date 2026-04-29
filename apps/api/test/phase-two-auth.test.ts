@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiApp } from "../src/app";
-import type { GoogleOAuthClient } from "../src/auth/google";
+import type { GoogleIdentity, GoogleOAuthClient } from "../src/auth/google";
 
 const authConfig = {
   googleClientId: "google-client-id",
   googleClientSecret: "google-client-secret",
-  googleRedirectUri: "https://api.tunely.test/api/auth/google/callback",
+  googleRedirectUri: "https://api.broadside.test/api/auth/google/callback",
   cookieSecure: true,
-  allowedReturnToOrigins: ["https://tunely.test"]
+  allowedReturnToOrigins: ["https://broadside.test"],
+  adminEmails: ["ada@example.com", "grace@example.com"]
 };
 
 function createGoogleClient(overrides: Partial<GoogleOAuthClient> = {}): GoogleOAuthClient {
@@ -29,7 +30,7 @@ function createGoogleClient(overrides: Partial<GoogleOAuthClient> = {}): GoogleO
 
 async function startGoogleAuth(
   app: ReturnType<typeof createApiApp>,
-  query = "mode=mobile&returnTo=tunely%3A%2F%2Fauth%2Fcallback"
+  query = "mode=mobile&returnTo=broadside%3A%2F%2Fauth%2Fcallback"
 ) {
   const response = await app.inject({
     method: "GET",
@@ -56,6 +57,33 @@ function cookieValue(setCookie: string | string[] | undefined, name: string) {
   }
 
   return cookie.split(";")[0].slice(name.length + 1);
+}
+
+async function signIn(app: ReturnType<typeof createApiApp>) {
+  const { redirectUrl } = await startGoogleAuth(app);
+  const callback = await app.inject({
+    method: "GET",
+    url: `/api/auth/google/callback?state=${redirectUrl.searchParams.get("state")}&code=auth-code`
+  });
+  const exchangeCode = new URL(String(callback.headers.location)).searchParams.get(
+    "session_exchange_code"
+  );
+  const session = await app.inject({
+    method: "POST",
+    url: "/api/auth/session/exchange",
+    payload: { code: exchangeCode }
+  });
+
+  return session.json() as {
+    accessToken: string;
+    refreshToken: string;
+    user: {
+      email: string;
+      entryKeyRedeemedAt: string | null;
+      hasEntryAccess: boolean;
+      isAdmin: boolean;
+    };
+  };
 }
 
 describe("Phase 2 auth routes", () => {
@@ -179,7 +207,7 @@ describe("Phase 2 auth routes", () => {
 
     expect(callback.statusCode).toBe(302);
     expect(callbackLocation.origin).toBe("null");
-    expect(callbackLocation.protocol).toBe("tunely:");
+    expect(callbackLocation.protocol).toBe("broadside:");
     expect(exchangeCode).toMatch(/^[A-Za-z0-9_-]{32,}$/);
 
     const exchange = await app.inject({
@@ -236,24 +264,24 @@ describe("Phase 2 auth routes", () => {
       }
     });
     apps.add(app);
-    const { redirectUrl } = await startGoogleAuth(app, "returnTo=https%3A%2F%2Ftunely.test%2Flibrary");
+    const { redirectUrl } = await startGoogleAuth(app, "returnTo=https%3A%2F%2Fbroadside.test%2Flibrary");
     const state = redirectUrl.searchParams.get("state");
 
     const callback = await app.inject({
       method: "GET",
       url: `/api/auth/google/callback?state=${state}&code=auth-code`
     });
-    const accessToken = cookieValue(callback.headers["set-cookie"], "tunely_access");
+    const accessToken = cookieValue(callback.headers["set-cookie"], "broadside_access");
 
     expect(callback.statusCode).toBe(302);
-    expect(callback.headers.location).toBe("https://tunely.test/library");
+    expect(callback.headers.location).toBe("https://broadside.test/library");
     expect(callback.headers["set-cookie"]).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("tunely_access="),
+        expect.stringContaining("broadside_access="),
         expect.stringContaining("HttpOnly"),
         expect.stringContaining("Secure"),
         expect.stringContaining("SameSite=Lax"),
-        expect.stringContaining("tunely_refresh=")
+        expect.stringContaining("broadside_refresh=")
       ])
     );
 
@@ -261,7 +289,7 @@ describe("Phase 2 auth routes", () => {
       method: "GET",
       url: "/api/me",
       headers: {
-        cookie: `tunely_access=${accessToken}`
+        cookie: `broadside_access=${accessToken}`
       }
     });
 
@@ -289,7 +317,7 @@ describe("Phase 2 auth routes", () => {
     });
 
     expect(relativeCallback.statusCode).toBe(302);
-    expect(relativeCallback.headers.location).toBe("https://tunely.test/library");
+    expect(relativeCallback.headers.location).toBe("https://broadside.test/library");
 
     const fallbackStart = await startGoogleAuth(app, "mode=web");
     const fallbackCallback = await app.inject({
@@ -298,7 +326,7 @@ describe("Phase 2 auth routes", () => {
     });
 
     expect(fallbackCallback.statusCode).toBe(302);
-    expect(fallbackCallback.headers.location).toBe("https://tunely.test");
+    expect(fallbackCallback.headers.location).toBe("https://broadside.test");
   });
 
   it("falls back instead of redirecting to an unapproved web return URL", async () => {
@@ -318,7 +346,7 @@ describe("Phase 2 auth routes", () => {
     });
 
     expect(callback.statusCode).toBe(302);
-    expect(callback.headers.location).toBe("https://tunely.test");
+    expect(callback.headers.location).toBe("https://broadside.test");
   });
 
   it("rotates refresh tokens and rejects token reuse", async () => {
@@ -428,5 +456,194 @@ describe("Phase 2 auth routes", () => {
     });
 
     expect(refreshAfterLogout.statusCode).toBe(401);
+  });
+
+  it("requires a one-time entry key before a non-admin account can use protected app routes", async () => {
+    let identity: Pick<GoogleIdentity, "sub" | "email" | "displayName"> = {
+      sub: "google-admin-subject",
+      email: "admin@example.com",
+      displayName: "Admin"
+    };
+    const googleOAuthClient = createGoogleClient({
+      verifyIdToken: vi.fn(async () => ({
+        iss: "https://accounts.google.com",
+        aud: authConfig.googleClientId,
+        exp: Math.floor(Date.now() / 1000) + 300,
+        sub: identity.sub,
+        email: identity.email,
+        emailVerified: true,
+        displayName: identity.displayName,
+        avatarUrl: null
+      }))
+    });
+    const app = createApiApp({
+      auth: {
+        ...authConfig,
+        adminEmails: ["admin@example.com"],
+        googleOAuthClient
+      }
+    });
+    apps.add(app);
+
+    const adminSession = await signIn(app);
+
+    expect(adminSession.user).toMatchObject({
+      email: "admin@example.com",
+      hasEntryAccess: true,
+      isAdmin: true
+    });
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/entry-keys",
+      headers: {
+        authorization: `Bearer ${adminSession.accessToken}`
+      },
+      payload: {
+        label: "grace@example.com"
+      }
+    });
+
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({
+      entryKey: {
+        label: "grace@example.com",
+        consumedAt: null,
+        consumedByUserEmail: null
+      },
+      secret: expect.stringMatching(/^[A-Z0-9]{5}$/)
+    });
+    expect(JSON.stringify(created.json().entryKey)).not.toContain("keyHash");
+
+    identity = {
+      sub: "google-grace-subject",
+      email: "grace@example.com",
+      displayName: "Grace Hopper"
+    };
+    const userSession = await signIn(app);
+
+    expect(userSession.user).toMatchObject({
+      email: "grace@example.com",
+      entryKeyRedeemedAt: null,
+      hasEntryAccess: false,
+      isAdmin: false
+    });
+
+    const beforeRedeem = await app.inject({
+      method: "GET",
+      url: "/api/library/summary",
+      headers: {
+        authorization: `Bearer ${userSession.accessToken}`
+      }
+    });
+
+    expect(beforeRedeem.statusCode).toBe(403);
+    expect(beforeRedeem.json()).toMatchObject({
+      error: {
+        code: "entry_key_required"
+      }
+    });
+
+    const redeemed = await app.inject({
+      method: "POST",
+      url: "/api/entry-keys/redeem",
+      headers: {
+        authorization: `Bearer ${userSession.accessToken}`
+      },
+      payload: {
+        key: created.json().secret
+      }
+    });
+
+    expect(redeemed.statusCode).toBe(200);
+    expect(redeemed.json()).toMatchObject({
+      user: {
+        email: "grace@example.com",
+        entryKeyRedeemedAt: expect.any(String),
+        hasEntryAccess: true,
+        isAdmin: false
+      }
+    });
+
+    const afterRedeem = await app.inject({
+      method: "GET",
+      url: "/api/library/summary",
+      headers: {
+        authorization: `Bearer ${userSession.accessToken}`
+      }
+    });
+
+    expect(afterRedeem.statusCode).toBe(200);
+
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/admin/entry-keys",
+      headers: {
+        authorization: `Bearer ${adminSession.accessToken}`
+      }
+    });
+
+    expect(list.statusCode).toBe(200);
+    expect(list.json()).toMatchObject({
+      entryKeys: [
+        {
+          label: "grace@example.com",
+          consumedByUserEmail: "grace@example.com",
+          consumedAt: expect.any(String)
+        }
+      ]
+    });
+
+    identity = {
+      sub: "google-linus-subject",
+      email: "linus@example.com",
+      displayName: "Linus"
+    };
+    const secondUserSession = await signIn(app);
+    const replay = await app.inject({
+      method: "POST",
+      url: "/api/entry-keys/redeem",
+      headers: {
+        authorization: `Bearer ${secondUserSession.accessToken}`
+      },
+      payload: {
+        key: created.json().secret
+      }
+    });
+
+    expect(replay.statusCode).toBe(400);
+    expect(replay.json()).toEqual({
+      error: "invalid_entry_key",
+      message: "Entry key is invalid or has already been used."
+    });
+  });
+
+  it("blocks non-admin accounts from managing entry keys", async () => {
+    const app = createApiApp({
+      auth: {
+        ...authConfig,
+        adminEmails: ["admin@example.com"],
+        googleOAuthClient: createGoogleClient()
+      }
+    });
+    apps.add(app);
+    const session = await signIn(app);
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/api/admin/entry-keys",
+      headers: {
+        authorization: `Bearer ${session.accessToken}`
+      },
+      payload: {
+        label: "blocked"
+      }
+    });
+
+    expect(create.statusCode).toBe(403);
+    expect(create.json()).toEqual({
+      error: "admin_required",
+      message: "Admin access is required."
+    });
   });
 });

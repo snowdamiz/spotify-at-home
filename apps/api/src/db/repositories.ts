@@ -1,6 +1,6 @@
 import { randomToken } from "../auth/crypto.js";
 import type { SqliteDatabase } from "./connection.js";
-import type { ExternalSourceProvider, ImportPolicyMode } from "@tunely/shared";
+import type { ExternalSourceProvider, ImportPolicyMode } from "@broadside/shared";
 
 export type ImportStatus = "pending" | "ready" | "failed";
 export type RepeatMode = "off" | "one" | "all";
@@ -27,6 +27,7 @@ export interface Song {
   storagePath: string;
   importStatus: ImportStatus;
   externalSource: ExternalSource | null;
+  liked: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -185,6 +186,7 @@ export class SQLiteSongRepository {
       storagePath: input.storagePath,
       importStatus: input.importStatus ?? "ready",
       externalSource: null,
+      liked: false,
       createdAt: now,
       updatedAt: now
     };
@@ -225,7 +227,7 @@ export class SQLiteSongRepository {
           SELECT ${songSelectColumns("songs")}
           FROM songs
           LEFT JOIN external_sources es ON es.song_id = songs.id
-          WHERE songs.user_id = ? AND songs.id = ?
+          WHERE songs.user_id = ? AND songs.id = ? AND songs.deleted_at IS NULL
         `
       )
       .get(userId, songId);
@@ -240,7 +242,7 @@ export class SQLiteSongRepository {
           SELECT ${songSelectColumns("songs")}
           FROM songs
           LEFT JOIN external_sources es ON es.song_id = songs.id
-          WHERE songs.user_id = ?
+          WHERE songs.user_id = ? AND songs.deleted_at IS NULL
           ORDER BY songs.created_at DESC, songs.id ASC
         `
       )
@@ -255,7 +257,9 @@ export class SQLiteSongRepository {
           SELECT ${songSelectColumns("songs")}
           FROM songs
           LEFT JOIN external_sources es ON es.song_id = songs.id
-          WHERE songs.user_id = ? AND songs.import_status = 'ready'
+          WHERE songs.user_id = ?
+            AND songs.import_status = 'ready'
+            AND songs.deleted_at IS NULL
           ORDER BY songs.created_at DESC, songs.id ASC
         `
       )
@@ -270,7 +274,9 @@ export class SQLiteSongRepository {
           SELECT ${songSelectColumns("songs")}
           FROM songs
           LEFT JOIN external_sources es ON es.song_id = songs.id
-          WHERE songs.user_id = ? AND songs.import_status = 'ready'
+          WHERE songs.user_id = ?
+            AND songs.import_status = 'ready'
+            AND songs.deleted_at IS NULL
           ORDER BY songs.created_at DESC, songs.id ASC
           LIMIT ?
         `
@@ -285,7 +291,7 @@ export class SQLiteSongRepository {
         `
           SELECT COUNT(*) AS count
           FROM songs
-          WHERE user_id = ? AND import_status = 'ready'
+          WHERE user_id = ? AND import_status = 'ready' AND deleted_at IS NULL
         `
       )
       .get(userId) as { count?: number | bigint } | undefined;
@@ -304,6 +310,7 @@ export class SQLiteSongRepository {
           LEFT JOIN external_sources es ON es.song_id = songs.id
           WHERE songs.user_id = ?
             AND songs.import_status = 'ready'
+            AND songs.deleted_at IS NULL
             AND (
               songs.title LIKE ? ESCAPE '\\'
               OR songs.artist LIKE ? ESCAPE '\\'
@@ -323,12 +330,29 @@ export class SQLiteSongRepository {
         `
           SELECT COALESCE(SUM(size_bytes), 0) AS total
           FROM songs
-          WHERE user_id = ? AND import_status = 'ready'
+          WHERE user_id = ? AND import_status = 'ready' AND deleted_at IS NULL
         `
       )
       .get(userId) as { total?: number | bigint } | undefined;
 
     return Number(row?.total ?? 0);
+  }
+
+  countSongsByStoragePath(input: { storagePath: string; exceptSongId?: string }) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM songs
+          WHERE storage_path = ?
+            AND (? IS NULL OR id <> ?)
+        `
+      )
+      .get(input.storagePath, input.exceptSongId ?? null, input.exceptSongId ?? null) as
+      | { count?: number | bigint }
+      | undefined;
+
+    return Number(row?.count ?? 0);
   }
 
   markSongReady(input: {
@@ -469,10 +493,71 @@ export class SQLiteSongRepository {
     return this.findSongForUser(input.userId, input.songId);
   }
 
-  deleteSongForUser(userId: string, songId: string) {
-    const result = this.db.prepare("DELETE FROM songs WHERE user_id = ? AND id = ?").run(userId, songId);
+  deleteSongForUser(userId: string, songId: string, now = new Date()) {
+    if (!this.findSongForUser(userId, songId)) {
+      return false;
+    }
 
-    return Number(result.changes) > 0;
+    const deletedAt = toSqlDate(now);
+
+    this.db.exec("BEGIN;");
+
+    try {
+      this.db
+        .prepare(
+          `
+            DELETE FROM playlist_songs
+            WHERE song_id = ?
+              AND playlist_id IN (
+                SELECT id
+                FROM playlists
+                WHERE user_id = ?
+              )
+          `
+        )
+        .run(songId, userId);
+      this.db
+        .prepare(
+          `
+            DELETE FROM likes
+            WHERE user_id = ? AND song_id = ?
+          `
+        )
+        .run(userId, songId);
+      this.db
+        .prepare(
+          `
+            DELETE FROM import_jobs
+            WHERE user_id = ? AND song_id = ?
+          `
+        )
+        .run(userId, songId);
+      this.db
+        .prepare(
+          `
+            UPDATE playback_state
+            SET song_id = NULL, updated_at = ?
+            WHERE user_id = ? AND song_id = ?
+          `
+        )
+        .run(deletedAt, userId, songId);
+      const result = this.db
+        .prepare(
+          `
+            UPDATE songs
+            SET deleted_at = ?, updated_at = ?
+            WHERE user_id = ? AND id = ? AND deleted_at IS NULL
+          `
+        )
+        .run(deletedAt, deletedAt, userId, songId);
+
+      this.db.exec("COMMIT;");
+
+      return Number(result.changes) > 0;
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
   }
 
   likeSong(input: { userId: string; songId: string; now?: Date }) {
@@ -505,7 +590,10 @@ export class SQLiteSongRepository {
           FROM likes l
           INNER JOIN songs s ON s.id = l.song_id
           LEFT JOIN external_sources es ON es.song_id = s.id
-          WHERE l.user_id = ? AND s.user_id = ? AND s.import_status = 'ready'
+          WHERE l.user_id = ?
+            AND s.user_id = ?
+            AND s.import_status = 'ready'
+            AND s.deleted_at IS NULL
           ORDER BY l.created_at DESC, s.id ASC
           LIMIT ?
         `
@@ -521,7 +609,10 @@ export class SQLiteSongRepository {
           SELECT COUNT(*) AS count
           FROM likes l
           INNER JOIN songs s ON s.id = l.song_id
-          WHERE l.user_id = ? AND s.user_id = ? AND s.import_status = 'ready'
+          WHERE l.user_id = ?
+            AND s.user_id = ?
+            AND s.import_status = 'ready'
+            AND s.deleted_at IS NULL
         `
       )
       .get(userId, userId) as { count?: number | bigint } | undefined;
@@ -846,11 +937,43 @@ export class SQLiteSongRepository {
             AND es.source_id = ?
             AND s.user_id = ?
             AND s.import_status = 'ready'
+            AND s.deleted_at IS NULL
           ORDER BY s.created_at DESC, s.id ASC
           LIMIT 1
         `
       )
       .get(input.userId, input.provider, input.sourceId, input.userId);
+
+    if (!row) {
+      return null;
+    }
+
+    const song = mapSong(row);
+
+    return song.externalSource ? { song, source: song.externalSource } : null;
+  }
+
+  findReadySongByExternalSource(input: {
+    provider: ExternalSourceProvider;
+    sourceId: string;
+  }) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT ${songSelectColumns("s")}
+          FROM external_sources es
+          INNER JOIN songs s ON s.id = es.song_id AND s.user_id = es.user_id
+          WHERE es.provider = ?
+            AND es.source_id = ?
+            AND s.import_status = 'ready'
+          ORDER BY
+            CASE WHEN s.deleted_at IS NULL THEN 0 ELSE 1 END,
+            s.created_at ASC,
+            s.id ASC
+          LIMIT 1
+        `
+      )
+      .get(input.provider, input.sourceId);
 
     if (!row) {
       return null;
@@ -1139,7 +1262,10 @@ export class SQLitePlaylistRepository {
             EXISTS(
               SELECT 1
               FROM songs
-              WHERE user_id = ? AND id = ? AND import_status = 'ready'
+              WHERE user_id = ?
+                AND id = ?
+                AND import_status = 'ready'
+                AND deleted_at IS NULL
             ) AS owns_song,
             COALESCE(
               (SELECT MAX(position) + 1 FROM playlist_songs WHERE playlist_id = ?),
@@ -1285,7 +1411,11 @@ export class SQLitePlaylistRepository {
           INNER JOIN playlist_songs ps ON ps.playlist_id = p.id
           INNER JOIN songs s ON s.id = ps.song_id
           LEFT JOIN external_sources es ON es.song_id = s.id
-          WHERE p.user_id = ? AND p.id = ? AND s.user_id = ?
+          WHERE p.user_id = ?
+            AND p.id = ?
+            AND s.user_id = ?
+            AND s.import_status = 'ready'
+            AND s.deleted_at IS NULL
           ORDER BY ps.position ASC, ps.added_at ASC, s.id ASC
         `
       )
@@ -1305,6 +1435,12 @@ export class SQLitePlaylistRepository {
 function songSelectColumns(songAlias: string) {
   return `
     ${songAlias}.*,
+    EXISTS (
+      SELECT 1
+      FROM likes liked_song
+      WHERE liked_song.user_id = ${songAlias}.user_id
+        AND liked_song.song_id = ${songAlias}.id
+    ) AS is_liked,
     es.id AS external_source_id,
     es.user_id AS external_source_user_id,
     es.song_id AS external_source_song_id,
@@ -1354,6 +1490,7 @@ function mapSong(row: Record<string, unknown>): Song {
     storagePath: String(row.storage_path),
     importStatus: row.import_status as ImportStatus,
     externalSource: row.external_source_id ? mapExternalSource(row) : null,
+    liked: Boolean(row.is_liked),
     createdAt: fromSqlDate(row.created_at),
     updatedAt: fromSqlDate(row.updated_at)
   };

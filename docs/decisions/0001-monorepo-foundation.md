@@ -1,6 +1,6 @@
 # 0001 Monorepo Foundation
 
-Tunely starts as an npm workspace with separate app, API, and shared packages.
+Broadside starts as an npm workspace with separate app, API, and shared packages.
 
 - `apps/app` owns the Expo Router client.
 - `apps/api` owns the Fastify API and exposes an app factory for tests.

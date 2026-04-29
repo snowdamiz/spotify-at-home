@@ -1,6 +1,7 @@
 'use client'
 
-import { LogIn, Music2 } from 'lucide-react'
+import { LogIn } from 'lucide-react'
+import { BroadsideLogo } from '@/components/broadside-logo'
 import { Button } from '@/components/ui/button'
 import { startGoogleSignIn } from '@/lib/api'
 
@@ -8,11 +9,9 @@ export function LoginScreen() {
   return (
     <main className="flex min-h-[100dvh] items-center justify-center bg-background px-5 text-foreground">
       <section className="w-full max-w-md rounded-xl bg-card p-8 text-center shadow-2xl shadow-black/30">
-        <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/10">
-          <Music2 className="h-9 w-9" />
-        </div>
+        <BroadsideLogo className="mx-auto h-20 w-20 rounded-2xl shadow-lg shadow-primary/10" />
         <div className="mt-6 text-xs font-black uppercase tracking-[0.24em] text-primary">
-          Tunely
+          Broadside
         </div>
         <h1 className="mt-3 text-3xl font-black tracking-tight">
           Sign in to continue
@@ -30,7 +29,7 @@ export function LoginScreen() {
           Continue with Google
         </Button>
         <p className="mt-5 text-xs text-muted-foreground">
-          Your library stays on the Tunely server you host.
+          Your library stays on the Broadside server you host.
         </p>
       </section>
     </main>

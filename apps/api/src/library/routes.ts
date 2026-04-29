@@ -1,4 +1,4 @@
-import { serializeExternalSource } from "@tunely/shared";
+import { serializeExternalSource } from "@broadside/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { readAccessToken } from "../auth/routes.js";
 import { AuthError, type AuthService, type PublicUser } from "../auth/service.js";
@@ -275,7 +275,7 @@ export function registerLibraryRoutes(app: FastifyInstance, options: LibraryRout
 
     return {
       liked: true,
-      song: serializeSong(song)
+      song: serializeSong({ ...song, liked: true })
     };
   });
 
@@ -415,6 +415,7 @@ function serializeSong(song: Song) {
     storagePath: song.storagePath,
     importStatus: song.importStatus,
     externalSource: song.externalSource ? serializeExternalSource(song.externalSource) : null,
+    liked: song.liked,
     createdAt: song.createdAt.toISOString(),
     updatedAt: song.updatedAt.toISOString()
   };

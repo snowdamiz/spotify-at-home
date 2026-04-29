@@ -1,5 +1,5 @@
 {
-  "name": "@tunely/api",
+  "name": "@broadside/api",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -16,8 +16,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1038.0",
     "dotenv": "16.4.7",
-    "fastify": "^5.3.2"
+    "fastify": "^5.3.2",
+    "youtube-dl-exec": "3.1.5"
   },
   "devDependencies": {
     "tsx": "^4.19.4"

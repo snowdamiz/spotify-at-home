@@ -1,49 +1,5 @@
 import type { SongSource } from './music-types'
 
-export type Platform = {
-  id: SongSource
-  name: string
-  hint: string
-  // Tailwind classes for the platform chip / badge
-  badgeClass: string
-  dotClass: string
-}
-
-export const PLATFORMS: Platform[] = [
-  {
-    id: 'youtube',
-    name: 'YouTube',
-    hint: 'youtube.com / youtu.be',
-    badgeClass: 'bg-red-500/15 text-red-300 border-red-500/30',
-    dotClass: 'bg-red-500',
-  },
-  {
-    id: 'soundcloud',
-    name: 'SoundCloud',
-    hint: 'soundcloud.com',
-    badgeClass: 'bg-orange-500/15 text-orange-300 border-orange-500/30',
-    dotClass: 'bg-orange-500',
-  },
-  {
-    id: 'rumble',
-    name: 'Rumble',
-    hint: 'rumble.com',
-    badgeClass: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
-    dotClass: 'bg-emerald-500',
-  },
-  {
-    id: 'url',
-    name: 'Direct link',
-    hint: 'Any audio URL',
-    badgeClass: 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30',
-    dotClass: 'bg-zinc-400',
-  },
-]
-
-export function getPlatform(id: SongSource): Platform | undefined {
-  return PLATFORMS.find((p) => p.id === id)
-}
-
 export function isLikelyUrl(value: string): boolean {
   const v = value.trim()
   if (!v) return false
@@ -52,6 +8,29 @@ export function isLikelyUrl(value: string): boolean {
     const withProtocol = v.startsWith('http') ? v : `https://${v}`
     const u = new URL(withProtocol)
     return !!u.hostname && u.hostname.includes('.')
+  } catch {
+    return false
+  }
+}
+
+export function isLikelyYouTubeUrl(value: string): boolean {
+  const v = value.trim()
+  if (!v) return false
+
+  try {
+    const withProtocol = /^[a-z][a-z\d+\-.]*:\/\//i.test(v)
+      ? v
+      : `https://${v}`
+    const hostname = new URL(withProtocol).hostname
+      .toLowerCase()
+      .replace(/^www\./, '')
+
+    return (
+      hostname === 'youtube.com' ||
+      hostname === 'm.youtube.com' ||
+      hostname === 'music.youtube.com' ||
+      hostname === 'youtu.be'
+    )
   } catch {
     return false
   }

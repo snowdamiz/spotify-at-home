@@ -3,7 +3,7 @@ import { SQLiteAuthRepository } from "./auth/repositories.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import { AuthService } from "./auth/service.js";
 import type { AuthRoutesOptions } from "./auth/routes.js";
-import { closeTunelyDatabase, openTunelyDatabase, runMigrations } from "./db/index.js";
+import { closeBroadsideDatabase, openBroadsideDatabase, runMigrations } from "./db/index.js";
 import { SQLitePlaylistRepository, SQLiteSongRepository, type SqliteDatabase } from "./db/index.js";
 import {
   createImportPolicyRuntimeConfig,
@@ -34,7 +34,7 @@ export function createApiApp(options: CreateApiAppOptions = {}) {
   const app = Fastify({
     logger: false
   });
-  const db = options.db ?? openTunelyDatabase();
+  const db = options.db ?? openBroadsideDatabase();
   const ownsDatabase = !options.db;
 
   runMigrations(db);
@@ -53,6 +53,7 @@ export function createApiApp(options: CreateApiAppOptions = {}) {
       "http://localhost:3000",
       "http://127.0.0.1:3000"
     ].filter((origin): origin is string => Boolean(origin)),
+    adminEmails: splitEnvList(process.env.ADMIN, process.env.BROADSIDE_ADMIN_USER_EMAILS),
     authRepository: new SQLiteAuthRepository(db),
     ...options.auth
   };
@@ -98,7 +99,7 @@ export function createApiApp(options: CreateApiAppOptions = {}) {
 
   if (ownsDatabase) {
     app.addHook("onClose", async () => {
-      closeTunelyDatabase(db);
+      closeBroadsideDatabase(db);
     });
   }
 
@@ -134,4 +135,11 @@ function registerCors(app: FastifyInstance) {
       return reply.code(204).send();
     }
   });
+}
+
+function splitEnvList(...values: Array<string | undefined>) {
+  return values
+    .flatMap((value) => value?.split(",") ?? [])
+    .map((item) => item.trim())
+    .filter(Boolean);
 }

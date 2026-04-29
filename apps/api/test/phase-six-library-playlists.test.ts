@@ -4,14 +4,15 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiApp } from "../src/app";
 import type { GoogleIdentity, GoogleOAuthClient } from "../src/auth/google";
-import { closeTunelyDatabase, openTunelyDatabase, type SqliteDatabase } from "../src/db";
+import { closeBroadsideDatabase, openBroadsideDatabase, type SqliteDatabase } from "../src/db";
 
 const authConfig = {
   googleClientId: "google-client-id",
   googleClientSecret: "google-client-secret",
-  googleRedirectUri: "https://api.tunely.test/api/auth/google/callback",
+  googleRedirectUri: "https://api.broadside.test/api/auth/google/callback",
   cookieSecure: true,
-  allowedReturnToOrigins: ["https://tunely.test"]
+  allowedReturnToOrigins: ["https://broadside.test"],
+  adminEmails: ["ada@example.com", "grace@example.com"]
 };
 
 describe("Phase 6 library, search, and playlist features", () => {
@@ -24,7 +25,7 @@ describe("Phase 6 library, search, and playlist features", () => {
     apps.clear();
 
     while (databases.length > 0) {
-      closeTunelyDatabase(databases.pop()!);
+      closeBroadsideDatabase(databases.pop()!);
     }
 
     while (dirs.length > 0) {
@@ -226,6 +227,8 @@ describe("Phase 6 library, search, and playlist features", () => {
     const token = await signIn({ sub: "google-subject-1", email: "ada@example.com" });
     const song = await importSong(app, token, { title: "Favorite Engine" });
 
+    expect(song.liked).toBe(false);
+
     for (let index = 0; index < 2; index += 1) {
       const liked = await app.inject({
         method: "POST",
@@ -235,6 +238,10 @@ describe("Phase 6 library, search, and playlist features", () => {
         }
       });
       expect(liked.statusCode).toBe(200);
+      expect(liked.json().song).toMatchObject({
+        id: song.id,
+        liked: true
+      });
     }
 
     const likedSummary = await app.inject({
@@ -252,6 +259,7 @@ describe("Phase 6 library, search, and playlist features", () => {
         likedSongs: [
           {
             id: song.id,
+            liked: true,
             title: "Favorite Engine"
           }
         ]
@@ -278,12 +286,26 @@ describe("Phase 6 library, search, and playlist features", () => {
     });
     expect(unlikedSummary.json().summary.counts.likedSongs).toBe(0);
     expect(unlikedSummary.json().summary.likedSongs).toEqual([]);
+
+    const songs = await app.inject({
+      method: "GET",
+      url: "/api/songs",
+      headers: {
+        authorization: `Bearer ${token}`
+      }
+    });
+    expect(songs.json().songs).toMatchObject([
+      {
+        id: song.id,
+        liked: false
+      }
+    ]);
   });
 
   function createTestApp() {
-    const dir = mkdtempSync(join(tmpdir(), "tunely-phase-six-"));
+    const dir = mkdtempSync(join(tmpdir(), "broadside-phase-six-"));
     const storageRoot = join(dir, "audio");
-    const db = openTunelyDatabase(join(dir, "tunely.sqlite"));
+    const db = openBroadsideDatabase(join(dir, "broadside.sqlite"));
     let nextIdentity: Pick<GoogleIdentity, "sub" | "email"> = {
       sub: "google-subject-1",
       email: "ada@example.com"
@@ -338,7 +360,7 @@ function createGoogleClient(
 async function signIn(app: ReturnType<typeof createApiApp>) {
   const start = await app.inject({
     method: "GET",
-    url: "/api/auth/google/start?mode=mobile&returnTo=tunely%3A%2F%2Fauth%2Fcallback"
+    url: "/api/auth/google/start?mode=mobile&returnTo=broadside%3A%2F%2Fauth%2Fcallback"
   });
   const state = new URL(String(start.headers.location)).searchParams.get("state");
   const callback = await app.inject({
@@ -387,6 +409,7 @@ async function importSong(
 
   return response.json().song as {
     id: string;
+    liked: boolean;
     title: string;
   };
 }

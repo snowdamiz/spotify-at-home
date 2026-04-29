@@ -4,18 +4,19 @@ import { join, relative } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiApp } from "../src/app";
 import type { GoogleOAuthClient } from "../src/auth/google";
-import { closeTunelyDatabase, openTunelyDatabase, type SqliteDatabase } from "../src/db";
+import { closeBroadsideDatabase, openBroadsideDatabase, type SqliteDatabase } from "../src/db";
 import type { AudioStorage } from "../src/songs/storage";
 
 const authConfig = {
   googleClientId: "google-client-id",
   googleClientSecret: "google-client-secret",
-  googleRedirectUri: "https://api.tunely.test/api/auth/google/callback",
+  googleRedirectUri: "https://api.broadside.test/api/auth/google/callback",
   cookieSecure: true,
-  allowedReturnToOrigins: ["https://tunely.test"]
+  allowedReturnToOrigins: ["https://broadside.test"],
+  adminEmails: ["ada@example.com", "grace@example.com"]
 };
 
-const tinyMp3 = Buffer.from("ID3 tunely test audio");
+const tinyMp3 = Buffer.from("ID3 broadside test audio");
 
 function createGoogleClient(): GoogleOAuthClient {
   return {
@@ -43,7 +44,7 @@ describe("Phase 4 audio imports and private storage", () => {
     apps.clear();
 
     while (databases.length > 0) {
-      closeTunelyDatabase(databases.pop()!);
+      closeBroadsideDatabase(databases.pop()!);
     }
 
     while (dirs.length > 0) {
@@ -206,7 +207,7 @@ describe("Phase 4 audio imports and private storage", () => {
     expect(library.json()).toEqual({ songs: [] });
   });
 
-  it("deletes song metadata and removes the private file", async () => {
+  it("removes a song from the user library while keeping cached audio", async () => {
     const { app } = createTestApp();
     const token = await signIn(app);
     const imported = await app.inject({
@@ -228,7 +229,7 @@ describe("Phase 4 audio imports and private storage", () => {
     });
 
     expect(deletion.statusCode).toBe(204);
-    expect(existsSync(song.storagePath)).toBe(false);
+    expect(existsSync(song.storagePath)).toBe(true);
 
     const deletedSong = await app.inject({
       method: "GET",
@@ -239,15 +240,26 @@ describe("Phase 4 audio imports and private storage", () => {
     });
 
     expect(deletedSong.statusCode).toBe(404);
+
+    const library = await app.inject({
+      method: "GET",
+      url: "/api/songs",
+      headers: {
+        authorization: `Bearer ${token}`
+      }
+    });
+
+    expect(library.statusCode).toBe(200);
+    expect(library.json()).toEqual({ songs: [] });
   });
 
   function createTestApp(options: {
     audioStorage?: AudioStorage;
     maxFileSizeBytes?: number;
   } = {}) {
-    const dir = mkdtempSync(join(tmpdir(), "tunely-phase-four-"));
+    const dir = mkdtempSync(join(tmpdir(), "broadside-phase-four-"));
     const storageRoot = join(dir, "audio");
-    const db = openTunelyDatabase(join(dir, "tunely.sqlite"));
+    const db = openBroadsideDatabase(join(dir, "broadside.sqlite"));
     const app = createApiApp({
       db,
       auth: {
@@ -272,7 +284,7 @@ describe("Phase 4 audio imports and private storage", () => {
 async function signIn(app: ReturnType<typeof createApiApp>) {
   const start = await app.inject({
     method: "GET",
-    url: "/api/auth/google/start?mode=mobile&returnTo=tunely%3A%2F%2Fauth%2Fcallback"
+    url: "/api/auth/google/start?mode=mobile&returnTo=broadside%3A%2F%2Fauth%2Fcallback"
   });
   const state = new URL(String(start.headers.location)).searchParams.get("state");
   const callback = await app.inject({

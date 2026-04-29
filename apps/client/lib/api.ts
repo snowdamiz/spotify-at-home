@@ -6,7 +6,7 @@ import {
   type ImportPolicyMode,
   type SerializedExternalImportJob,
   type SerializedExternalSource,
-} from '@tunely/shared'
+} from '@broadside/shared'
 import { pickCoverColor, type Song } from '@/lib/music-types'
 
 export interface CurrentUser {
@@ -14,6 +14,20 @@ export interface CurrentUser {
   email: string
   displayName: string | null
   avatarUrl: string | null
+  entryKeyRedeemedAt: string | null
+  hasEntryAccess: boolean
+  isAdmin: boolean
+}
+
+export interface EntryKeySummary {
+  id: string
+  keyPrefix: string
+  label: string | null
+  createdByUserId: string | null
+  createdAt: string
+  consumedByUserId: string | null
+  consumedByUserEmail: string | null
+  consumedAt: string | null
 }
 
 export interface ServerSong {
@@ -25,8 +39,10 @@ export interface ServerSong {
   durationMs: number | null
   mimeType: string
   sizeBytes: number
+  checksum: string
   importStatus: 'ready'
   externalSource?: SerializedExternalSource | null
+  liked: boolean
   createdAt: string
   updatedAt: string
 }
@@ -132,6 +148,94 @@ export async function logout() {
   })
 }
 
+export async function redeemEntryKey(key: string) {
+  const response = await fetch(apiUrl('/api/entry-keys/redeem'), {
+    body: JSON.stringify({ key }),
+    credentials: 'include',
+    headers: {
+      'content-type': 'application/json',
+    },
+    method: 'POST',
+  })
+
+  if (response.status === 401) {
+    return { status: 'anonymous' as const, user: null }
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      (await readApiErrorMessage(response)) ??
+        `Entry key redeem failed with status ${response.status}`,
+    )
+  }
+
+  const payload = (await response.json()) as { user: CurrentUser }
+
+  return { status: 'authenticated' as const, user: payload.user }
+}
+
+export async function fetchAdminEntryKeys() {
+  const response = await fetch(apiUrl('/api/admin/entry-keys'), {
+    credentials: 'include',
+  })
+
+  if (response.status === 403) {
+    return { entryKeys: [], status: 'forbidden' as const }
+  }
+
+  if (response.status === 401) {
+    return { entryKeys: [], status: 'anonymous' as const }
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      (await readApiErrorMessage(response)) ??
+        `Entry key request failed with status ${response.status}`,
+    )
+  }
+
+  const payload = (await response.json()) as { entryKeys: EntryKeySummary[] }
+
+  return { entryKeys: payload.entryKeys, status: 'authenticated' as const }
+}
+
+export async function createAdminEntryKey(label: string | null) {
+  const response = await fetch(apiUrl('/api/admin/entry-keys'), {
+    body: JSON.stringify({ label }),
+    credentials: 'include',
+    headers: {
+      'content-type': 'application/json',
+    },
+    method: 'POST',
+  })
+
+  if (response.status === 403) {
+    return { entryKey: null, secret: null, status: 'forbidden' as const }
+  }
+
+  if (response.status === 401) {
+    return { entryKey: null, secret: null, status: 'anonymous' as const }
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      (await readApiErrorMessage(response)) ??
+        `Entry key create failed with status ${response.status}`,
+    )
+  }
+
+  const payload = (await response.json()) as {
+    entryKey: EntryKeySummary
+    secret: string
+  }
+
+  return {
+    entryKey: payload.entryKey,
+    secret: payload.secret,
+    status: 'created' as const,
+  }
+}
+
 export async function fetchSongs() {
   const response = await fetch(apiUrl('/api/songs'), {
     credentials: 'include',
@@ -229,6 +333,159 @@ export async function searchLibrary(
   }
 }
 
+export async function createPlaylist(input: {
+  name: string
+  description?: string | null
+  color?: string | null
+}) {
+  const response = await fetch(apiUrl('/api/playlists'), {
+    body: JSON.stringify(input),
+    credentials: 'include',
+    headers: {
+      'content-type': 'application/json',
+    },
+    method: 'POST',
+  })
+
+  if (response.status === 401) {
+    return { playlist: null, status: 'anonymous' as const }
+  }
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as
+      | { error?: { message?: string } }
+      | null
+    throw new Error(
+      payload?.error?.message ??
+        `Create playlist failed with status ${response.status}`,
+    )
+  }
+
+  const payload = (await response.json()) as { playlist: ServerPlaylistDetail }
+
+  return { playlist: payload.playlist, status: 'authenticated' as const }
+}
+
+export async function updatePlaylist(
+  playlistId: string,
+  input: {
+    name?: string
+    description?: string | null
+    color?: string | null
+  },
+) {
+  const response = await fetch(
+    apiUrl(`/api/playlists/${encodeURIComponent(playlistId)}`),
+    {
+      body: JSON.stringify(input),
+      credentials: 'include',
+      headers: {
+        'content-type': 'application/json',
+      },
+      method: 'PUT',
+    },
+  )
+
+  if (response.status === 401) {
+    return { playlist: null, status: 'anonymous' as const }
+  }
+
+  if (response.status === 404) {
+    return { playlist: null, status: 'not-found' as const }
+  }
+
+  if (!response.ok) {
+    throw new Error(`Update playlist failed with status ${response.status}`)
+  }
+
+  const payload = (await response.json()) as { playlist: ServerPlaylistDetail }
+
+  return { playlist: payload.playlist, status: 'authenticated' as const }
+}
+
+export async function deletePlaylist(playlistId: string) {
+  const response = await fetch(
+    apiUrl(`/api/playlists/${encodeURIComponent(playlistId)}`),
+    {
+      credentials: 'include',
+      method: 'DELETE',
+    },
+  )
+
+  if (response.status === 401) {
+    return { status: 'anonymous' as const }
+  }
+
+  if (!response.ok && response.status !== 204) {
+    throw new Error(`Delete playlist failed with status ${response.status}`)
+  }
+
+  return { status: 'authenticated' as const }
+}
+
+export async function addSongToPlaylist(playlistId: string, songId: string) {
+  const response = await fetch(
+    apiUrl(`/api/playlists/${encodeURIComponent(playlistId)}/songs`),
+    {
+      body: JSON.stringify({ songId }),
+      credentials: 'include',
+      headers: {
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    },
+  )
+
+  if (response.status === 401) {
+    return { playlist: null, status: 'anonymous' as const }
+  }
+
+  if (response.status === 404) {
+    return { playlist: null, status: 'not-found' as const }
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      `Add song to playlist failed with status ${response.status}`,
+    )
+  }
+
+  const payload = (await response.json()) as { playlist: ServerPlaylistDetail }
+
+  return { playlist: payload.playlist, status: 'authenticated' as const }
+}
+
+export async function removeSongFromPlaylist(
+  playlistId: string,
+  songId: string,
+) {
+  const response = await fetch(
+    apiUrl(
+      `/api/playlists/${encodeURIComponent(playlistId)}/songs/${encodeURIComponent(songId)}`,
+    ),
+    {
+      credentials: 'include',
+      method: 'DELETE',
+    },
+  )
+
+  if (response.status === 401) {
+    return { status: 'anonymous' as const }
+  }
+
+  if (response.status === 404) {
+    return { status: 'not-found' as const }
+  }
+
+  if (!response.ok && response.status !== 204) {
+    throw new Error(
+      `Remove song from playlist failed with status ${response.status}`,
+    )
+  }
+
+  return { status: 'authenticated' as const }
+}
+
 export async function fetchPlaylist(playlistId: string) {
   const response = await fetch(
     apiUrl(`/api/playlists/${encodeURIComponent(playlistId)}`),
@@ -296,6 +553,27 @@ export async function unlikeSong(songId: string) {
   return { liked: false, status: 'authenticated' as const }
 }
 
+export async function deleteSong(songId: string) {
+  const response = await fetch(apiUrl(`/api/songs/${encodeURIComponent(songId)}`), {
+    credentials: 'include',
+    method: 'DELETE',
+  })
+
+  if (response.status === 401) {
+    return { status: 'anonymous' as const }
+  }
+
+  if (response.status === 404) {
+    return { status: 'not-found' as const }
+  }
+
+  if (!response.ok && response.status !== 204) {
+    throw new Error(`Delete song request failed with status ${response.status}`)
+  }
+
+  return { status: 'authenticated' as const }
+}
+
 export async function updatePlaybackState(input: {
   songId: string | null
   positionMs: number
@@ -335,6 +613,9 @@ export async function requestSongCacheIntent(songId: string) {
 
   const payload = (await response.json()) as {
     cacheIntent: {
+      checksum: string
+      mimeType: string
+      sizeBytes: number
       songId: string
       streamUrl: string
     }
@@ -395,8 +676,20 @@ export async function importAudioFiles(
 }
 
 export async function discoverYouTubeUrl(url: string) {
+  return discoverYouTube({ url })
+}
+
+export async function searchYouTube(query: string, limit = 10) {
+  return discoverYouTube({ limit, query })
+}
+
+async function discoverYouTube(requestPayload: {
+  limit?: number
+  query?: string
+  url?: string
+}) {
   const response = await fetch(apiUrl('/api/external-discovery/youtube'), {
-    body: JSON.stringify({ url }),
+    body: JSON.stringify(requestPayload),
     credentials: 'include',
     headers: {
       'content-type': 'application/json',
@@ -504,9 +797,11 @@ export function serverSongToSong(song: ServerSong): Song {
     album: song.album ?? undefined,
     artist,
     coverColor: pickCoverColor(song.title + artist),
+    coverImageUrl: external?.thumbnailUrl ?? undefined,
     dateAdded: Date.parse(song.createdAt),
     duration: song.durationMs ? Math.round(song.durationMs / 1000) : 0,
     id: song.id,
+    liked: Boolean(song.liked),
     serverSong: song,
     source: external?.provider ?? 'upload',
     sourceUrl: external?.canonicalUrl,
@@ -556,6 +851,25 @@ export function songSubtitle(song: ServerSong) {
 }
 
 export type LibraryLoadStatus = ApiStatus | 'loading' | 'error'
+
+async function readApiErrorMessage(response: Response) {
+  const payload = (await response.json().catch(() => null)) as
+    | {
+        error?: string | { message?: string }
+        message?: string
+      }
+    | null
+
+  if (typeof payload?.message === 'string') {
+    return payload.message
+  }
+
+  if (typeof payload?.error === 'object') {
+    return payload.error.message ?? null
+  }
+
+  return null
+}
 
 function blobToBase64(blob: Blob) {
   return new Promise<string>((resolve, reject) => {

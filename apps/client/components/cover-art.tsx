@@ -1,7 +1,11 @@
+'use client'
+
+import { useEffect, useState } from 'react'
 import { cn } from '@/lib/utils'
 
 type CoverArtProps = {
   colorClass: string
+  imageUrl?: string | null
   title: string
   size?: 'sm' | 'md' | 'lg' | 'xl' | 'full'
   rounded?: 'md' | 'lg' | 'xl' | '2xl'
@@ -25,11 +29,19 @@ const roundedMap = {
 
 export function CoverArt({
   colorClass,
+  imageUrl,
   title,
   size = 'md',
   rounded = 'md',
   className,
 }: CoverArtProps) {
+  const [imageFailed, setImageFailed] = useState(false)
+  const showImage = Boolean(imageUrl && !imageFailed)
+
+  useEffect(() => {
+    setImageFailed(false)
+  }, [imageUrl])
+
   const initials = title
     .split(' ')
     .filter(Boolean)
@@ -48,9 +60,21 @@ export function CoverArt({
       )}
       aria-hidden="true"
     >
-      <span className="font-bold tracking-tight text-foreground/95 drop-shadow-sm">
-        {initials || '♪'}
-      </span>
+      {showImage ? (
+        <img
+          alt=""
+          src={imageUrl ?? undefined}
+          className="absolute inset-0 h-full w-full object-cover"
+          draggable={false}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setImageFailed(true)}
+        />
+      ) : (
+        <span className="font-bold tracking-tight text-foreground/95 drop-shadow-sm">
+          {initials || '♪'}
+        </span>
+      )}
     </div>
   )
 }

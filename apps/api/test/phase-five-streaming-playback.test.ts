@@ -4,18 +4,19 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiApp } from "../src/app";
 import type { GoogleIdentity, GoogleOAuthClient } from "../src/auth/google";
-import { closeTunelyDatabase, openTunelyDatabase, type SqliteDatabase } from "../src/db";
+import { closeBroadsideDatabase, openBroadsideDatabase, type SqliteDatabase } from "../src/db";
 import { parseRangeHeader } from "../src/songs/range";
 
 const authConfig = {
   googleClientId: "google-client-id",
   googleClientSecret: "google-client-secret",
-  googleRedirectUri: "https://api.tunely.test/api/auth/google/callback",
+  googleRedirectUri: "https://api.broadside.test/api/auth/google/callback",
   cookieSecure: true,
-  allowedReturnToOrigins: ["https://tunely.test"]
+  allowedReturnToOrigins: ["https://broadside.test"],
+  adminEmails: ["ada@example.com", "grace@example.com"]
 };
 
-const tinyMp3 = Buffer.from("ID3 tunely test audio");
+const tinyMp3 = Buffer.from("ID3 broadside test audio");
 
 describe("Phase 5 streaming playback and hybrid cache API", () => {
   const apps = new Set<ReturnType<typeof createApiApp>>();
@@ -27,7 +28,7 @@ describe("Phase 5 streaming playback and hybrid cache API", () => {
     apps.clear();
 
     while (databases.length > 0) {
-      closeTunelyDatabase(databases.pop()!);
+      closeBroadsideDatabase(databases.pop()!);
     }
 
     while (dirs.length > 0) {
@@ -246,6 +247,9 @@ describe("Phase 5 streaming playback and hybrid cache API", () => {
     expect(owned.statusCode).toBe(202);
     expect(owned.json()).toMatchObject({
       cacheIntent: {
+        checksum: expect.stringMatching(/^sha256:/),
+        mimeType: "audio/mpeg",
+        sizeBytes: tinyMp3.byteLength,
         songId: imported.song.id,
         streamUrl: `/api/songs/${imported.song.id}/stream`
       }
@@ -253,9 +257,9 @@ describe("Phase 5 streaming playback and hybrid cache API", () => {
   });
 
   function createTestApp() {
-    const dir = mkdtempSync(join(tmpdir(), "tunely-phase-five-"));
+    const dir = mkdtempSync(join(tmpdir(), "broadside-phase-five-"));
     const storageRoot = join(dir, "audio");
-    const db = openTunelyDatabase(join(dir, "tunely.sqlite"));
+    const db = openBroadsideDatabase(join(dir, "broadside.sqlite"));
     let nextIdentity: Pick<GoogleIdentity, "sub" | "email"> = {
       sub: "google-subject-1",
       email: "ada@example.com"
@@ -310,7 +314,7 @@ function createGoogleClient(
 async function signIn(app: ReturnType<typeof createApiApp>) {
   const start = await app.inject({
     method: "GET",
-    url: "/api/auth/google/start?mode=mobile&returnTo=tunely%3A%2F%2Fauth%2Fcallback"
+    url: "/api/auth/google/start?mode=mobile&returnTo=broadside%3A%2F%2Fauth%2Fcallback"
   });
   const state = new URL(String(start.headers.location)).searchParams.get("state");
   const callback = await app.inject({

@@ -1,12 +1,13 @@
 'use client'
 
 import { useState } from 'react'
-import { Heart, Plus, Search as SearchIcon } from 'lucide-react'
+import { Heart, ListMusic, Plus, Search as SearchIcon } from 'lucide-react'
 import { SongRow } from '@/components/song-row'
 import { CoverArt } from '@/components/cover-art'
 import { Button } from '@/components/ui/button'
 import { playlistSubtitle, type LibraryLoadStatus, type ServerPlaylist } from '@/lib/api'
 import { type CollectionRef, type Song } from '@/lib/music-types'
+import type { OfflineAudioStateMap } from '@/lib/offline-audio-cache'
 
 type LibraryViewProps = {
   songs: Song[]
@@ -15,7 +16,16 @@ type LibraryViewProps = {
   likedCount: number
   currentSongId: string | null
   isPlaying: boolean
+  offlineAudio: OfflineAudioStateMap
   onPlay: (song: Song) => void
+  onToggleSongLike?: (song: Song) => void
+  onToggleSongOffline: (song: Song) => void
+  onDeleteSong: (song: Song) => void
+  onAddSongToPlaylist: (song: Song, playlistId: string) => void
+  onCreatePlaylistWithSong: (song: Song) => void
+  onCreatePlaylistClick: () => void
+  deletingSongId: string | null
+  likingSongId?: string | null
   onImportClick: () => void
   onOpenCollection: (ref: CollectionRef) => void
 }
@@ -29,7 +39,16 @@ export function LibraryView({
   likedCount,
   currentSongId,
   isPlaying,
+  offlineAudio,
   onPlay,
+  onToggleSongOffline,
+  onToggleSongLike,
+  onDeleteSong,
+  onAddSongToPlaylist,
+  onCreatePlaylistWithSong,
+  onCreatePlaylistClick,
+  deletingSongId,
+  likingSongId,
   onImportClick,
   onOpenCollection,
 }: LibraryViewProps) {
@@ -106,39 +125,74 @@ export function LibraryView({
       </div>
 
       {/* Playlists */}
-          {showPlaylists && filteredPlaylists.length > 0 && (
+      {showPlaylists && (
         <section className="mb-6">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-            Playlists
-          </h2>
-          <ul className="space-y-1">
-            {filteredPlaylists.map((p) => (
-              <li key={p.id}>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onOpenCollection({ kind: 'playlist', id: p.id })
-                  }
-                  className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-card/80"
-                >
-                  <CoverArt
-                    colorClass={p.color ?? 'from-zinc-700 to-zinc-950'}
-                    title={p.name}
-                    size="md"
-                    rounded="md"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium">
-                      {p.name}
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+              Playlists
+            </h2>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onCreatePlaylistClick}
+              className="h-8 rounded-full px-3 text-xs"
+            >
+              <Plus className="mr-1 h-3.5 w-3.5" />
+              New playlist
+            </Button>
+          </div>
+          {filteredPlaylists.length > 0 ? (
+            <ul className="space-y-1">
+              {filteredPlaylists.map((p) => (
+                <li key={p.id}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onOpenCollection({ kind: 'playlist', id: p.id })
+                    }
+                    className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-card/80"
+                  >
+                    <CoverArt
+                      colorClass={p.color ?? 'from-zinc-700 to-zinc-950'}
+                      title={p.name}
+                      size="md"
+                      rounded="md"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium">
+                        {p.name}
+                      </div>
+                      <div className="truncate text-xs text-muted-foreground">
+                        Playlist &middot; {playlistSubtitle(p)}
+                      </div>
                     </div>
-                    <div className="truncate text-xs text-muted-foreground">
-                      Playlist &middot; {playlistSubtitle(p)}
-                    </div>
-                  </div>
-                </button>
-              </li>
-            ))}
-          </ul>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : playlists.length === 0 ? (
+            <button
+              type="button"
+              onClick={onCreatePlaylistClick}
+              className="flex w-full items-center gap-3 rounded-lg border border-dashed border-border px-3 py-3 text-left transition-colors hover:bg-card/40"
+            >
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md bg-card text-muted-foreground">
+                <ListMusic className="h-5 w-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">
+                  Create your first playlist
+                </div>
+                <div className="truncate text-xs text-muted-foreground">
+                  Group songs into a custom mix.
+                </div>
+              </div>
+            </button>
+          ) : (
+            <div className="py-6 text-center text-xs text-muted-foreground">
+              No playlists match.
+            </div>
+          )}
         </section>
       )}
 
@@ -155,13 +209,13 @@ export function LibraryView({
             </div>
           ) : libraryStatus === 'error' ? (
             <div className="py-10 text-center text-sm text-muted-foreground">
-              Could not reach the Tunely server.
+              Could not reach the Broadside server.
             </div>
           ) : songs.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-border bg-card/40 p-8 text-center">
               <h3 className="text-lg font-semibold">No songs yet</h3>
               <p className="mt-1 text-sm text-muted-foreground">
-                Upload audio from your device to store it on your Tunely server.
+                Upload audio from your device to store it on your Broadside server.
               </p>
               <Button onClick={onImportClick} className="mt-5 rounded-full">
                 <Plus className="mr-2 h-4 w-4" />
@@ -180,7 +234,20 @@ export function LibraryView({
                     song={song}
                     isActive={currentSongId === song.id}
                     isPlaying={isPlaying && currentSongId === song.id}
+                    offlineState={offlineAudio[song.id]}
                     onPlay={() => onPlay(song)}
+                    onToggleLike={
+                      onToggleSongLike ? () => onToggleSongLike(song) : undefined
+                    }
+                    onToggleOffline={() => onToggleSongOffline(song)}
+                    onDelete={() => onDeleteSong(song)}
+                    isDeleting={deletingSongId === song.id}
+                    isLiking={likingSongId === song.id}
+                    playlists={playlists}
+                    onAddToPlaylist={(playlistId) =>
+                      onAddSongToPlaylist(song, playlistId)
+                    }
+                    onCreatePlaylistWithSong={() => onCreatePlaylistWithSong(song)}
                   />
                 </li>
               ))}
