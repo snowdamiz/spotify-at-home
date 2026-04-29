@@ -1,5 +1,5 @@
 import { config as loadEnv } from "dotenv";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createApiApp } from "./app.js";
 
@@ -7,7 +7,9 @@ const apiRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 loadEnv({ path: resolve(apiRoot, ".env") });
 loadEnv({ path: resolve(apiRoot, "../..", ".env") });
 
-if (!process.env.BROADSIDE_DATABASE_PATH) {
+if (process.env.BROADSIDE_DATABASE_PATH) {
+  process.env.BROADSIDE_DATABASE_PATH = resolveDatabasePath(process.env.BROADSIDE_DATABASE_PATH);
+} else {
   process.env.BROADSIDE_DATABASE_PATH = resolve(apiRoot, "../..", "data", "broadside.sqlite");
 }
 
@@ -16,8 +18,31 @@ const host = process.env.HOST ?? "0.0.0.0";
 const app = createApiApp();
 
 try {
-  await app.listen({ host, port });
+  const address = await app.listen({ host, port });
+  console.info(`API server listening at ${address}`);
 } catch (error) {
-  app.log.error(error);
+  reportStartupError(error);
   process.exit(1);
+}
+
+function resolveDatabasePath(path: string) {
+  if (path === ":memory:" || isAbsolute(path)) {
+    return path;
+  }
+
+  return resolve(apiRoot, path);
+}
+
+function reportStartupError(error: unknown) {
+  console.error(`API server failed to start on ${host}:${port}.`);
+
+  if (isNodeError(error) && error.code === "EADDRINUSE") {
+    console.error(`Port ${port} is already in use. Stop the existing API process or set PORT to an open port.`);
+  }
+
+  console.error(error);
+}
+
+function isNodeError(error: unknown): error is Error & { code: string } {
+  return error instanceof Error && "code" in error && typeof error.code === "string";
 }
