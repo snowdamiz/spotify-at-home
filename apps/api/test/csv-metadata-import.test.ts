@@ -281,6 +281,9 @@ describe("CSV metadata imports", () => {
         })
       })
     );
+    expect(vi.mocked(youtubeProvider.search!).mock.calls.map(([query]) => query)).toEqual([
+      "Ada Moon Song"
+    ]);
   });
 
   it("fails low-confidence YouTube matches instead of importing unrelated audio", async () => {
@@ -300,7 +303,7 @@ describe("CSV metadata imports", () => {
       }))
     };
     const youtubeImportAdapter = createYouTubeImportAdapter();
-    const { app } = createTestApp({
+    const { app, db } = createTestApp({
       youtubeImportAdapter,
       youtubeProvider
     });
@@ -332,9 +335,205 @@ describe("CSV metadata imports", () => {
       headers: { authorization: `Bearer ${token}` }
     });
 
-    expect(status.json().items[0]).toMatchObject({
+    const failedItem = status.json().items[0];
+
+    expect(failedItem).toMatchObject({
       errorCode: "youtube_match_low_confidence",
+      searchQuery: "Ada Moon Song Lunar",
       status: "failed"
+    });
+    db.prepare("UPDATE csv_import_items SET search_query = ? WHERE id = ?").run(
+      "Ada Moon Song Lunar official audio",
+      failedItem.id
+    );
+
+    const legacyStatus = await app.inject({
+      method: "GET",
+      url: `/api/csv-imports/batches/${batch.json().batch.id}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(legacyStatus.json().items[0]).toMatchObject({
+      searchQuery: "Ada Moon Song Lunar"
+    });
+  });
+
+  it("imports Unicode titles, collaborator title variants, and duplicate same-track candidates", async () => {
+    const youtubeProvider: YouTubeDiscoveryClient = {
+      normalizeUrl: vi.fn(),
+      search: vi.fn(async (query, importPolicyMode) => {
+        const normalizedQuery = query.toLowerCase();
+
+        if (normalizedQuery.includes("улет")) {
+          return {
+            nextPageToken: null,
+            results: [
+              youtubeResult({
+                creator: "OXXXYMIRON FAMILY",
+                durationMs: 151000,
+                importPolicyMode,
+                sourceId: "youtubeUlet01",
+                title: "OXXXYMIRON - Улет (Official Audio)"
+              })
+            ]
+          };
+        }
+
+        if (normalizedQuery.includes("stay")) {
+          return {
+            nextPageToken: null,
+            results: [
+              youtubeResult({
+                creator: "Ace Khalifa Music",
+                durationMs: 142000,
+                importPolicyMode,
+                sourceId: "youtubeStay01",
+                title: "The Kid LAROI, Justin Bieber - Stay (Official Audio)"
+              })
+            ]
+          };
+        }
+
+        return {
+          nextPageToken: null,
+          results: [
+            youtubeResult({
+              creator: "Witt Lowry",
+              durationMs: 265000,
+              importPolicyMode,
+              sourceId: "youtubeMistake01",
+              title: "My Mistake (feat. Trippz Michaud)"
+            }),
+            youtubeResult({
+              creator: "RealityTracks",
+              durationMs: 266000,
+              importPolicyMode,
+              sourceId: "youtubeMistake02",
+              title: "Witt Lowry - My Mistake (feat. Trippz Michaud)"
+            })
+          ]
+        };
+      })
+    };
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app } = createTestApp({
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const files = [
+      csvFile("liked.csv", [
+        ["spotify:track:ulet", "Улет", "spotify:artist:oxxxymiron", "Oxxxymiron", "spotify:album:krasota", "Красота и Уродство", "spotify:artist:oxxxymiron", "Oxxxymiron", "2026-01-01", "https://i.scdn.co/image/ulet", "1", "1", "150900", "", "false", "50", "QMDA72177297", "", "2026-01-02T00:00:00Z"],
+        ["spotify:track:stay", "STAY (with Justin Bieber)", "spotify:artist:kid", "The Kid LAROI, Justin Bieber", "spotify:album:stay", "STAY (with Justin Bieber)", "spotify:artist:kid", "The Kid LAROI", "2026-01-01", "https://i.scdn.co/image/stay", "1", "2", "141805", "", "false", "50", "USSM12103949", "", "2026-01-03T00:00:00Z"],
+        ["spotify:track:mistake", "My Mistake (feat. Trippz Michaud)", "spotify:artist:witt", "Witt Lowry, Trippz Michaud", "spotify:album:dreaming", "Dreaming With Our Eyes Open", "spotify:artist:witt", "Witt Lowry", "2026-01-01", "https://i.scdn.co/image/mistake", "1", "3", "264375", "", "false", "50", "TCACI1505440", "", "2026-01-04T00:00:00Z"]
+      ])
+    ];
+
+    const batch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(batch.statusCode).toBe(202);
+    expect(batch.json().batch).toMatchObject({
+      completedItems: 3,
+      failedItems: 0,
+      status: "completed",
+      totalItems: 3
+    });
+    expect(youtubeImportAdapter.resolve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        discovery: expect.objectContaining({ sourceId: "youtubeUlet01" })
+      })
+    );
+    expect(youtubeImportAdapter.resolve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        discovery: expect.objectContaining({ sourceId: "youtubeStay01" })
+      })
+    );
+    expect(youtubeImportAdapter.resolve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        discovery: expect.objectContaining({ sourceId: "youtubeMistake01" })
+      })
+    );
+  });
+
+  it("rechecks low-confidence CSV items on retry after matcher improvements", async () => {
+    let searchCount = 0;
+    const youtubeProvider: YouTubeDiscoveryClient = {
+      normalizeUrl: vi.fn(),
+      search: vi.fn(async (_query, importPolicyMode) => {
+        searchCount += 1;
+
+        return {
+          nextPageToken: null,
+          results: [
+            searchCount <= 2
+              ? youtubeResult({
+                  creator: "Talk Channel",
+                  durationMs: 3600000,
+                  importPolicyMode,
+                  sourceId: `wrongPodcast${searchCount}`,
+                  title: "Completely Different Podcast Episode"
+                })
+              : youtubeResult({
+                  creator: "Ada Channel",
+                  durationMs: 180000,
+                  importPolicyMode,
+                  sourceId: "youtubeMoonRecheck01",
+                  title: "Moon Song Official Audio"
+                })
+          ]
+        };
+      })
+    };
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app } = createTestApp({
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const files = [
+      csvFile("liked.csv", [
+        ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"]
+      ])
+    ];
+
+    const batch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(batch.statusCode).toBe(202);
+    expect(batch.json().batch).toMatchObject({
+      completedItems: 0,
+      failedItems: 1,
+      status: "failed"
+    });
+
+    const retried = await app.inject({
+      method: "POST",
+      url: `/api/csv-imports/batches/${batch.json().batch.id}/retry`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(retried.statusCode).toBe(200);
+    expect(retried.json()).toMatchObject({
+      batch: {
+        completedItems: 1,
+        failedItems: 0,
+        status: "completed"
+      },
+      retriedItems: 1
+    });
+    expect(retried.json().items[0]).toMatchObject({
+      autoRetryable: false,
+      status: "completed",
+      youtubeSourceId: "youtubeMoonRecheck01"
     });
   });
 
@@ -343,14 +542,6 @@ describe("CSV metadata imports", () => {
       normalizeUrl: vi.fn(),
       search: vi
         .fn()
-        .mockRejectedValueOnce(
-          new YouTubeDiscoveryError(
-            "youtube_search_unavailable",
-            "YouTube search is temporarily unavailable.",
-            502,
-            true
-          )
-        )
         .mockRejectedValueOnce(
           new YouTubeDiscoveryError(
             "youtube_search_unavailable",
@@ -374,6 +565,7 @@ describe("CSV metadata imports", () => {
     };
     const youtubeImportAdapter = createYouTubeImportAdapter();
     const { app } = createTestApp({
+      recoverableSearchAttempts: 1,
       youtubeImportAdapter,
       youtubeProvider
     });
@@ -418,7 +610,255 @@ describe("CSV metadata imports", () => {
       status: "completed",
       youtubeSourceId: "youtubeMoonRetry01"
     });
-    expect(youtubeProvider.search).toHaveBeenCalledTimes(3);
+    expect(youtubeProvider.search).toHaveBeenCalledTimes(2);
+  });
+
+  it("resumes interrupted running CSV import items", async () => {
+    let allowMatch = false;
+    const youtubeProvider: YouTubeDiscoveryClient = {
+      normalizeUrl: vi.fn(),
+      search: vi.fn(async (_query, importPolicyMode) => ({
+        nextPageToken: null,
+        results: [
+          allowMatch
+            ? youtubeResult({
+                creator: "Ada Channel",
+                durationMs: 180000,
+                importPolicyMode,
+                sourceId: "youtubeMoonInterrupted01",
+                title: "Moon Song Official Audio"
+              })
+            : youtubeResult({
+                creator: "Talk Channel",
+                durationMs: 3600000,
+                importPolicyMode,
+                sourceId: "wrongPodcastInterrupted01",
+                title: "Completely Different Podcast Episode"
+              })
+        ]
+      }))
+    };
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app, db } = createTestApp({
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const files = [
+      csvFile("liked.csv", [
+        ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"]
+      ])
+    ];
+
+    const batch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(batch.statusCode).toBe(202);
+    expect(batch.json().batch).toMatchObject({
+      completedItems: 0,
+      failedItems: 1,
+      status: "failed"
+    });
+
+    const status = await app.inject({
+      method: "GET",
+      url: `/api/csv-imports/batches/${batch.json().batch.id}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    const item = status.json().items[0] as { id: string };
+    const now = new Date().toISOString();
+
+    db.prepare(
+      `
+        UPDATE csv_import_items
+        SET status = 'running',
+            error_code = NULL,
+            error_message = NULL,
+            updated_at = ?
+        WHERE id = ?
+      `
+    ).run(now, item.id);
+    db.prepare(
+      `
+        UPDATE csv_import_batches
+        SET status = 'running',
+            failed_items = 0,
+            completed_items = 0,
+            completed_at = NULL
+        WHERE id = ?
+      `
+    ).run(batch.json().batch.id);
+
+    allowMatch = true;
+
+    const retried = await app.inject({
+      method: "POST",
+      url: `/api/csv-imports/batches/${batch.json().batch.id}/retry`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(retried.statusCode).toBe(200);
+    expect(retried.json()).toMatchObject({
+      batch: {
+        completedItems: 1,
+        failedItems: 0,
+        status: "completed"
+      },
+      retriedItems: 1
+    });
+    expect(retried.json().items[0]).toMatchObject({
+      errorCode: null,
+      status: "completed",
+      youtubeSourceId: "youtubeMoonInterrupted01"
+    });
+  });
+
+  it("automatically retries transient YouTube search failures during CSV import", async () => {
+    const youtubeProvider: YouTubeDiscoveryClient = {
+      normalizeUrl: vi.fn(),
+      search: vi
+        .fn()
+        .mockRejectedValueOnce(
+          new YouTubeDiscoveryError(
+            "youtube_search_unavailable",
+            "YouTube search is temporarily unavailable.",
+            502,
+            true
+          )
+        )
+        .mockImplementation(async (_query, importPolicyMode) => ({
+          nextPageToken: null,
+          results: [
+            youtubeResult({
+              creator: "Ada Channel",
+              durationMs: 180000,
+              importPolicyMode,
+              sourceId: "youtubeMoonAutoRetry01",
+              title: "Moon Song Official Audio"
+            })
+          ]
+        }))
+    };
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app } = createTestApp({
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const files = [
+      csvFile("liked.csv", [
+        ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"]
+      ])
+    ];
+
+    const batch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(batch.statusCode).toBe(202);
+    expect(batch.json().batch).toMatchObject({
+      completedItems: 1,
+      failedItems: 0,
+      status: "completed"
+    });
+
+    const status = await app.inject({
+      method: "GET",
+      url: `/api/csv-imports/batches/${batch.json().batch.id}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(status.json().items[0]).toMatchObject({
+      status: "completed",
+      youtubeSourceId: "youtubeMoonAutoRetry01"
+    });
+    expect(youtubeProvider.search).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps importing after low-confidence rows by limiting CSV auto-match search fallbacks", async () => {
+    let searchCount = 0;
+    const youtubeProvider: YouTubeDiscoveryClient = {
+      normalizeUrl: vi.fn(),
+      search: vi.fn(async (query, importPolicyMode) => {
+        searchCount += 1;
+
+        if (searchCount > 5) {
+          throw new YouTubeDiscoveryError(
+            "youtube_search_unavailable",
+            "YouTube search is temporarily unavailable.",
+            502,
+            true
+          );
+        }
+
+        const lowerQuery = query.toLowerCase();
+        const isRiver = lowerQuery.includes("river song");
+
+        return {
+          nextPageToken: null,
+          results: [
+            isRiver
+              ? youtubeResult({
+                  creator: "Lin Channel",
+                  durationMs: 220000,
+                  importPolicyMode,
+                  sourceId: "youtubeRiver01",
+                  title: "River Song Official Audio"
+                })
+              : youtubeResult({
+                  creator: "Talk Channel",
+                  durationMs: 3600000,
+                  importPolicyMode,
+                  sourceId: `weakResult${searchCount}`,
+                  title: "Completely Different Podcast Episode"
+                })
+          ]
+        };
+      })
+    };
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app } = createTestApp({
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const files = [
+      csvFile("liked.csv", [
+        ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"],
+        ["spotify:track:road", "Road Song", "spotify:artist:grace", "Grace", "spotify:album:drive", "Drive", "spotify:artist:grace", "Grace", "2026-01-01", "https://i.scdn.co/image/road", "1", "2", "210000", "", "false", "40", "USROAD000001", "", "2026-01-03T00:00:00Z"],
+        ["spotify:track:river", "River Song", "spotify:artist:lin", "Lin", "spotify:album:water", "Water", "spotify:artist:lin", "Lin", "2026-01-01", "https://i.scdn.co/image/river", "1", "3", "220000", "", "false", "30", "USRIVER00001", "", "2026-01-04T00:00:00Z"]
+      ])
+    ];
+
+    const batch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(batch.statusCode).toBe(202);
+    expect(batch.json().batch).toMatchObject({
+      completedItems: 1,
+      failedItems: 2,
+      status: "failed",
+      totalItems: 3
+    });
+    expect(youtubeProvider.search).toHaveBeenCalledTimes(5);
+    expect(youtubeImportAdapter.resolve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        discovery: expect.objectContaining({
+          sourceId: "youtubeRiver01"
+        })
+      })
+    );
   });
 
   it("pauses after repeated recoverable YouTube search failures and leaves untried CSV rows pending", async () => {
@@ -649,6 +1089,7 @@ describe("CSV metadata imports", () => {
   });
 
   function createTestApp(input: {
+    csvYouTubeSearchIntervalMs?: number;
     processImportsInline?: boolean;
     recoverableFailurePauseThreshold?: number;
     recoverableSearchAttempts?: number;
@@ -665,6 +1106,7 @@ describe("CSV metadata imports", () => {
         googleOAuthClient: createGoogleClient()
       },
       csvImports: {
+        csvYouTubeSearchIntervalMs: input.csvYouTubeSearchIntervalMs ?? 0,
         processImportsInline: input.processImportsInline ?? true,
         recoverableFailurePauseThreshold: input.recoverableFailurePauseThreshold,
         recoverableSearchAttempts: input.recoverableSearchAttempts,
@@ -688,7 +1130,7 @@ describe("CSV metadata imports", () => {
     databases.push(db);
     dirs.push(dir);
 
-    return { app, storageRoot };
+    return { app, db, storageRoot };
   }
 });
 

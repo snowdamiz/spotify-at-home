@@ -110,6 +110,8 @@ function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
+const CSV_IMPORT_STATUS_REFRESH_FAILURE_LIMIT = 4
+
 function summarizeCsvImportBatches(batches: CsvImportBatch[]) {
   return batches.reduce(
     (summary, batch) => ({
@@ -156,21 +158,55 @@ function summarizeCsvImportStates(states: CsvImportBatchState[]) {
 }
 
 function csvImportStatusText(summary: ReturnType<typeof summarizeCsvImportStates>) {
-  if (!summary.isRunning && summary.pendingItems > 0 && summary.autoRetryableItems > 0) {
+  if (summary.isRunning && summary.failedItems > 0) {
+    return summary.failedItems === 1
+      ? `${summary.completedItems} done, 1 row needs attention`
+      : `${summary.completedItems} done, ${summary.failedItems} rows need attention`
+  }
+
+  if (!summary.isRunning && summary.pendingItems > 0) {
     return `${summary.completedItems} done, ${summary.failedItems} failed, ${summary.pendingItems} paused`
   }
 
   return `${summary.completedItems} done, ${summary.failedItems} failed`
 }
 
+function csvImportActiveMessage(summary: ReturnType<typeof summarizeCsvImportStates>) {
+  if (!summary.isRunning || summary.userMatchItems === 0) {
+    return undefined
+  }
+
+  return summary.userMatchItems === 1
+    ? '1 row needs a match; import is still running'
+    : `${summary.userMatchItems} rows need matches; import is still running`
+}
+
 function csvImportFinalMessage(summary: ReturnType<typeof summarizeCsvImportStates>) {
-  if (summary.pendingItems > 0 && summary.autoRetryableItems > 0) {
-    return `${summary.completedItems} imported, ${summary.failedItems} failed, ${summary.pendingItems} waiting to retry`
+  if (summary.pendingItems > 0) {
+    return `${summary.completedItems} imported, ${summary.failedItems} failed, ${summary.pendingItems} waiting to resume`
   }
 
   return summary.failedItems > 0
     ? `${summary.completedItems} imported, ${summary.failedItems} failed`
     : 'CSV playlists imported'
+}
+
+function csvImportMessage(summary: ReturnType<typeof summarizeCsvImportStates>) {
+  return summary.isRunning
+    ? csvImportActiveMessage(summary)
+    : csvImportFinalMessage(summary)
+}
+
+function csvImportDownloadStatus(
+  summary: ReturnType<typeof summarizeCsvImportStates>,
+): Download['status'] {
+  if (summary.isRunning) {
+    return 'downloading'
+  }
+
+  return summary.failedItems > 0 || summary.pendingItems > 0
+    ? 'error'
+    : 'complete'
 }
 
 function csvImportProgress(
@@ -191,6 +227,21 @@ function csvImportItemsForBatch(
     ...(existingItems?.filter((item) => item.batchId !== batchId) ?? []),
     ...nextItems,
   ]
+}
+
+function nextCsvManualMatchItem(
+  states: CsvImportBatchState[],
+  promptedItemIds: Set<string>,
+  activeItemId: string | null,
+) {
+  return states
+    .flatMap((state) => state.items)
+    .find(
+      (item) =>
+        item.userMatchRequired &&
+        item.id !== activeItemId &&
+        !promptedItemIds.has(item.id),
+    )
 }
 
 export function MusicApp() {
@@ -271,6 +322,11 @@ function AuthenticatedMusicApp() {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const playNextRef = useRef<() => void>(() => undefined)
   const canceledCsvImportIdsRef = useRef<Set<string>>(new Set())
+  const promptedCsvManualMatchIdsRef = useRef<Set<string>>(new Set())
+  const activeCsvManualMatchItemIdRef = useRef<string | null>(null)
+  const promptCsvManualMatchRef = useRef<
+    (downloadId: string, item: CsvImportItem) => void
+  >(() => undefined)
 
   const serverSongs = useMemo(
     () =>
@@ -334,6 +390,10 @@ function AuthenticatedMusicApp() {
       return changed ? next : current
     })
   }, [songsState.songs])
+
+  useEffect(() => {
+    activeCsvManualMatchItemIdRef.current = csvManualMatchTarget?.item.id ?? null
+  }, [csvManualMatchTarget])
 
   useEffect(() => {
     let cancelled = false
@@ -1041,19 +1101,23 @@ function AuthenticatedMusicApp() {
 
       setDownloads((prev) =>
         prev.map((download) =>
-          download.id === downloadId
-            ? {
-                ...download,
-                artist: csvImportStatusText(summary),
-                csvImportBatches: states.map((state) => state.batch),
-                csvImportItems: states.flatMap((state) => state.items),
-                progress: csvImportProgress(summary, download.progress),
-              }
-            : download,
+            download.id === downloadId
+              ? {
+                  ...download,
+                  artist: csvImportStatusText(summary),
+                  csvImportBatches: states.map((state) => state.batch),
+                  csvImportItems: states.flatMap((state) => state.items),
+                  message: csvImportMessage(summary),
+                  progress: csvImportProgress(summary, download.progress),
+                  retrying: false,
+                  status: csvImportDownloadStatus(summary),
+                }
+              : download,
         ),
       )
 
       let pollLostBatch = false
+      let consecutiveRefreshFailures = 0
 
       while (
         summary.isRunning &&
@@ -1065,29 +1129,45 @@ function AuthenticatedMusicApp() {
           break
         }
 
-        states = await Promise.all(
+        const refreshedStates = await Promise.all(
           states.map(async (state) => {
             if (
               state.batch.status !== 'pending' &&
               state.batch.status !== 'running'
             ) {
-              return state
+              return { failed: false, state }
             }
 
-            const next = await fetchCsvImportBatch(state.batch.id)
+            try {
+              const next = await fetchCsvImportBatch(state.batch.id)
 
-            if (next.status !== 'authenticated' || !next.batch) {
-              pollLostBatch = true
-              return state
-            }
+              if (next.status !== 'authenticated' || !next.batch) {
+                return { failed: true, state }
+              }
 
-            return {
-              batch: next.batch,
-              items: next.items,
+              return {
+                failed: false,
+                state: {
+                  batch: next.batch,
+                  items: next.items,
+                },
+              }
+            } catch {
+              return { failed: true, state }
             }
           }),
         )
 
+        if (refreshedStates.some((result) => result.failed)) {
+          consecutiveRefreshFailures += 1
+          pollLostBatch =
+            consecutiveRefreshFailures >=
+            CSV_IMPORT_STATUS_REFRESH_FAILURE_LIMIT
+        } else {
+          consecutiveRefreshFailures = 0
+        }
+
+        states = refreshedStates.map((result) => result.state)
         summary = summarizeCsvImportStates(states)
         setDownloads((prev) =>
           prev.map((download) =>
@@ -1097,11 +1177,31 @@ function AuthenticatedMusicApp() {
                   artist: csvImportStatusText(summary),
                   csvImportBatches: states.map((state) => state.batch),
                   csvImportItems: states.flatMap((state) => state.items),
+                  message: csvImportMessage(summary),
                   progress: csvImportProgress(summary, download.progress),
+                  retrying: false,
+                  status: csvImportDownloadStatus(summary),
                 }
               : download,
           ),
         )
+
+        if (pollLostBatch) {
+          break
+        }
+
+        if (!activeCsvManualMatchItemIdRef.current) {
+          const manualMatchItem = nextCsvManualMatchItem(
+            states,
+            promptedCsvManualMatchIdsRef.current,
+            activeCsvManualMatchItemIdRef.current,
+          )
+
+          if (manualMatchItem) {
+            promptedCsvManualMatchIdsRef.current.add(manualMatchItem.id)
+            promptCsvManualMatchRef.current(downloadId, manualMatchItem)
+          }
+        }
       }
 
       if (canceledCsvImportIdsRef.current.has(downloadId)) {
@@ -1140,14 +1240,27 @@ function AuthenticatedMusicApp() {
                 canceling: false,
                 csvImportBatches: states.map((state) => state.batch),
                 csvImportItems: states.flatMap((state) => state.items),
-                message: csvImportFinalMessage(summary),
+                message: csvImportMessage(summary),
                 progress: csvImportProgress(summary, 1),
                 retrying: false,
-                status: summary.failedItems > 0 ? 'error' : 'complete',
+                status: csvImportDownloadStatus(summary),
               }
             : download,
         ),
       )
+
+      if (!activeCsvManualMatchItemIdRef.current) {
+        const manualMatchItem = nextCsvManualMatchItem(
+          states,
+          promptedCsvManualMatchIdsRef.current,
+          activeCsvManualMatchItemIdRef.current,
+        )
+
+        if (manualMatchItem) {
+          promptedCsvManualMatchIdsRef.current.add(manualMatchItem.id)
+          promptCsvManualMatchRef.current(downloadId, manualMatchItem)
+        }
+      }
       refreshLibrary()
       setCollection(null)
       setView('library')
@@ -1581,17 +1694,70 @@ function AuthenticatedMusicApp() {
     }
   }, [])
 
+  const searchCsvManualMatchQuery = useCallback(async (rawInput: string) => {
+    setIsDiscoveringLink(true)
+    setExternalResults([])
+
+    try {
+      const result = isLikelyYouTubeUrl(rawInput)
+        ? await discoverYouTubeUrl(rawInput)
+        : await searchYouTube(rawInput, 12)
+      const discoveries = result.discovery?.results ?? []
+
+      setExternalResults(discoveries)
+
+      if (result.status === 'anonymous') {
+        toast({
+          title: 'Could not search YouTube',
+          description: 'Sign in again to choose a CSV match.',
+          variant: 'destructive',
+        })
+        return
+      }
+
+      if (discoveries.length === 0) {
+        toast({
+          title: 'No YouTube results found',
+          description: 'Try editing the search text or paste a direct link.',
+          variant: 'destructive',
+        })
+      }
+    } catch (error) {
+      toast({
+        title: 'Could not search YouTube',
+        description:
+          error instanceof Error ? error.message : 'Try another search.',
+        variant: 'destructive',
+      })
+    } finally {
+      setIsDiscoveringLink(false)
+    }
+  }, [])
+
+  const promptCsvManualMatch = useCallback(
+    (downloadId: string, item: CsvImportItem) => {
+      setCsvManualMatchTarget({ downloadId, item })
+      setAddOpen(true)
+      void searchCsvManualMatchQuery(item.searchQuery)
+    },
+    [searchCsvManualMatchQuery],
+  )
+
+  useEffect(() => {
+    promptCsvManualMatchRef.current = promptCsvManualMatch
+  }, [promptCsvManualMatch])
+
   const openCsvManualMatch = useCallback(
     (download: Download, item: CsvImportItem) => {
-      setCsvManualMatchTarget({ downloadId: download.id, item })
-      setAddOpen(true)
-      void onSubmitUrl(item.searchQuery)
+      promptedCsvManualMatchIdsRef.current.add(item.id)
+      promptCsvManualMatch(download.id, item)
     },
-    [onSubmitUrl],
+    [promptCsvManualMatch],
   )
 
   const clearCsvManualMatch = useCallback(() => {
     setCsvManualMatchTarget(null)
+    setExternalResults([])
   }, [])
 
   const onImportCsvMatch = useCallback(
@@ -1649,23 +1815,37 @@ function AuthenticatedMusicApp() {
 
       setDownloads((prev) =>
         prev.map((download) =>
-              download.id === target.downloadId
-                ? {
-                    ...download,
-                    artist: csvImportStatusText(summary),
-                    csvImportBatches: batches,
-                    csvImportItems: items,
-                    message: csvImportFinalMessage(summary),
-                    progress: csvImportProgress(summary, 1),
-                    status: summary.failedItems > 0 ? 'error' : 'complete',
-                  }
-                : download,
+          download.id === target.downloadId
+            ? {
+                ...download,
+                artist: csvImportStatusText(summary),
+                csvImportBatches: batches,
+                csvImportItems: items,
+                message: csvImportMessage(summary),
+                progress: csvImportProgress(summary, download.progress),
+                status: csvImportDownloadStatus(summary),
+              }
+            : download,
         ),
       )
-      setExternalResults((prev) =>
-        prev.filter((discovery) => discovery.sourceId !== result.sourceId),
+      const nextManualMatchItem = nextCsvManualMatchItem(
+        batches.map((batch) => ({
+          batch,
+          items: items.filter((csvItem) => csvItem.batchId === batch.id),
+        })),
+        promptedCsvManualMatchIdsRef.current,
+        item.id,
       )
-      setCsvManualMatchTarget(null)
+
+      if (nextManualMatchItem) {
+        promptedCsvManualMatchIdsRef.current.add(nextManualMatchItem.id)
+        promptCsvManualMatch(target.downloadId, nextManualMatchItem)
+      } else {
+        setExternalResults((prev) =>
+          prev.filter((discovery) => discovery.sourceId !== result.sourceId),
+        )
+        setCsvManualMatchTarget(null)
+      }
       refreshLibrary()
       setCollection(null)
       setView('library')
@@ -1683,7 +1863,7 @@ function AuthenticatedMusicApp() {
         description: `"${item.title}" was added.`,
       })
     },
-    [csvManualMatchTarget, downloads, refreshLibrary],
+    [csvManualMatchTarget, downloads, promptCsvManualMatch, refreshLibrary],
   )
 
   const onImportExternalResult = useCallback(
@@ -2222,7 +2402,9 @@ function AuthenticatedMusicApp() {
         onImportExternalResult={onImportExternalResult}
         onMatchCsvImportItem={openCsvManualMatch}
         onRetryCsvImport={retryCsvImport}
-        onSubmitUrl={onSubmitUrl}
+        onSubmitUrl={
+          csvManualMatchTarget ? searchCsvManualMatchQuery : onSubmitUrl
+        }
       />
 
       <CreatePlaylistDialog

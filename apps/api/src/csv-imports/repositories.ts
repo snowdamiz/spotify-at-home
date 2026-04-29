@@ -312,6 +312,152 @@ export class SQLiteCsvImportRepository {
     }
   }
 
+  resetInterruptedItemsForRetry(input: { userId: string; batchId: string; now?: Date }) {
+    const sqlNow = toSqlDate(input.now ?? new Date());
+    this.db.exec("BEGIN;");
+
+    try {
+      const result = this.db
+        .prepare(
+          `
+            UPDATE csv_import_items
+            SET status = 'pending',
+                song_id = NULL,
+                youtube_source_id = NULL,
+                error_code = NULL,
+                error_message = NULL,
+                updated_at = ?
+            WHERE user_id = ?
+              AND batch_id = ?
+              AND status = 'running'
+          `
+        )
+        .run(sqlNow, input.userId, input.batchId);
+      const retriedItems = Number(result.changes);
+
+      if (retriedItems > 0) {
+        this.db
+          .prepare(
+            `
+              UPDATE csv_import_batches
+              SET status = 'pending',
+                  completed_items = (
+                    SELECT SUM(CASE WHEN status IN ('completed', 'skipped') THEN 1 ELSE 0 END)
+                    FROM csv_import_items
+                    WHERE user_id = ? AND batch_id = ?
+                  ),
+                  failed_items = (
+                    SELECT SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)
+                    FROM csv_import_items
+                    WHERE user_id = ? AND batch_id = ?
+                  ),
+                  completed_at = NULL
+              WHERE user_id = ? AND id = ?
+            `
+          )
+          .run(
+            input.userId,
+            input.batchId,
+            input.userId,
+            input.batchId,
+            input.userId,
+            input.batchId
+          );
+      }
+
+      this.db.exec("COMMIT;");
+
+      return {
+        batch: this.findImportBatchForUser(input),
+        retriedItems
+      };
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  pauseInterruptedRunningImports(input: { now?: Date } = {}) {
+    const sqlNow = toSqlDate(input.now ?? new Date());
+    this.db.exec("BEGIN;");
+
+    try {
+      const batchRows = this.db
+        .prepare(
+          `
+            SELECT id, user_id
+            FROM csv_import_batches
+            WHERE status = 'running'
+          `
+        )
+        .all() as Array<{ id: string; user_id: string }>;
+
+      const itemResult = this.db
+        .prepare(
+          `
+            UPDATE csv_import_items
+            SET status = 'pending',
+                song_id = NULL,
+                youtube_source_id = NULL,
+                error_code = NULL,
+                error_message = NULL,
+                updated_at = ?
+            WHERE status = 'running'
+          `
+        )
+        .run(sqlNow);
+
+      for (const row of batchRows) {
+        const counts = this.db
+          .prepare(
+            `
+              SELECT
+                SUM(CASE WHEN status IN ('completed', 'skipped') THEN 1 ELSE 0 END) AS completed,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                COUNT(*) AS total
+              FROM csv_import_items
+              WHERE user_id = ? AND batch_id = ?
+            `
+          )
+          .get(row.user_id, row.id) as
+          | { completed?: number | bigint; failed?: number | bigint; total?: number | bigint }
+          | undefined;
+        const total = Number(counts?.total ?? 0);
+        const completed = Number(counts?.completed ?? 0);
+        const failed = Number(counts?.failed ?? 0);
+        const done = completed + failed >= total;
+        const status: CsvImportBatchStatus = done
+          ? failed > 0
+            ? "failed"
+            : "completed"
+          : "failed";
+
+        this.db
+          .prepare(
+            `
+              UPDATE csv_import_batches
+              SET status = ?,
+                  completed_items = ?,
+                  failed_items = ?,
+                  completed_at = ?
+              WHERE user_id = ? AND id = ?
+            `
+          )
+          .run(status, completed, failed, sqlNow, row.user_id, row.id);
+      }
+
+      this.db.exec("COMMIT;");
+
+      return {
+        batchesPaused: batchRows.length,
+        itemsReset: Number(itemResult.changes)
+      };
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
   markBatchRunning(input: { userId: string; batchId: string; now?: Date }) {
     const now = input.now ?? new Date();
 

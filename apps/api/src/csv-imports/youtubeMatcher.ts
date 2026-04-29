@@ -7,6 +7,7 @@ import type { CsvImportItem } from "./repositories.js";
 
 const primarySearchLimit = 12;
 const fallbackSearchLimit = 10;
+const defaultSearchQueryBudget = 2;
 const confidentScore = 0.78;
 const strongScore = 0.86;
 const ambiguityMargin = 0.06;
@@ -34,8 +35,11 @@ export class CsvYouTubeMatchError extends Error {
 }
 
 export async function findBestCsvYouTubeMatch(input: {
+  afterSearch?: (query: string) => Promise<void> | void;
+  beforeSearch?: (query: string) => Promise<void> | void;
   importPolicyMode: ImportPolicyMode;
   item: CsvImportItem;
+  maxSearchQueries?: number;
   shouldContinue?: () => boolean;
   youtubeProvider: YouTubeDiscoveryClient;
 }): Promise<CsvYouTubeMatch> {
@@ -44,7 +48,10 @@ export async function findBestCsvYouTubeMatch(input: {
   }
 
   const candidatesBySourceId = new Map<string, Candidate>();
-  const queries = csvSearchQueries(input.item);
+  const queries = csvSearchQueries(input.item).slice(
+    0,
+    normalizeSearchQueryBudget(input.maxSearchQueries)
+  );
 
   for (let queryIndex = 0; queryIndex < queries.length; queryIndex += 1) {
     if (input.shouldContinue?.() === false) {
@@ -52,11 +59,23 @@ export async function findBestCsvYouTubeMatch(input: {
     }
 
     const query = queries[queryIndex];
-    const discoveryResults = await input.youtubeProvider.search(
-      query,
-      input.importPolicyMode,
-      { limit: queryIndex === 0 ? primarySearchLimit : fallbackSearchLimit }
-    );
+    await input.beforeSearch?.(query);
+
+    if (input.shouldContinue?.() === false) {
+      throw new CsvYouTubeMatchError("csv_import_canceled", "CSV import canceled.");
+    }
+
+    let discoveryResults;
+
+    try {
+      discoveryResults = await input.youtubeProvider.search(
+        query,
+        input.importPolicyMode,
+        { limit: queryIndex === 0 ? primarySearchLimit : fallbackSearchLimit }
+      );
+    } finally {
+      await input.afterSearch?.(query);
+    }
 
     if (input.shouldContinue?.() === false) {
       throw new CsvYouTubeMatchError("csv_import_canceled", "CSV import canceled.");
@@ -99,7 +118,23 @@ function csvSearchQueries(item: CsvImportItem) {
     [item.artist, item.title, item.album].filter(Boolean).join(" "),
     item.searchQuery,
     [item.title, item.artist].filter(Boolean).join(" ")
-  ].map((query) => query.replace(/\s+/g, " ").trim()).filter(Boolean));
+  ].map(normalizeSearchQueryText).filter(Boolean));
+}
+
+function normalizeSearchQueryBudget(value: number | undefined) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : defaultSearchQueryBudget;
+}
+
+function normalizeSearchQueryText(query: string) {
+  return query
+    .replace(/\bofficial\s+audio\b/gi, " ")
+    .replace(/\\/g, " ")
+    .replace(/[’]/g, "'")
+    .replace(/[“”]/g, "\"")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function chooseBestScoredCandidate(item: CsvImportItem, candidates: Candidate[]) {
@@ -118,7 +153,12 @@ function chooseBestScoredCandidate(item: CsvImportItem, candidates: Candidate[])
   const second = scored[1];
   const margin = best.score - (second?.score ?? 0);
 
-  if (best.score >= strongScore || margin >= ambiguityMargin || (second?.score ?? 0) < confidentScore) {
+  if (
+    best.score >= strongScore ||
+    margin >= ambiguityMargin ||
+    (second?.score ?? 0) < confidentScore ||
+    (second && best.score >= confidentScore && areLikelySameCsvTrack(item, best, second))
+  ) {
     return {
       discovery: best.result,
       query: best.query,
@@ -245,12 +285,14 @@ function scoreVariantPenalty(item: CsvImportItem, result: ExternalDiscoveryResul
   const penalties = [
     { terms: ["karaoke"], value: 0.45 },
     { terms: ["cover"], value: 0.34 },
-    { terms: ["reaction", "review", "tutorial"], value: 0.34 },
+    { terms: ["reaction", "review", "tutorial", "translation", "translated", "和訳"], value: 0.34 },
+    { terms: ["unreleased"], value: 0.3 },
     { terms: ["sped up", "speed up", "slowed", "reverb", "nightcore"], value: 0.28 },
     { terms: ["1 hour", "one hour", "loop", "extended mix"], value: 0.28 },
     { terms: ["live", "concert"], value: 0.2 },
     { terms: ["remix", "mashup"], value: 0.18 },
     { terms: ["instrumental", "acoustic"], value: 0.16 },
+    { terms: ["clean", "sad version", "best version"], value: 0.12 },
     { terms: ["full album", "playlist", "mix"], value: 0.16 }
   ];
 
@@ -276,11 +318,13 @@ function isLikelyOfficialArtistChannel(item: CsvImportItem, creator: string) {
 }
 
 function normalizeTitle(value: string) {
-  return normalizeBasic(value)
-    .replace(/\(([^)]*)\)/g, (_, inner: string) => isDescriptor(inner) ? " " : ` ${inner} `)
-    .replace(/\[([^\]]*)\]/g, (_, inner: string) => isDescriptor(inner) ? " " : ` ${inner} `)
+  const withoutIgnoredQualifiers = value
+    .replace(/\(([^)]*)\)/g, (_, inner: string) => isIgnoredTitleQualifier(inner) ? " " : ` ${inner} `)
+    .replace(/\[([^\]]*)\]/g, (_, inner: string) => isIgnoredTitleQualifier(inner) ? " " : ` ${inner} `);
+
+  return normalizeBasic(withoutIgnoredQualifiers)
     .replace(
-      /\b(official music video|official video|music video|official audio|audio only|visualizer|lyrics?|hd|hq|4k|remaster(ed)?|explicit|clean|provided to youtube by|official)\b/g,
+      /\b(official music video|official video|music video|official audio|audio only|visualizer|lyrics?|hd|hq|4k|remaster(ed)?|explicit|clean|provided to youtube by|official|feat|ft|featuring|with)\b/g,
       " "
     )
     .replace(/\s+/g, " ")
@@ -294,7 +338,7 @@ function normalizeBasic(value: string) {
     .toLowerCase()
     .replace(/&/g, " and ")
     .replace(/['’]/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -331,8 +375,32 @@ function normalizedIncludes(haystack: string, needle: string) {
   return normalizedNeedle.length >= 4 && normalizedHaystack.includes(normalizedNeedle);
 }
 
+function isIgnoredTitleQualifier(value: string) {
+  return isDescriptor(value) || isCollaboratorQualifier(value);
+}
+
 function isDescriptor(value: string) {
   return /\b(official|video|audio|lyrics?|visualizer|hd|hq|4k|remaster(ed)?|explicit|clean)\b/i.test(value);
+}
+
+function isCollaboratorQualifier(value: string) {
+  return /\b(feat|ft|featuring|with)\b/i.test(value);
+}
+
+function areLikelySameCsvTrack(item: CsvImportItem, left: Candidate & { score: number }, right: Candidate & { score: number }) {
+  const leftTitleScore = scoreTitle(item, left.result.title);
+  const rightTitleScore = scoreTitle(item, right.result.title);
+  const leftDurationDifference = durationDifferenceSeconds(item.durationMs, left.result.durationMs);
+  const rightDurationDifference = durationDifferenceSeconds(item.durationMs, right.result.durationMs);
+
+  return (
+    leftTitleScore >= 0.72 &&
+    rightTitleScore >= 0.72 &&
+    Number.isFinite(leftDurationDifference) &&
+    Number.isFinite(rightDurationDifference) &&
+    leftDurationDifference <= 10 &&
+    rightDurationDifference <= 10
+  );
 }
 
 function durationDifferenceSeconds(expectedMs: number | null, candidateMs: number | null) {

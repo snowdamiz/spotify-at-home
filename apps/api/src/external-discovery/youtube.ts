@@ -142,9 +142,9 @@ export class YouTubeDiscoveryProvider implements YouTubeDiscoveryClient {
       }
 
       const html = await response.text();
-      const initialData = extractYouTubeInitialData(html);
+      const initialDataJson = extractYouTubeInitialDataJson(html);
 
-      if (!initialData) {
+      if (!initialDataJson) {
         throw new YouTubeDiscoveryError(
           "youtube_search_parse_failed",
           "YouTube search results could not be read.",
@@ -155,7 +155,11 @@ export class YouTubeDiscoveryProvider implements YouTubeDiscoveryClient {
 
       return {
         nextPageToken: null,
-        results: extractYouTubeVideoResults(initialData, importPolicyMode, limit)
+        results: extractYouTubeVideoResultsFromInitialDataJson(
+          initialDataJson,
+          importPolicyMode,
+          limit
+        )
       };
     } catch (error) {
       if (error instanceof YouTubeDiscoveryError) {
@@ -256,6 +260,20 @@ function messageForError(error: unknown) {
 }
 
 export function extractYouTubeInitialData(html: string): unknown | null {
+  const json = extractYouTubeInitialDataJson(html);
+
+  if (!json) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function extractYouTubeInitialDataJson(html: string): string | null {
   const markers = [
     "var ytInitialData =",
     "window[\"ytInitialData\"] =",
@@ -282,14 +300,73 @@ export function extractYouTubeInitialData(html: string): unknown | null {
       continue;
     }
 
+    return json;
+  }
+
+  return null;
+}
+
+function extractYouTubeVideoResultsFromInitialDataJson(
+  initialDataJson: string,
+  importPolicyMode: ImportPolicyMode,
+  limit: number = defaultSearchLimit
+): ExternalDiscoveryResult[] {
+  const normalizedLimit = normalizeSearchLimit(limit);
+  const results: ExternalDiscoveryResult[] = [];
+  const seenVideoIds = new Set<string>();
+  const renderers = [
+    {
+      marker: "\"videoRenderer\":",
+      toResult: videoResultFromRenderer
+    },
+    {
+      marker: "\"lockupViewModel\":",
+      toResult: videoResultFromLockup
+    }
+  ];
+  let searchIndex = 0;
+
+  while (results.length < normalizedLimit) {
+    const next = renderers
+      .map((renderer) => ({
+        ...renderer,
+        markerIndex: initialDataJson.indexOf(renderer.marker, searchIndex)
+      }))
+      .filter((renderer) => renderer.markerIndex !== -1)
+      .sort((left, right) => left.markerIndex - right.markerIndex)[0];
+
+    if (!next) {
+      break;
+    }
+
+    const objectStart = initialDataJson.indexOf("{", next.markerIndex + next.marker.length);
+
+    if (objectStart === -1) {
+      break;
+    }
+
+    const objectJson = readBalancedJsonObject(initialDataJson, objectStart);
+
+    if (!objectJson) {
+      break;
+    }
+
+    searchIndex = objectStart + objectJson.length;
+
     try {
-      return JSON.parse(json);
+      const renderer = JSON.parse(objectJson) as Record<string, unknown>;
+      const result = next.toResult(renderer, importPolicyMode);
+
+      if (result && !seenVideoIds.has(result.sourceId)) {
+        seenVideoIds.add(result.sourceId);
+        results.push(result);
+      }
     } catch {
       continue;
     }
   }
 
-  return null;
+  return results;
 }
 
 export function extractYouTubeVideoResults(

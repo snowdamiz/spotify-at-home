@@ -260,19 +260,34 @@ export function AddMusicDialog({
                   active={tab === 'youtube'}
                   onClick={() => setTab('youtube')}
                   icon={<Search className="h-4 w-4" />}
-                  label="Search & link"
+                  label={
+                    <>
+                      <span className="sm:hidden">Search</span>
+                      <span className="hidden sm:inline">Search &amp; link</span>
+                    </>
+                  }
                 />
                 <TabButton
                   active={tab === 'csv'}
                   onClick={() => setTab('csv')}
                   icon={<ListMusic className="h-4 w-4" />}
-                  label="CSV playlists"
+                  label={
+                    <>
+                      <span className="sm:hidden">CSV</span>
+                      <span className="hidden sm:inline">CSV playlists</span>
+                    </>
+                  }
                 />
                 <TabButton
                   active={tab === 'upload'}
                   onClick={() => setTab('upload')}
                   icon={<Upload className="h-4 w-4" />}
-                  label="Upload files"
+                  label={
+                    <>
+                      <span className="sm:hidden">Upload</span>
+                      <span className="hidden sm:inline">Upload files</span>
+                    </>
+                  }
                 />
               </div>
             </div>
@@ -339,7 +354,7 @@ function TabButton({
   active: boolean
   onClick: () => void
   icon: React.ReactNode
-  label: string
+  label: React.ReactNode
 }) {
   return (
     <button
@@ -348,13 +363,13 @@ function TabButton({
       type="button"
       onClick={onClick}
       className={cn(
-        'inline-flex h-9 items-center gap-2 rounded-full px-4 text-sm font-medium transition-all',
+        'inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-sm font-medium transition-all sm:gap-2 sm:px-4',
         active
           ? 'bg-foreground text-background shadow-sm'
           : 'text-muted-foreground hover:text-foreground',
       )}
     >
-      {icon}
+      <span className="hidden sm:inline-flex">{icon}</span>
       <span>{label}</span>
     </button>
   )
@@ -1048,9 +1063,26 @@ function ImportsList({
           const pendingCsvCount =
             d.csvImportItems?.filter((item) => item.status === 'pending')
               .length ?? 0
-          const resumableCsvCount = retryableCount + pendingCsvCount
+          const runningCsvCount =
+            d.csvImportItems?.filter((item) => item.status === 'running')
+              .length ?? 0
+          const resumableCsvCount =
+            retryableCount + pendingCsvCount + runningCsvCount
           const manualMatchItems =
             d.csvImportItems?.filter((item) => item.userMatchRequired) ?? []
+          const canResumeCsvImport =
+            d.status === 'error' && resumableCsvCount > 0
+          const csvImportRunning =
+            d.status === 'downloading' &&
+            (d.csvImportBatches?.some(
+              (batch) =>
+                batch.status === 'pending' || batch.status === 'running',
+            ) ??
+              false)
+          const showCsvActions =
+            canResumeCsvImport ||
+            (d.status === 'error' && manualMatchItems.length > 0) ||
+            (csvImportRunning && manualMatchItems.length > 0)
 
           return (
             <li
@@ -1109,6 +1141,12 @@ function ImportsList({
                       </span>
                     </div>
                   )}
+                  {d.status === 'downloading' && d.message && (
+                    <div className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground">
+                      <AlertCircle className="h-3 w-3 text-primary" />
+                      {d.message}
+                    </div>
+                  )}
                   {d.status === 'complete' && (
                     <div className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-primary">
                       <CheckCircle2 className="h-3 w-3" />
@@ -1149,11 +1187,12 @@ function ImportsList({
                 )}
               </div>
 
-              {d.status === 'error' &&
-                (retryableCount > 0 || manualMatchItems.length > 0) && (
+              {showCsvActions && (
                   <div className="mt-3 border-t border-border/50 pt-3">
                     <div className="flex flex-wrap gap-2">
-                      {retryableCount > 0 && onRetryCsvImport && (
+                      {d.status === 'error' &&
+                        resumableCsvCount > 0 &&
+                        onRetryCsvImport && (
                         <Button
                           type="button"
                           size="sm"
@@ -1169,7 +1208,7 @@ function ImportsList({
                           ) : (
                             <RefreshCcw className="h-3.5 w-3.5" />
                           )}
-                          {pendingCsvCount > 0
+                          {pendingCsvCount > 0 || runningCsvCount > 0
                             ? `Resume ${resumableCsvCount}`
                             : `Retry ${retryableCount}`}
                         </Button>
