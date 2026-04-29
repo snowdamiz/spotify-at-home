@@ -201,6 +201,31 @@ export class SQLiteCsvImportRepository {
       .map(mapImportItem);
   }
 
+  listActiveImportBatchesForUser(input: { userId: string; limit?: number }) {
+    return this.db
+      .prepare(
+        `
+          SELECT *
+          FROM csv_import_batches
+          WHERE user_id = ?
+            AND (
+              status IN ('pending', 'running')
+              OR EXISTS (
+                SELECT 1
+                FROM csv_import_items
+                WHERE csv_import_items.user_id = csv_import_batches.user_id
+                  AND csv_import_items.batch_id = csv_import_batches.id
+                  AND csv_import_items.status = 'pending'
+              )
+            )
+          ORDER BY created_at DESC, id ASC
+          LIMIT ?
+        `
+      )
+      .all(input.userId, input.limit ?? 10)
+      .map(mapImportBatch);
+  }
+
   findImportItemForUser(input: { userId: string; batchId: string; itemId: string }) {
     const row = this.db
       .prepare(
@@ -211,6 +236,30 @@ export class SQLiteCsvImportRepository {
         `
       )
       .get(input.userId, input.batchId, input.itemId);
+
+    return row ? mapImportItem(row) : null;
+  }
+
+  findLatestCompletedImportItemForSourceKey(input: {
+    userId: string;
+    sourceKey: string;
+    excludeBatchId?: string;
+  }) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM csv_import_items
+          WHERE user_id = ?
+            AND source_key = ?
+            AND status IN ('completed', 'skipped')
+            AND song_id IS NOT NULL
+            AND batch_id != ?
+          ORDER BY updated_at DESC, created_at DESC, id ASC
+          LIMIT 1
+        `
+      )
+      .get(input.userId, input.sourceKey, input.excludeBatchId ?? "");
 
     return row ? mapImportItem(row) : null;
   }
@@ -500,6 +549,35 @@ export class SQLiteCsvImportRepository {
         `
           UPDATE csv_import_items
           SET status = 'completed',
+              song_id = ?,
+              youtube_source_id = ?,
+              error_code = NULL,
+              error_message = NULL,
+              updated_at = ?
+          WHERE user_id = ? AND id = ?
+        `
+      )
+      .run(
+        input.songId,
+        input.youtubeSourceId ?? null,
+        toSqlDate(input.now ?? new Date()),
+        input.userId,
+        input.itemId
+      );
+  }
+
+  markItemSkipped(input: {
+    userId: string;
+    itemId: string;
+    songId: string;
+    youtubeSourceId?: string | null;
+    now?: Date;
+  }) {
+    this.db
+      .prepare(
+        `
+          UPDATE csv_import_items
+          SET status = 'skipped',
               song_id = ?,
               youtube_source_id = ?,
               error_code = NULL,

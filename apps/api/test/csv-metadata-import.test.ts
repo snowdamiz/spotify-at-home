@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExternalDiscoveryResult, ImportPolicyMode } from "@broadside/shared";
@@ -166,6 +167,87 @@ describe("CSV metadata imports", () => {
     ]);
   });
 
+  it("skips CSV rows already imported into the same playlist", async () => {
+    const youtubeProvider = createYouTubeProvider();
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app } = createTestApp({
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const files = [
+      csvFile("road_mix.csv", [
+        ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"],
+        ["spotify:track:road", "Road Song", "spotify:artist:grace", "Grace", "spotify:album:drive", "Drive", "spotify:artist:grace", "Grace", "2026-01-01", "https://i.scdn.co/image/road", "1", "2", "210000", "", "false", "40", "USROAD000001", "", "2026-01-03T00:00:00Z"]
+      ])
+    ];
+
+    const firstBatch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(firstBatch.statusCode).toBe(202);
+    expect(firstBatch.json().batch).toMatchObject({
+      completedItems: 2,
+      failedItems: 0,
+      status: "completed"
+    });
+
+    const secondBatch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(secondBatch.statusCode).toBe(202);
+    expect(secondBatch.json().batch).toMatchObject({
+      completedItems: 2,
+      failedItems: 0,
+      status: "completed",
+      totalItems: 2
+    });
+    expect(youtubeProvider.search).toHaveBeenCalledTimes(2);
+    expect(youtubeImportAdapter.resolve).toHaveBeenCalledTimes(2);
+
+    const status = await app.inject({
+      method: "GET",
+      url: `/api/csv-imports/batches/${secondBatch.json().batch.id}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(status.json().items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          songId: expect.any(String),
+          status: "skipped",
+          title: "Moon Song",
+          youtubeSourceId: "youtubeMoon01"
+        }),
+        expect.objectContaining({
+          songId: expect.any(String),
+          status: "skipped",
+          title: "Road Song",
+          youtubeSourceId: "youtubeRoad01"
+        })
+      ])
+    );
+
+    const playlists = await app.inject({
+      method: "GET",
+      url: "/api/playlists",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    const roadMix = playlists.json().playlists.find(
+      (playlist: { name: string }) => playlist.name === "Road Mix"
+    );
+
+    expect(roadMix).toMatchObject({ songCount: 2 });
+  });
+
   it("merges CSV imports into an existing same-name playlist", async () => {
     const youtubeProvider = createYouTubeProvider();
     const youtubeImportAdapter = createYouTubeImportAdapter();
@@ -326,6 +408,68 @@ describe("CSV metadata imports", () => {
       },
       mimeType: "audio/mpeg",
       sizeBytes: normalizedAudio.byteLength
+    });
+  });
+
+  it("reuses existing shared storage objects for CSV imports without redownloading", async () => {
+    const youtubeProvider = createYouTubeProvider();
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app, storageRoot } = createTestApp({
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const storedAudio = Buffer.from("ID3 already normalized shared object");
+    const sharedDirectory = join(
+      storageRoot,
+      "external",
+      "youtube",
+      createHash("sha256").update("youtubeMoon01").digest("hex")
+    );
+
+    mkdirSync(sharedDirectory, { recursive: true });
+    writeFileSync(join(sharedDirectory, "original"), storedAudio);
+
+    const batch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        files: [
+          csvFile("liked.csv", [
+            ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"]
+          ])
+        ]
+      }
+    });
+
+    expect(batch.statusCode).toBe(202);
+    expect(batch.json().batch).toMatchObject({
+      completedItems: 1,
+      failedItems: 0,
+      status: "completed"
+    });
+    expect(youtubeProvider.search).toHaveBeenCalledTimes(1);
+    expect(youtubeImportAdapter.resolve).not.toHaveBeenCalled();
+
+    const songs = await app.inject({
+      method: "GET",
+      url: "/api/songs",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    const [song] = songs.json().songs;
+
+    expect(readFileSync(song.storagePath)).toEqual(storedAudio);
+    expect(song).toMatchObject({
+      externalSource: {
+        provenance: {
+          selectedImportPath: "shared_object_reuse"
+        },
+        sourceId: "youtubeMoon01"
+      },
+      importStatus: "ready",
+      sizeBytes: storedAudio.byteLength,
+      title: "Moon Song"
     });
   });
 
@@ -1522,6 +1666,25 @@ describe("CSV metadata imports", () => {
 
     expect(batch.statusCode).toBe(202);
     await searchStarted.promise;
+
+    const active = await app.inject({
+      method: "GET",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(active.statusCode).toBe(200);
+    expect(active.json().batches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          batch: expect.objectContaining({
+            id: batch.json().batch.id,
+            status: "running"
+          }),
+          items: expect.any(Array)
+        })
+      ])
+    );
 
     const canceled = await app.inject({
       method: "POST",

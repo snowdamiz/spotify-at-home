@@ -1526,6 +1526,31 @@ export class SQLitePlaylistRepository {
       .run(toSqlDate(input.now ?? new Date()), input.userId, input.playlistId);
   }
 
+  hasSong(input: { userId: string; playlistId: string; songId: string }) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT EXISTS(
+            SELECT 1
+            FROM playlists p
+            INNER JOIN playlist_songs ps ON ps.playlist_id = p.id
+            INNER JOIN songs s ON s.id = ps.song_id
+            WHERE p.user_id = ?
+              AND p.id = ?
+              AND ps.song_id = ?
+              AND s.user_id = ?
+              AND s.import_status = 'ready'
+              AND s.deleted_at IS NULL
+          ) AS has_song
+        `
+      )
+      .get(input.userId, input.playlistId, input.songId, input.userId) as
+      | { has_song: number }
+      | undefined;
+
+    return Boolean(row?.has_song);
+  }
+
   removeSong(input: { userId: string; playlistId: string; songId: string; now?: Date }) {
     const playlist = this.findPlaylistForUser(input.userId, input.playlistId);
 

@@ -623,6 +623,32 @@ export async function fetchCsvImportBatch(batchId: string) {
   return { ...payload, status: 'authenticated' as const }
 }
 
+export async function fetchActiveCsvImportBatches() {
+  const response = await apiFetch(apiUrl('/api/csv-imports/batches'), {
+    credentials: 'include',
+  })
+
+  if (response.status === 401) {
+    return { batches: [], status: 'anonymous' as const }
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      (await readApiErrorMessage(response)) ??
+        `CSV import batches failed with status ${response.status}`,
+    )
+  }
+
+  const payload = (await response.json()) as {
+    batches: Array<{
+      batch: CsvImportBatch
+      items: CsvImportItem[]
+    }>
+  }
+
+  return { ...payload, status: 'authenticated' as const }
+}
+
 export async function cancelCsvImportBatch(batchId: string) {
   const response = await apiFetch(
     apiUrl(`/api/csv-imports/batches/${encodeURIComponent(batchId)}/cancel`),

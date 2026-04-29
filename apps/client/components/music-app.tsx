@@ -35,6 +35,7 @@ import {
   deletePlaylist,
   deleteSong,
   discoverYouTubeUrl,
+  fetchActiveCsvImportBatches,
   fetchCsvImportBatch,
   importCsvImportItemDiscovery,
   importYouTubeDiscovery,
@@ -624,6 +625,16 @@ function csvImportDownloadStatus(
     : 'complete'
 }
 
+function shouldDismissCsvImportDownload(
+  summary: ReturnType<typeof summarizeCsvImportStates>,
+) {
+  return (
+    !summary.isRunning &&
+    summary.failedItems === 0 &&
+    summary.pendingItems === 0
+  )
+}
+
 function csvImportProgress(
   summary: ReturnType<typeof summarizeCsvImportStates>,
   fallback: number,
@@ -894,6 +905,60 @@ function AuthenticatedMusicApp() {
   useEffect(() => {
     writeStoredCsvImportDownloads(user?.id, downloads)
   }, [downloads, user?.id])
+
+  useEffect(() => {
+    if (!user?.id || !isOnline) {
+      return
+    }
+
+    let canceled = false
+
+    void fetchActiveCsvImportBatches()
+      .then((result) => {
+        if (
+          canceled ||
+          result.status !== 'authenticated' ||
+          result.batches.length === 0
+        ) {
+          return
+        }
+
+        setDownloads((prev) => {
+          const existingBatchIds = new Set(prev.flatMap(csvImportBatchIds))
+          const restored = result.batches
+            .filter((state) => !existingBatchIds.has(state.batch.id))
+            .map((state) => {
+              const summary = summarizeCsvImportStates([state])
+
+              return {
+                artist: csvImportStatusText(summary),
+                batchIds: [state.batch.id],
+                cancelable: true,
+                canceling: false,
+                csvImportBatches: [state.batch],
+                csvImportItems: state.items,
+                id: `csv-import-${state.batch.id}`,
+                message: csvImportMessage(summary),
+                platform: 'url' as const,
+                progress: csvImportProgress(summary, 0.1),
+                retrying: false,
+                status: csvImportDownloadStatus(summary),
+                title: 'CSV playlists',
+                url: '',
+              } satisfies Download
+            })
+
+          return restored.length > 0 ? [...restored, ...prev] : prev
+        })
+      })
+      .catch(() => {
+        // Active import restoration is best-effort; stored downloads still load normally.
+      })
+
+    return () => {
+      canceled = true
+    }
+  }, [isOnline, user?.id])
 
   useEffect(() => {
     if (view !== 'admin' || user?.isAdmin) {
@@ -2065,7 +2130,7 @@ function AuthenticatedMusicApp() {
       setCollection(null)
       setView('library')
 
-      if (summary.failedItems === 0) {
+      if (shouldDismissCsvImportDownload(summary)) {
         window.setTimeout(() => {
           setDownloads((prev) =>
             prev.filter((download) => download.id !== downloadId),
@@ -2721,7 +2786,7 @@ function AuthenticatedMusicApp() {
       setCollection(null)
       setView('library')
 
-      if (summary.failedItems === 0) {
+      if (shouldDismissCsvImportDownload(summary)) {
         window.setTimeout(() => {
           setDownloads((prev) =>
             prev.filter((download) => download.id !== target.downloadId),
