@@ -1,4 +1,4 @@
-import { serializeExternalSource } from "@broadside/shared";
+import { pickPlaylistColor, serializeExternalSource } from "@broadside/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { readAccessToken } from "../auth/routes.js";
 import { AuthError, type AuthService, type PublicUser } from "../auth/service.js";
@@ -106,7 +106,7 @@ export function registerLibraryRoutes(app: FastifyInstance, options: LibraryRout
       userId: user.id,
       name,
       description: nullableText(body.description),
-      color: nullableText(body.color)
+      color: nullableText(body.color) ?? pickPlaylistColor(name)
     });
 
     return reply.code(201).send({

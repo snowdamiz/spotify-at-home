@@ -1,13 +1,22 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { Search as SearchIcon } from 'lucide-react'
+import { Heart, Music2, Plus, Search as SearchIcon, WifiOff } from 'lucide-react'
 import { CoverArt } from '@/components/cover-art'
 import { SongRow } from '@/components/song-row'
-import { playlistSubtitle, serverSongToSong } from '@/lib/api'
+import { Button } from '@/components/ui/button'
+import { EmptyState } from '@/components/ui/empty-state'
+import { SectionHeader } from '@/components/ui/section-header'
+import {
+  playlistSubtitle,
+  serverSongToSong,
+  type LibraryLoadStatus,
+  type ServerPlaylist,
+} from '@/lib/api'
 import { useLibrarySearch } from '@/lib/library-hooks'
 import {
-  CATEGORIES,
+  pickCoverColor,
+  resolvePlaylistColor,
   type CollectionRef,
   type Song,
 } from '@/lib/music-types'
@@ -15,47 +24,88 @@ import type { OfflineAudioStateMap } from '@/lib/offline-audio-cache'
 
 type SearchViewProps = {
   songs: Song[]
+  playlists?: ServerPlaylist[]
   currentSongId: string | null
   isPlaying: boolean
   offlineAudio: OfflineAudioStateMap
+  libraryStatus?: LibraryLoadStatus
   revision: number
   onPlay: (song: Song, queue: Song[]) => void
   onToggleSongLike?: (song: Song) => void
   onToggleSongOffline: (song: Song) => void
   onDeleteSong: (song: Song) => void
+  onAddSongToPlaylist?: (song: Song, playlistId: string) => void
+  onCreatePlaylistWithSong?: (song: Song) => void
   deletingSongId: string | null
   likingSongId?: string | null
   onOpenCollection: (ref: CollectionRef) => void
+  onImportClick?: () => void
 }
+
+type BrowseCard = {
+  id: string
+  coverColor: string
+  label: string
+  subtitle: string
+  action:
+    | { kind: 'collection'; ref: CollectionRef }
+    | { kind: 'query'; query: string }
+}
+
+const MAX_BROWSE_CARDS = 8
 
 export function SearchView({
   songs,
+  playlists,
   currentSongId,
   isPlaying,
   offlineAudio,
+  libraryStatus,
   revision,
   onPlay,
   onToggleSongLike,
   onToggleSongOffline,
   onDeleteSong,
+  onAddSongToPlaylist,
+  onCreatePlaylistWithSong,
   deletingSongId,
   likingSongId,
   onOpenCollection,
+  onImportClick,
 }: SearchViewProps) {
   const [query, setQuery] = useState('')
   const search = useLibrarySearch(query, revision)
+  const browseCards = useMemo(() => buildBrowseCards(songs), [songs])
+  const isOffline = libraryStatus === 'offline'
 
   const matches = useMemo(() => {
-    if (!query.trim()) return []
+    const trimmedQuery = query.trim().toLowerCase()
+    if (!trimmedQuery) return []
+
     const songsById = new Map(songs.map((song) => [song.id, song]))
     const serverMatches = search.results.songs.map(
       (serverSong) => songsById.get(serverSong.id) ?? serverSongToSong(serverSong),
     )
     const knownIds = new Set(serverMatches.map((song) => song.id))
-    const localMatches = songs.filter((song) => !knownIds.has(song.id))
+    const localMatches = songs.filter(
+      (song) =>
+        !knownIds.has(song.id) &&
+        (song.title.toLowerCase().includes(trimmedQuery) ||
+          song.artist.toLowerCase().includes(trimmedQuery) ||
+          song.album?.toLowerCase().includes(trimmedQuery)),
+    )
 
     return [...serverMatches, ...localMatches]
   }, [query, search.results.songs, songs])
+
+  const openBrowseCard = (card: BrowseCard) => {
+    if (card.action.kind === 'collection') {
+      onOpenCollection(card.action.ref)
+      return
+    }
+
+    setQuery(card.action.query)
+  }
 
   return (
     <div className="px-4 pb-8 md:px-6">
@@ -76,23 +126,36 @@ export function SearchView({
       </header>
 
       {query.trim() ? (
+        matches.length === 0 &&
+        search.results.playlists.length === 0 &&
+        isOffline ? (
+          <EmptyState
+            variant="section"
+            title={`No saved songs match "${query}".`}
+            description="Search is limited to offline songs until you reconnect."
+          />
+        ) : matches.length === 0 &&
+        search.results.playlists.length === 0 &&
         search.status === 'loading' ? (
-          <div className="py-10 text-center text-sm text-muted-foreground">
-            Searching your server library...
-          </div>
-        ) : search.status === 'error' ? (
-          <div className="py-10 text-center text-sm text-muted-foreground">
-            Could not reach the OnVibe server.
-          </div>
-        ) : search.status === 'anonymous' ? (
-          <div className="py-10 text-center text-sm text-muted-foreground">
-            Log in to search imported songs and playlists.
-          </div>
+          <EmptyState variant="section" title="Searching your library…" />
+        ) : matches.length === 0 &&
+          search.results.playlists.length === 0 &&
+          search.status === 'error' ? (
+          <EmptyState
+            variant="section"
+            title="Couldn't reach the server."
+            description="Check your connection and try again."
+          />
+        ) : matches.length === 0 &&
+          search.results.playlists.length === 0 &&
+          search.status === 'anonymous' ? (
+          <EmptyState
+            variant="section"
+            title="Log in to search imported songs and playlists."
+          />
         ) : matches.length > 0 || search.results.playlists.length > 0 ? (
           <section>
-            <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-              Results
-            </h2>
+            <SectionHeader title="Results" size="sm" className="mb-2" />
             <ul className="space-y-1">
               {search.results.playlists.map((playlist) => (
                 <li key={playlist.id}>
@@ -104,7 +167,7 @@ export function SearchView({
                     className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-card/60"
                   >
                     <CoverArt
-                      colorClass={playlist.color ?? 'from-zinc-700 to-zinc-950'}
+                      colorClass={resolvePlaylistColor(playlist.color, playlist.name)}
                       title={playlist.name}
                       size="md"
                       rounded="md"
@@ -135,44 +198,285 @@ export function SearchView({
                     onDelete={() => onDeleteSong(song)}
                     isDeleting={deletingSongId === song.id}
                     isLiking={likingSongId === song.id}
+                    playlists={playlists}
+                    onAddToPlaylist={
+                      onAddSongToPlaylist
+                        ? (playlistId) => onAddSongToPlaylist(song, playlistId)
+                        : undefined
+                    }
+                    onCreatePlaylistWithSong={
+                      onCreatePlaylistWithSong
+                        ? () => onCreatePlaylistWithSong(song)
+                        : undefined
+                    }
                   />
                 </li>
               ))}
             </ul>
           </section>
         ) : (
-          <div className="py-10 text-center text-sm text-muted-foreground">
-            No songs match &ldquo;{query}&rdquo;.
-          </div>
+          <EmptyState
+            variant="section"
+            title={`No songs match "${query}".`}
+          />
         )
       ) : (
         <>
-          <h2 className="mb-4 text-xl font-bold tracking-tight md:text-2xl">
-            Browse all
-          </h2>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-            {CATEGORIES.map((cat) => (
-              <button
-                key={cat.id}
-                onClick={() =>
-                  onOpenCollection({ kind: 'category', id: cat.id })
-                }
-                className={`group relative aspect-[16/10] overflow-hidden rounded-xl bg-gradient-to-br ${cat.coverColor} p-3.5 text-left shadow-md shadow-black/20 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-black/30`}
-              >
-                <span className="text-base font-bold tracking-tight text-foreground drop-shadow">
-                  {cat.name}
-                </span>
-                <CoverArt
-                  colorClass={cat.coverColor}
-                  title={cat.name}
-                  className="absolute -right-3 -bottom-3 h-16 w-16 rotate-[20deg] rounded-md shadow-lg transition-transform duration-200 group-hover:rotate-[24deg]"
-                  rounded="md"
+          <SectionHeader title="Browse your library" />
+          {browseCards.length > 0 ? (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+              {browseCards.map((card) => (
+                <BrowseCardTile
+                  key={card.id}
+                  card={card}
+                  onClick={() => openBrowseCard(card)}
                 />
-              </button>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : isOffline ? (
+            <EmptyState
+              icon={<WifiOff className="h-5 w-5" />}
+              title="No offline songs on this device"
+              description="Reconnect, then sync songs in Settings to search them offline."
+            />
+          ) : (
+            <EmptyState
+              icon={<Music2 className="h-5 w-5" />}
+              title="Add music to build browse shortcuts"
+              description="Artists and albums from your library will appear here."
+              action={
+                onImportClick ? (
+                  <Button
+                    onClick={onImportClick}
+                    className="h-10 rounded-full bg-foreground text-background hover:bg-foreground/90"
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    Add music
+                  </Button>
+                ) : undefined
+              }
+            />
+          )}
+
+          {songs.length > 0 && (
+            <section className="mt-8">
+              <SectionHeader title="Your songs" size="sm" className="mb-2" />
+              <ul className="space-y-1">
+                {songs.map((song) => (
+                  <li key={song.id}>
+                    <SongRow
+                      song={song}
+                      isActive={currentSongId === song.id}
+                      isPlaying={isPlaying && currentSongId === song.id}
+                      offlineState={offlineAudio[song.id]}
+                      onPlay={() => onPlay(song, songs)}
+                      onToggleLike={
+                        onToggleSongLike ? () => onToggleSongLike(song) : undefined
+                      }
+                      onToggleOffline={() => onToggleSongOffline(song)}
+                      onDelete={() => onDeleteSong(song)}
+                      isDeleting={deletingSongId === song.id}
+                      isLiking={likingSongId === song.id}
+                      playlists={playlists}
+                      onAddToPlaylist={
+                        onAddSongToPlaylist
+                          ? (playlistId) =>
+                              onAddSongToPlaylist(song, playlistId)
+                          : undefined
+                      }
+                      onCreatePlaylistWithSong={
+                        onCreatePlaylistWithSong
+                          ? () => onCreatePlaylistWithSong(song)
+                          : undefined
+                      }
+                    />
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
         </>
       )}
     </div>
   )
+}
+
+function BrowseCardTile({
+  card,
+  onClick,
+}: {
+  card: BrowseCard
+  onClick: () => void
+}) {
+  const initials = browseInitials(card.label)
+  const isLiked = card.id === 'liked-songs'
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`group relative aspect-[5/3] overflow-hidden rounded-xl bg-gradient-to-br ${card.coverColor} p-4 text-left shadow-md shadow-black/20 outline-none transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-black/30 focus-visible:ring-2 focus-visible:ring-ring/70`}
+      aria-label={`${card.label} — ${card.subtitle}`}
+    >
+      {/* Subtle dark sheen at the bottom for legibility behind text */}
+      <span
+        aria-hidden
+        className="absolute inset-0 bg-gradient-to-tr from-black/40 via-transparent to-transparent"
+      />
+
+      {/* Rotated decorative tile — bottom-right */}
+      <span
+        aria-hidden
+        className="absolute -right-3 -bottom-3 flex h-20 w-20 rotate-[22deg] items-center justify-center rounded-lg bg-black/30 shadow-xl shadow-black/40 ring-1 ring-white/15 transition-transform duration-300 ease-out group-hover:rotate-[26deg] group-hover:scale-105"
+      >
+        {isLiked ? (
+          <Heart
+            className="h-8 w-8 text-white/95 drop-shadow"
+            fill="currentColor"
+          />
+        ) : (
+          <span className="text-xl font-extrabold tracking-tight text-white/95 drop-shadow">
+            {initials}
+          </span>
+        )}
+      </span>
+
+      {/* Foreground content */}
+      <div className="relative z-10 flex h-full flex-col justify-between">
+        <div className="min-w-0 pr-16">
+          <div className="line-clamp-2 text-base font-extrabold leading-tight tracking-tight text-white drop-shadow">
+            {card.label}
+          </div>
+          <div className="mt-1 truncate text-[11px] font-semibold uppercase tracking-[0.12em] text-white/75 drop-shadow">
+            {card.subtitle}
+          </div>
+        </div>
+      </div>
+
+      {/* Hover wash */}
+      <span className="absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/10" />
+    </button>
+  )
+}
+
+function browseInitials(label: string) {
+  const parts = label.trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return '♪'
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+  return (parts[0][0] + parts[1][0]).toUpperCase()
+}
+
+function buildBrowseCards(songs: Song[]): BrowseCard[] {
+  const cards: BrowseCard[] = []
+  const likedCount = songs.filter(isLikedSong).length
+
+  if (likedCount > 0) {
+    cards.push({
+      action: {
+        kind: 'collection',
+        ref: { kind: 'system', id: 'liked-songs' },
+      },
+      coverColor: 'from-fuchsia-600 to-zinc-950',
+      id: 'liked-songs',
+      label: 'Liked Songs',
+      subtitle: songCountLabel(likedCount),
+    })
+  }
+
+  for (const [artist, count] of topCounts(
+    songs.map((song) => normalizeBrowseLabel(song.artist)),
+  )) {
+    cards.push({
+      action: { kind: 'query', query: artist },
+      coverColor: pickCoverColor(`artist:${artist}`),
+      id: `artist:${artist}`,
+      label: artist,
+      subtitle: `${songCountLabel(count)} by artist`,
+    })
+
+    if (cards.length >= MAX_BROWSE_CARDS) {
+      break
+    }
+  }
+
+  if (cards.length < MAX_BROWSE_CARDS) {
+    for (const [album, count] of topCounts(
+      songs.map((song) => normalizeAlbumLabel(song.album)),
+    )) {
+      cards.push({
+        action: { kind: 'query', query: album },
+        coverColor: pickCoverColor(`album:${album}`),
+        id: `album:${album}`,
+        label: album,
+        subtitle: `${songCountLabel(count)} from album`,
+      })
+
+      if (cards.length >= MAX_BROWSE_CARDS) {
+        break
+      }
+    }
+  }
+
+  if (cards.length < MAX_BROWSE_CARDS) {
+    for (const song of [...songs]
+      .sort((a, b) => b.dateAdded - a.dateAdded)
+      .slice(0, MAX_BROWSE_CARDS)) {
+      if (cards.some((card) => card.id === `song:${song.id}`)) {
+        continue
+      }
+
+      cards.push({
+        action: { kind: 'query', query: song.title },
+        coverColor: song.coverColor,
+        id: `song:${song.id}`,
+        label: song.title,
+        subtitle: song.artist,
+      })
+
+      if (cards.length >= MAX_BROWSE_CARDS) {
+        break
+      }
+    }
+  }
+
+  return cards.slice(0, MAX_BROWSE_CARDS)
+}
+
+function topCounts(labels: Array<string | null>): Array<[string, number]> {
+  const counts = new Map<string, number>()
+
+  for (const label of labels) {
+    if (!label) continue
+    counts.set(label, (counts.get(label) ?? 0) + 1)
+  }
+
+  return [...counts.entries()].sort(
+    ([leftLabel, leftCount], [rightLabel, rightCount]) =>
+      rightCount - leftCount || leftLabel.localeCompare(rightLabel),
+  )
+}
+
+function normalizeBrowseLabel(label: string | null | undefined) {
+  const normalized = label?.trim()
+  if (!normalized || normalized === 'Imported song') return null
+  return normalized
+}
+
+function normalizeAlbumLabel(label: string | null | undefined) {
+  const normalized = normalizeBrowseLabel(label)
+  if (!normalized) return null
+
+  if (/^Imported from .+\.(csv|json|txt|xml)$/i.test(normalized)) {
+    return null
+  }
+
+  return normalized
+}
+
+function isLikedSong(song: Song) {
+  return Boolean(song.serverSong?.liked ?? song.liked)
+}
+
+function songCountLabel(count: number) {
+  return `${count} ${count === 1 ? 'song' : 'songs'}`
 }

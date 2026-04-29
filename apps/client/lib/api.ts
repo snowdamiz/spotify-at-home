@@ -191,6 +191,7 @@ type CsvUploadedFileRef = {
 
 const CSV_UPLOAD_BATCH_TARGET_BYTES = 700_000
 const CSV_UPLOAD_CHUNK_BYTES = 512 * 1024
+const AUDIO_IMPORT_CONCURRENCY = 2
 
 let refreshSessionPromise: Promise<boolean> | null = null
 const csvUploadReferences = new WeakMap<File, Promise<CsvUploadedFileRef>>()
@@ -256,6 +257,25 @@ function withCredentials(init: RequestInit): RequestInit {
     credentials: 'include',
     ...init,
   }
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+) {
+  let nextIndex = 0
+  const workerCount = Math.min(Math.max(1, limit), items.length)
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const item = items[nextIndex]
+        nextIndex += 1
+        await worker(item)
+      }
+    }),
+  )
 }
 
 export async function fetchCurrentUser() {
@@ -1070,41 +1090,68 @@ export async function importAudioFiles(
   files: File[],
   importPolicyMode: ImportPolicyMode = 'licensed_only',
 ) {
-  const imported: ServerSong[] = []
+  const importedByIndex: ServerSong[] = []
+  let anonymous = false
 
-  for (const file of files) {
-    const contentBase64 = await blobToBase64(file)
-    const response = await apiFetch(apiUrl('/api/songs/import'), {
-      body: JSON.stringify({
-        album: null,
-        artist: null,
-        contentBase64,
-        fileName: file.name,
-        importPolicyMode,
-        mimeType: file.type || mimeTypeFromName(file.name),
-        sizeBytes: file.size,
-        title: stripExtension(file.name),
-      }),
-      credentials: 'include',
-      headers: {
-        'content-type': 'application/json',
-      },
-      method: 'POST',
-    })
+  await runWithConcurrency(
+    files.map((file, index) => ({ file, index })),
+    AUDIO_IMPORT_CONCURRENCY,
+    async ({ file, index }) => {
+      if (anonymous) return
 
-    if (response.status === 401) {
-      return { imported, status: 'anonymous' as const }
-    }
+      const result = await importAudioFile(file, importPolicyMode)
 
-    if (!response.ok) {
-      throw new Error(`Import failed with status ${response.status}`)
-    }
+      if (result.status === 'anonymous') {
+        anonymous = true
+        return
+      }
 
-    const payload = (await response.json()) as { song: ServerSong }
-    imported.push(payload.song)
+      importedByIndex[index] = result.song
+    },
+  )
+
+  const imported = importedByIndex.filter((song): song is ServerSong =>
+    Boolean(song),
+  )
+
+  return {
+    imported,
+    status: anonymous ? ('anonymous' as const) : ('authenticated' as const),
+  }
+}
+
+async function importAudioFile(
+  file: File,
+  importPolicyMode: ImportPolicyMode,
+) {
+  const mimeType = file.type || mimeTypeFromName(file.name)
+  const params = new URLSearchParams({
+    fileName: file.name,
+    importPolicyMode,
+    mimeType,
+    sizeBytes: String(file.size),
+    title: stripExtension(file.name),
+  })
+  const response = await apiFetch(apiUrl(`/api/songs/import?${params}`), {
+    body: file,
+    credentials: 'include',
+    headers: {
+      'content-type': mimeType,
+    },
+    method: 'POST',
+  })
+
+  if (response.status === 401) {
+    return { song: null, status: 'anonymous' as const }
   }
 
-  return { imported, status: 'authenticated' as const }
+  if (!response.ok) {
+    throw new Error(`Import failed with status ${response.status}`)
+  }
+
+  const payload = (await response.json()) as { song: ServerSong }
+
+  return { song: payload.song, status: 'authenticated' as const }
 }
 
 export async function discoverYouTubeUrl(url: string) {
@@ -1292,7 +1339,7 @@ export function songSubtitle(song: ServerSong) {
   return song.artist ?? song.album ?? 'Imported song'
 }
 
-export type LibraryLoadStatus = ApiStatus | 'loading' | 'error'
+export type LibraryLoadStatus = ApiStatus | 'loading' | 'error' | 'offline'
 
 async function readApiErrorMessage(response: Response) {
   const payload = (await response.json().catch(() => null)) as

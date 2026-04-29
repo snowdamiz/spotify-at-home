@@ -2,9 +2,11 @@
 
 import {
   Heart,
+  ListMusic,
   Pause,
   Play,
   Repeat,
+  Repeat1,
   Shuffle,
   SkipBack,
   SkipForward,
@@ -15,6 +17,8 @@ import { CoverArt } from '@/components/cover-art'
 import { cn } from '@/lib/utils'
 import { formatTime, type Song } from '@/lib/music-types'
 
+type RepeatMode = 'off' | 'all' | 'one'
+
 type PlayerBarProps = {
   song: Song | null
   isPlaying: boolean
@@ -22,7 +26,11 @@ type PlayerBarProps = {
   duration: number
   volume: number
   muted: boolean
+  shuffleEnabled: boolean
+  repeatMode: RepeatMode
   onTogglePlay: () => void
+  onToggleShuffle: () => void
+  onCycleRepeat: () => void
   onToggleLike?: () => void
   onSeek: (value: number) => void
   onPrev: () => void
@@ -30,6 +38,7 @@ type PlayerBarProps = {
   onVolumeChange: (value: number) => void
   onToggleMute: () => void
   onExpand: () => void
+  onShowQueue: () => void
   isLikePending?: boolean
 }
 
@@ -41,7 +50,11 @@ export function PlayerBar(props: PlayerBarProps) {
     duration,
     volume,
     muted,
+    shuffleEnabled,
+    repeatMode,
     onTogglePlay,
+    onToggleShuffle,
+    onCycleRepeat,
     onToggleLike,
     onSeek,
     onPrev,
@@ -49,6 +62,7 @@ export function PlayerBar(props: PlayerBarProps) {
     onVolumeChange,
     onToggleMute,
     onExpand,
+    onShowQueue,
     isLikePending = false,
   } = props
 
@@ -58,11 +72,13 @@ export function PlayerBar(props: PlayerBarProps) {
 
   const canLike = Boolean(onToggleLike && !song.isMock && song.serverSong)
   const isLiked = Boolean(song.serverSong?.liked ?? song.liked)
+  const repeatActive = repeatMode !== 'off'
+  const RepeatIcon = repeatMode === 'one' ? Repeat1 : Repeat
 
   return (
     <>
       {/* Mobile mini player */}
-      <div className="safe-x-2 flex w-full items-center gap-2 border-t border-border/60 bg-card/80 py-2 backdrop-blur-md md:hidden">
+      <div className="safe-x-2 flex w-full items-center gap-2 border-t border-border/60 bg-[var(--pwa-chrome)] py-2 md:hidden">
         <button
           type="button"
           onClick={onExpand}
@@ -81,8 +97,13 @@ export function PlayerBar(props: PlayerBarProps) {
             <div className="truncate text-sm font-medium tracking-tight">
               {song.title}
             </div>
-            <div className="truncate text-xs text-muted-foreground">
-              {song.artist}
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <span className="truncate">{song.artist}</span>
+              {duration > 0 && (
+                <span className="shrink-0 tabular-nums text-[10px] text-muted-foreground/70">
+                  · {formatTime(progress)} / {formatTime(duration)}
+                </span>
+              )}
             </div>
           </div>
         </button>
@@ -138,7 +159,7 @@ export function PlayerBar(props: PlayerBarProps) {
             <div className="truncate text-sm font-medium tracking-tight">
               {song.title}
             </div>
-            <div className="truncate text-xs text-muted-foreground hover:underline">
+            <div className="truncate text-xs text-muted-foreground">
               {song.artist}
             </div>
           </div>
@@ -164,11 +185,24 @@ export function PlayerBar(props: PlayerBarProps) {
           <div className="flex items-center gap-5">
             <button
               type="button"
-              className="text-muted-foreground transition-colors hover:text-foreground"
-              aria-label="Shuffle"
-              title="Shuffle"
+              onClick={onToggleShuffle}
+              className={cn(
+                'relative transition-colors',
+                shuffleEnabled
+                  ? 'text-primary'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+              aria-label={shuffleEnabled ? 'Disable shuffle' : 'Enable shuffle'}
+              aria-pressed={shuffleEnabled}
+              title={shuffleEnabled ? 'Shuffle on' : 'Shuffle off'}
             >
               <Shuffle className="h-4 w-4" />
+              {shuffleEnabled && (
+                <span
+                  aria-hidden
+                  className="absolute -bottom-1.5 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-primary"
+                />
+              )}
             </button>
             <button
               type="button"
@@ -200,11 +234,29 @@ export function PlayerBar(props: PlayerBarProps) {
             </button>
             <button
               type="button"
-              className="text-muted-foreground transition-colors hover:text-foreground"
-              aria-label="Repeat"
-              title="Repeat"
+              onClick={onCycleRepeat}
+              className={cn(
+                'relative transition-colors',
+                repeatActive
+                  ? 'text-primary'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+              aria-label={`Repeat ${repeatMode}`}
+              title={
+                repeatMode === 'off'
+                  ? 'Repeat off'
+                  : repeatMode === 'all'
+                    ? 'Repeat all'
+                    : 'Repeat one'
+              }
             >
-              <Repeat className="h-4 w-4" />
+              <RepeatIcon className="h-4 w-4" />
+              {repeatActive && (
+                <span
+                  aria-hidden
+                  className="absolute -bottom-1.5 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-primary"
+                />
+              )}
             </button>
           </div>
 
@@ -217,6 +269,7 @@ export function PlayerBar(props: PlayerBarProps) {
               max={duration || 1}
               onChange={onSeek}
               className="flex-1"
+              ariaLabel="Seek"
             />
             <span className="w-10 text-[11px] tabular-nums text-muted-foreground">
               {formatTime(duration)}
@@ -224,26 +277,38 @@ export function PlayerBar(props: PlayerBarProps) {
           </div>
         </div>
 
-        {/* Right: volume */}
-        <div className="flex w-1/4 items-center justify-end gap-2">
+        {/* Right: queue + volume */}
+        <div className="flex w-1/4 items-center justify-end gap-3">
           <button
             type="button"
-            onClick={onToggleMute}
+            onClick={onShowQueue}
             className="text-muted-foreground transition-colors hover:text-foreground"
-            aria-label={muted ? 'Unmute' : 'Mute'}
+            aria-label="Open queue"
+            title="Queue"
           >
-            {muted || volume === 0 ? (
-              <VolumeX className="h-4 w-4" />
-            ) : (
-              <Volume2 className="h-4 w-4" />
-            )}
+            <ListMusic className="h-4 w-4" />
           </button>
-          <Slider
-            value={muted ? 0 : volume}
-            max={1}
-            onChange={onVolumeChange}
-            className="w-28"
-          />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onToggleMute}
+              className="text-muted-foreground transition-colors hover:text-foreground"
+              aria-label={muted ? 'Unmute' : 'Mute'}
+            >
+              {muted || volume === 0 ? (
+                <VolumeX className="h-4 w-4" />
+              ) : (
+                <Volume2 className="h-4 w-4" />
+              )}
+            </button>
+            <Slider
+              value={muted ? 0 : volume}
+              max={1}
+              onChange={onVolumeChange}
+              className="w-32 lg:w-40"
+              ariaLabel="Volume"
+            />
+          </div>
         </div>
       </div>
     </>
@@ -255,11 +320,13 @@ function Slider({
   max,
   onChange,
   className,
+  ariaLabel,
 }: {
   value: number
   max: number
   onChange: (value: number) => void
   className?: string
+  ariaLabel?: string
 }) {
   const pct = max > 0 ? Math.min(100, Math.max(0, (value / max) * 100)) : 0
   return (
@@ -277,7 +344,7 @@ function Slider({
         value={value}
         onChange={(e) => onChange(parseFloat(e.target.value))}
         className="relative z-10 h-4 w-full cursor-pointer appearance-none bg-transparent"
-        aria-label="Slider"
+        aria-label={ariaLabel ?? 'Slider'}
       />
     </div>
   )

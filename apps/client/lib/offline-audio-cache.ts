@@ -1,11 +1,18 @@
 'use client'
 
-import { apiFetch, requestSongCacheIntent } from '@/lib/api'
+import {
+  apiFetch,
+  requestSongCacheIntent,
+  type ServerSong,
+} from '@/lib/api'
 import type { Song } from '@/lib/music-types'
 
 const DB_NAME = 'onvibe-offline-audio'
 const DB_VERSION = 1
 const STORE_NAME = 'tracks'
+const OFFLINE_DOWNLOAD_CHUNK_BYTES = 2 * 1024 * 1024
+const OFFLINE_DOWNLOAD_RANGE_CONCURRENCY = 2
+const OFFLINE_DOWNLOAD_CHUNK_RETRIES = 2
 
 export type OfflineAudioStatus =
   | 'idle'
@@ -31,6 +38,7 @@ type OfflineAudioRecord = {
   mimeType: string
   sizeBytes: number
   songId: string
+  serverSong?: ServerSong
   storedAt: number
   title: string
 }
@@ -107,6 +115,17 @@ export async function getOfflineAudioBlob(song: Song) {
   return record.blob
 }
 
+export async function getOfflineAudioServerSongs(): Promise<ServerSong[]> {
+  if (!isIndexedDbAvailable()) return []
+
+  const records = await readAllRecords()
+
+  return records
+    .filter((record) => record.blob instanceof Blob && record.blob.size > 0)
+    .sort((a, b) => b.storedAt - a.storedAt)
+    .map(serverSongFromRecord)
+}
+
 export async function downloadOfflineAudio(
   song: Song,
   options: DownloadOptions = {},
@@ -137,24 +156,20 @@ export async function downloadOfflineAudio(
     throw new Error('Could not prepare this song for offline download.')
   }
 
-  const response = await apiFetch(intent.cacheIntent.streamUrl, {
-    credentials: 'include',
-  })
-
-  if (!response.ok) {
-    throw new Error(`Download failed with status ${response.status}.`)
-  }
-
   const expectedSize =
     intent.cacheIntent.sizeBytes ??
     song.serverSong?.sizeBytes ??
-    numberFromHeader(response.headers.get('content-length'))
+    null
   const mimeType =
     intent.cacheIntent.mimeType ??
-    cleanMimeType(response.headers.get('content-type')) ??
     song.serverSong?.mimeType ??
     'audio/mpeg'
-  const blob = await readResponseBlob(response, expectedSize, options)
+  const blob = await downloadAudioBlob(
+    intent.cacheIntent.streamUrl,
+    expectedSize,
+    mimeType,
+    options,
+  )
 
   if (expectedSize && blob.size !== expectedSize) {
     throw new Error('The downloaded audio did not match the server copy.')
@@ -168,6 +183,7 @@ export async function downloadOfflineAudio(
     mimeType,
     sizeBytes: blob.size,
     songId: song.id,
+    serverSong: song.serverSong,
     storedAt: Date.now(),
     title: song.title,
   }
@@ -217,6 +233,14 @@ async function readRecord(songId: string) {
   const request = tx.objectStore(STORE_NAME).get(songId)
 
   return requestResult<OfflineAudioRecord | undefined>(request)
+}
+
+async function readAllRecords() {
+  const db = await openDb()
+  const tx = db.transaction(STORE_NAME, 'readonly')
+  const request = tx.objectStore(STORE_NAME).getAll()
+
+  return requestResult<OfflineAudioRecord[]>(request)
 }
 
 async function writeRecord(record: OfflineAudioRecord) {
@@ -273,6 +297,153 @@ function cacheKeyForSong(song: Song) {
   return `${song.id}:${checksum}:${sizeBytes}:${mimeType}`
 }
 
+function serverSongFromRecord(record: OfflineAudioRecord): ServerSong {
+  const storedAt = new Date(record.storedAt).toISOString()
+  const base =
+    record.serverSong?.id === record.songId ? record.serverSong : null
+  const checksum = record.checksum ?? base?.checksum ?? ''
+
+  return {
+    album: base?.album ?? null,
+    artist: base?.artist ?? record.artist,
+    checksum,
+    createdAt: base?.createdAt ?? storedAt,
+    durationMs: base?.durationMs ?? null,
+    externalSource: base?.externalSource ?? null,
+    id: record.songId,
+    importStatus: 'ready',
+    liked: base?.liked ?? false,
+    mimeType: record.mimeType,
+    sizeBytes: record.sizeBytes,
+    title: base?.title ?? record.title,
+    updatedAt: base?.updatedAt ?? storedAt,
+    userId: base?.userId,
+  }
+}
+
+async function downloadAudioBlob(
+  streamUrl: string,
+  expectedSize: number | null,
+  mimeType: string,
+  options: DownloadOptions,
+) {
+  if (expectedSize && expectedSize > 0) {
+    try {
+      return await readRangedBlob(streamUrl, expectedSize, mimeType, options)
+    } catch (error) {
+      if (!(error instanceof RangeUnsupportedError)) {
+        throw error
+      }
+    }
+  }
+
+  const response = await apiFetch(streamUrl, {
+    credentials: 'include',
+  })
+
+  if (!response.ok) {
+    throw new Error(`Download failed with status ${response.status}.`)
+  }
+
+  return readResponseBlob(
+    response,
+    expectedSize ?? numberFromHeader(response.headers.get('content-length')),
+    options,
+  )
+}
+
+async function readRangedBlob(
+  streamUrl: string,
+  expectedSize: number,
+  mimeType: string,
+  options: DownloadOptions,
+) {
+  const ranges = []
+
+  for (let start = 0; start < expectedSize; start += OFFLINE_DOWNLOAD_CHUNK_BYTES) {
+    ranges.push({
+      end: Math.min(start + OFFLINE_DOWNLOAD_CHUNK_BYTES - 1, expectedSize - 1),
+      index: ranges.length,
+      start,
+    })
+  }
+
+  const chunks = new Array<Uint8Array>(ranges.length)
+  let received = 0
+
+  await runWithConcurrency(
+    ranges,
+    OFFLINE_DOWNLOAD_RANGE_CONCURRENCY,
+    async (range) => {
+      const chunk = await downloadRangeWithRetries(
+        streamUrl,
+        range.start,
+        range.end,
+      )
+      const expectedChunkSize = range.end - range.start + 1
+
+      if (chunk.byteLength !== expectedChunkSize) {
+        throw new Error('The downloaded audio chunk did not match the server copy.')
+      }
+
+      chunks[range.index] = chunk
+      received += chunk.byteLength
+      options.onProgress?.(Math.min(received / expectedSize, 0.99))
+    },
+  )
+
+  options.onProgress?.(1)
+
+  return new Blob(chunks, { type: mimeType })
+}
+
+async function downloadRangeWithRetries(
+  streamUrl: string,
+  start: number,
+  end: number,
+) {
+  let lastError: unknown = null
+
+  for (let attempt = 0; attempt <= OFFLINE_DOWNLOAD_CHUNK_RETRIES; attempt += 1) {
+    try {
+      return await downloadRange(streamUrl, start, end)
+    } catch (error) {
+      if (error instanceof RangeUnsupportedError) {
+        throw error
+      }
+
+      lastError = error
+
+      if (attempt < OFFLINE_DOWNLOAD_CHUNK_RETRIES) {
+        await wait(250 * (attempt + 1))
+      }
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('Download failed while fetching an audio chunk.')
+}
+
+async function downloadRange(streamUrl: string, start: number, end: number) {
+  const response = await apiFetch(streamUrl, {
+    credentials: 'include',
+    headers: {
+      range: `bytes=${start}-${end}`,
+    },
+  })
+
+  if (response.status === 200) {
+    throw new RangeUnsupportedError()
+  }
+
+  if (response.status !== 206) {
+    throw new Error(`Download failed with status ${response.status}.`)
+  }
+
+  return new Uint8Array(await response.arrayBuffer())
+}
+
 async function readResponseBlob(
   response: Response,
   expectedSize: number | null,
@@ -308,6 +479,31 @@ async function readResponseBlob(
     type: cleanMimeType(response.headers.get('content-type')) ?? 'audio/mpeg',
   })
 }
+
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+) {
+  let nextIndex = 0
+  const workerCount = Math.min(Math.max(1, limit), items.length)
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const item = items[nextIndex]
+        nextIndex += 1
+        await worker(item)
+      }
+    }),
+  )
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+class RangeUnsupportedError extends Error {}
 
 function numberFromHeader(value: string | null) {
   if (!value) return null

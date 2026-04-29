@@ -1,11 +1,14 @@
 'use client'
 
-import { LogIn } from 'lucide-react'
+import { LogIn, WifiOff } from 'lucide-react'
 import { OnVibeLogo } from '@/components/onvibe-logo'
 import { Button } from '@/components/ui/button'
 import { startGoogleSignIn } from '@/lib/api'
+import { useOnlineStatus } from '@/hooks/use-online-status'
 
 export function LoginScreen() {
+  const isOnline = useOnlineStatus()
+
   return (
     <main className="safe-x-5 safe-top-5 safe-bottom-5 relative flex min-h-[100dvh] items-center justify-center overflow-hidden bg-background text-foreground">
       <div
@@ -21,16 +24,22 @@ export function LoginScreen() {
           Sign in to continue
         </h1>
         <p className="mx-auto mt-3 max-w-sm text-sm leading-6 text-muted-foreground">
-          Connect your Google account to sync your private music library across
-          web, iOS, and Android.
+          {isOnline
+            ? 'Connect your Google account to sync your private music library across web, iOS, and Android.'
+            : 'Reconnect to sign in. Saved offline tracks are available after this device has cached your account.'}
         </p>
         <Button
           type="button"
           onClick={startGoogleSignIn}
+          disabled={!isOnline}
           className="mt-7 h-12 w-full rounded-full bg-primary text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/20 transition-transform hover:bg-primary/90 hover:scale-[1.01] active:scale-100"
         >
-          <LogIn className="mr-2 h-4 w-4" />
-          Continue with Google
+          {isOnline ? (
+            <LogIn className="mr-2 h-4 w-4" />
+          ) : (
+            <WifiOff className="mr-2 h-4 w-4" />
+          )}
+          {isOnline ? 'Continue with Google' : 'Offline'}
         </Button>
         <p className="mt-5 text-xs text-muted-foreground">
           Your library stays on the OnVibe server you host.

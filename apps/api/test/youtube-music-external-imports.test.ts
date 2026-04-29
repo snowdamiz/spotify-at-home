@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +7,7 @@ import { createApiApp } from "../src/app";
 import type { GoogleOAuthClient } from "../src/auth/google";
 import { closeBroadsideDatabase, openBroadsideDatabase, type SqliteDatabase } from "../src/db";
 import type { YouTubeImportAdapter } from "../src/external-imports/youtubeAdapter";
+import type { AudioImportProcessor } from "../src/songs/audio-processing";
 
 const authConfig = {
   googleClientId: "google-client-id",
@@ -87,6 +89,82 @@ describe("YouTube Music external import flow", () => {
     expect(songs.json().songs[0]).toMatchObject({
       externalSource: {
         thumbnailUrl: "https://i.ytimg.com/vi/abc123XYZ09/hqdefault.jpg"
+      }
+    });
+  });
+
+  it("normalizes downloaded YouTube audio before storing the shared artifact", async () => {
+    const resolvedAudio = Buffer.from("RIFF raw youtube audio");
+    const normalizedAudio = Buffer.from("ID3 normalized youtube audio");
+    const adapter: YouTubeImportAdapter = {
+      resolve: vi.fn(async ({ discovery }) => ({
+        adapter: "test_youtube_adapter",
+        content: resolvedAudio,
+        durationMs: discovery.durationMs ?? 1200,
+        fileName: `${discovery.sourceId}.wav`,
+        mimeType: "audio/wav",
+        provenance: {
+          adapter: "test_youtube_adapter"
+        }
+      }))
+    };
+    const audioProcessor: AudioImportProcessor = {
+      process: vi.fn(async (input) => ({
+        content: normalizedAudio,
+        durationMs: input.durationMs,
+        fileName: `${input.fileName}.normalized.mp3`,
+        mimeType: "audio/mpeg",
+        provenance: {
+          audioNormalization: {
+            applied: true
+          }
+        }
+      }))
+    };
+    const { app } = createTestApp({
+      externalImports: {
+        audioProcessor,
+        youtubeImportAdapter: adapter
+      },
+      importPolicy: {
+        environment: "test",
+        mode: "open_test",
+        openTestAllowedEnvironments: ["test"],
+        openTestAllowedUserEmails: ["ada@example.com"]
+      }
+    });
+    const token = await signIn(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/external-imports/youtube",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        url: "https://youtu.be/abc123XYZ09"
+      }
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(audioProcessor.process).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: resolvedAudio,
+        fileName: "abc123XYZ09.wav",
+        mimeType: "audio/wav"
+      })
+    );
+    expect(readFileSync(response.json().song.storagePath)).toEqual(normalizedAudio);
+    expect(response.json()).toMatchObject({
+      song: {
+        checksum: `sha256:${createHash("sha256").update(normalizedAudio).digest("hex")}`,
+        externalSource: {
+          provenance: {
+            audioNormalization: {
+              applied: true
+            }
+          }
+        },
+        mimeType: "audio/mpeg",
+        sizeBytes: normalizedAudio.byteLength
       }
     });
   });

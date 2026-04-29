@@ -1,15 +1,17 @@
 'use client'
 
 import { useState, type FormEvent } from 'react'
-import { KeyRound, Loader2, LogOut } from 'lucide-react'
+import { KeyRound, Loader2, LogOut, WifiOff } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { logout, redeemEntryKey } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import { toast } from '@/hooks/use-toast'
+import { useOnlineStatus } from '@/hooks/use-online-status'
 
 export function EntryKeyScreen() {
   const { setUser, user } = useAuth()
+  const isOnline = useOnlineStatus()
   const [key, setKey] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const keyReady = key.length === 5
@@ -18,6 +20,14 @@ export function EntryKeyScreen() {
     event.preventDefault()
 
     if (submitting) return
+    if (!isOnline) {
+      toast({
+        title: 'Offline mode',
+        description: 'Reconnect to finish unlocking this account.',
+        variant: 'destructive',
+      })
+      return
+    }
 
     setSubmitting(true)
 
@@ -52,7 +62,9 @@ export function EntryKeyScreen() {
   }
 
   async function handleLogout() {
-    await logout()
+    if (isOnline) {
+      await logout().catch(() => undefined)
+    }
     setUser(null)
   }
 
@@ -92,13 +104,18 @@ export function EntryKeyScreen() {
           />
           <Button
             type="submit"
-            disabled={submitting || !keyReady}
+            disabled={submitting || !keyReady || !isOnline}
             className="h-12 w-full rounded-full bg-primary text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/20 transition-transform hover:bg-primary/90 hover:scale-[1.01] active:scale-100"
           >
             {submitting ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 Checking key
+              </>
+            ) : !isOnline ? (
+              <>
+                <WifiOff className="mr-2 h-4 w-4" />
+                Offline
               </>
             ) : (
               <>

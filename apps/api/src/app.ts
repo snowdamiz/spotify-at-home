@@ -23,6 +23,7 @@ import {
   type ExternalImportRoutesOptions
 } from "./external-imports/routes.js";
 import { registerImportPolicyRoutes } from "./import-policy/routes.js";
+import { LibraryEventHub, registerLibraryEventRoutes } from "./library/events.js";
 import { registerLibraryRoutes } from "./library/routes.js";
 import { registerSongRoutes, type SongRoutesOptions } from "./songs/routes.js";
 
@@ -77,6 +78,7 @@ export function createApiApp(options: CreateApiAppOptions = {}) {
   const songRepository = new SQLiteSongRepository(db);
   const playlistRepository = new SQLitePlaylistRepository(db);
   const csvImportRepository = new SQLiteCsvImportRepository(db);
+  const libraryEvents = new LibraryEventHub();
   const importPolicyConfig = options.importPolicy
     ? createImportPolicyRuntimeConfig(options.importPolicy)
     : undefined;
@@ -94,12 +96,14 @@ export function createApiApp(options: CreateApiAppOptions = {}) {
   registerExternalImportRoutes(app, {
     authService,
     importPolicyConfig,
+    libraryEvents,
     songRepository,
     ...options.externalImports
   });
   registerSongRoutes(app, {
     authService,
     importPolicyConfig,
+    libraryEvents,
     songRepository,
     ...options.songs
   });
@@ -108,10 +112,15 @@ export function createApiApp(options: CreateApiAppOptions = {}) {
     playlistRepository,
     songRepository
   });
+  registerLibraryEventRoutes(app, {
+    authService,
+    eventHub: libraryEvents
+  });
   registerCsvImportRoutes(app, {
     authService,
     csvImportRepository,
     importPolicyConfig,
+    libraryEvents,
     playlistRepository,
     songRepository,
     ...options.csvImports
@@ -149,7 +158,8 @@ function registerCors(app: FastifyInstance) {
     }
 
     reply.header("access-control-allow-methods", "GET,POST,PUT,DELETE,OPTIONS");
-    reply.header("access-control-allow-headers", "content-type,authorization");
+    reply.header("access-control-allow-headers", "authorization,content-type,range");
+    reply.header("access-control-expose-headers", "accept-ranges,content-length,content-range,content-type");
 
     if (request.method === "OPTIONS") {
       return reply.code(204).send();

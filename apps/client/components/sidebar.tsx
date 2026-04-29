@@ -16,7 +16,7 @@ import {
 import { cn } from '@/lib/utils'
 import { CoverArt } from '@/components/cover-art'
 import { playlistSubtitle, type ServerPlaylist } from '@/lib/api'
-import { type CollectionRef, type Song, type View } from '@/lib/music-types'
+import { resolvePlaylistColor, type CollectionRef, type Song, type View } from '@/lib/music-types'
 import { Button } from '@/components/ui/button'
 import {
   AlertDialog,
@@ -152,6 +152,15 @@ export function Sidebar({
               </div>
             </button>
           ))}
+          {songs.length > 8 && (
+            <button
+              type="button"
+              onClick={() => setView('library')}
+              className="mt-1 w-full rounded-md px-2 py-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              View all {songs.length} songs
+            </button>
+          )}
 
           {/* Featured playlists */}
           <div className="mb-1.5 mt-3 flex items-center justify-between px-2">
@@ -211,7 +220,7 @@ export function Sidebar({
                   className="flex min-w-0 flex-1 items-center gap-3 rounded-lg p-1.5 text-left"
                 >
                   <CoverArt
-                    colorClass={p.color ?? 'from-zinc-700 to-zinc-950'}
+                    colorClass={resolvePlaylistColor(p.color, p.name)}
                     title={p.name}
                     size="md"
                     rounded="md"
@@ -273,7 +282,7 @@ function SidebarPlaylistActions({
             size="icon"
             variant="ghost"
             disabled={deleting}
-            className="h-8 w-8 shrink-0 rounded-full text-muted-foreground opacity-100 hover:bg-accent hover:text-foreground sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"
+            className="h-8 w-8 shrink-0 rounded-full text-muted-foreground hover:bg-accent hover:text-foreground sm:opacity-50 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"
             aria-label={`More actions for ${playlist.name}`}
           >
             {deleting ? (

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -5,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiApp } from "../src/app";
 import type { GoogleOAuthClient } from "../src/auth/google";
 import { closeBroadsideDatabase, openBroadsideDatabase, type SqliteDatabase } from "../src/db";
+import type { AudioImportProcessor } from "../src/songs/audio-processing";
 import type { AudioStorage } from "../src/songs/storage";
 
 const authConfig = {
@@ -172,6 +174,90 @@ describe("Phase 4 audio imports and private storage", () => {
         }
       ]
     });
+  });
+
+  it("normalizes audio before writing imports to private storage", async () => {
+    const normalizedAudio = Buffer.from("ID3 normalized broadside test audio");
+    const audioProcessor: AudioImportProcessor = {
+      process: vi.fn(async (input) => ({
+        content: normalizedAudio,
+        durationMs: input.durationMs ?? 1234,
+        fileName: "overture.normalized.mp3",
+        mimeType: "audio/mpeg",
+        provenance: {
+          audioNormalization: {
+            applied: true
+          }
+        }
+      }))
+    };
+    const { app } = createTestApp({ audioProcessor });
+    const token = await signIn(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/songs/import",
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      payload: mp3Payload({
+        title: "Normalized Overture"
+      })
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(audioProcessor.process).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: tinyMp3,
+        fileName: "overture.mp3",
+        mimeType: "audio/mpeg"
+      })
+    );
+    expect(response.json()).toMatchObject({
+      song: {
+        checksum: `sha256:${createHash("sha256").update(normalizedAudio).digest("hex")}`,
+        durationMs: 1234,
+        mimeType: "audio/mpeg",
+        sizeBytes: normalizedAudio.byteLength,
+        title: "Normalized Overture"
+      }
+    });
+    expect(readFileSync(response.json().song.storagePath)).toEqual(normalizedAudio);
+  });
+
+  it("accepts raw audio uploads without base64 encoding", async () => {
+    const { app, storageRoot } = createTestApp();
+    const token = await signIn(app);
+    const params = new URLSearchParams({
+      fileName: "binary-overture.mp3",
+      mimeType: "audio/mpeg",
+      sizeBytes: String(tinyMp3.byteLength),
+      title: "Binary Overture"
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/songs/import?${params}`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "audio/mpeg"
+      },
+      payload: tinyMp3
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      song: {
+        title: "Binary Overture",
+        mimeType: "audio/mpeg",
+        sizeBytes: tinyMp3.byteLength,
+        importStatus: "ready"
+      }
+    });
+
+    const song = response.json().song;
+    expect(relative(storageRoot, song.storagePath)).toBe(`${song.userId}/${song.id}/original`);
+    expect(readFileSync(song.storagePath)).toEqual(tinyMp3);
   });
 
   it("marks failed imports as failed and does not expose them as ready songs", async () => {
@@ -471,6 +557,7 @@ describe("Phase 4 audio imports and private storage", () => {
   });
 
   function createTestApp(options: {
+    audioProcessor?: AudioImportProcessor;
     audioStorage?: AudioStorage;
     googleIdentity?: Partial<{
       avatarUrl: string | null;
@@ -490,6 +577,7 @@ describe("Phase 4 audio imports and private storage", () => {
         googleOAuthClient: createGoogleClient(options.googleIdentity)
       },
       songs: {
+        audioProcessor: options.audioProcessor,
         audioStorage: options.audioStorage,
         storageRoot,
         maxFileSizeBytes: options.maxFileSizeBytes

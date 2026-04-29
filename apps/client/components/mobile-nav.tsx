@@ -1,45 +1,35 @@
 'use client'
 
-import { Home, Library, Search, Settings, ShieldCheck } from 'lucide-react'
+import { Home, Library, Search, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { View } from '@/lib/music-types'
 
 type MobileNavProps = {
-  isAdmin: boolean
   view: View
   setView: (v: View) => void
 }
 
-const primaryItems: { id: View; label: string; icon: React.ReactNode }[] = [
+const items: { id: View; label: string; icon: React.ReactNode }[] = [
   { id: 'home', label: 'Home', icon: <Home className="h-5 w-5" /> },
   { id: 'search', label: 'Search', icon: <Search className="h-5 w-5" /> },
   { id: 'library', label: 'Library', icon: <Library className="h-5 w-5" /> },
   { id: 'settings', label: 'Settings', icon: <Settings className="h-5 w-5" /> },
 ]
 
-export function MobileNav({ isAdmin, view, setView }: MobileNavProps) {
-  const items = isAdmin
-    ? [
-        ...primaryItems.slice(0, 3),
-        { id: 'admin' as const, label: 'Admin', icon: <ShieldCheck className="h-5 w-5" /> },
-        primaryItems[3],
-      ]
-    : primaryItems
+export function MobileNav({ view, setView }: MobileNavProps) {
+  // Admin is reachable via Settings → Admin section (settings-view.tsx) so
+  // the mobile tab bar always renders the same four anchors regardless of
+  // role, keeping muscle memory stable.
+  const activeId = view === 'admin' ? 'settings' : view
 
   return (
     <nav
-      className="safe-x md:hidden border-t border-border/60 bg-background/95 backdrop-blur-md supports-[backdrop-filter]:bg-background/75"
+      className="safe-x md:hidden border-t border-border/60 bg-[var(--pwa-chrome)]"
       aria-label="Primary"
     >
-      <ul
-        className={
-          isAdmin
-            ? 'safe-bottom-nav grid grid-cols-5'
-            : 'safe-bottom-nav grid grid-cols-4'
-        }
-      >
+      <ul className="safe-bottom-nav grid grid-cols-4">
         {items.map((item) => {
-          const active = view === item.id
+          const active = activeId === item.id
           return (
             <li key={item.id}>
               <button

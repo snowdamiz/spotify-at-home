@@ -13,6 +13,11 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomToken } from "../auth/crypto.js";
 import { AuthError, type AuthService, type PublicUser } from "../auth/service.js";
 import { readAccessToken } from "../auth/routes.js";
+import {
+  createAudioImportProcessorFromEnv,
+  type AudioImportProcessor,
+  type ProcessedAudioImport
+} from "./audio-processing.js";
 import type {
   PlaybackState,
   RepeatMode,
@@ -28,6 +33,7 @@ import {
 } from "../import-policy/policy.js";
 import { parseRangeHeader } from "./range.js";
 import { createAudioStorageFromEnv, type AudioStorage, type AudioStorageReadRange } from "./storage.js";
+import type { LibraryEventSink } from "../library/events.js";
 
 export interface SongRoutesOptions {
   authService: AuthService;
@@ -37,6 +43,8 @@ export interface SongRoutesOptions {
   maxFileSizeBytes?: number;
   userQuotaBytes?: number;
   importPolicyConfig?: ImportPolicyRuntimeConfig;
+  libraryEvents?: LibraryEventSink;
+  audioProcessor?: AudioImportProcessor;
 }
 
 interface ImportPayload {
@@ -55,6 +63,17 @@ interface WipeAccountTracksPayload {
   deleteStoredAudio?: unknown;
 }
 
+interface NormalizedImportPayload {
+  album?: unknown;
+  artist?: unknown;
+  content: Buffer | null;
+  fileName?: unknown;
+  importPolicyMode?: unknown;
+  mimeType?: unknown;
+  sizeBytes?: unknown;
+  title?: unknown;
+}
+
 export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOptions) {
   const audioStorage =
     options.audioStorage ??
@@ -62,15 +81,19 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
   const maxFileSizeBytes = options.maxFileSizeBytes ?? AUDIO_IMPORT_LIMITS.maxFileSizeBytes;
   const userQuotaBytes = options.userQuotaBytes ?? AUDIO_IMPORT_LIMITS.defaultUserQuotaBytes;
   const importPolicyConfig = options.importPolicyConfig ?? readImportPolicyRuntimeConfig();
+  const audioProcessor = options.audioProcessor ?? createAudioImportProcessorFromEnv();
+  const audioImportBodyLimit = Math.ceil(maxFileSizeBytes * 4 / 3) + 16 * 1024;
 
-  app.post("/api/songs/import", async (request, reply) => {
+  registerAudioContentTypeParser(app);
+
+  app.post("/api/songs/import", { bodyLimit: audioImportBodyLimit }, async (request, reply) => {
     const user = await authenticate(request, reply, options.authService);
 
     if (!user) {
       return;
     }
 
-    const body = (request.body && typeof request.body === "object" ? request.body : {}) as ImportPayload;
+    const body = normalizeImportPayload(request);
     let importPolicyMode: ImportPolicyMode = "licensed_only";
 
     if (body.importPolicyMode !== undefined) {
@@ -112,7 +135,7 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
     }
 
     const validMetadata = metadata as { fileName: string; mimeType: string; sizeBytes: number };
-    const content = decodeBase64Content(body.contentBase64);
+    const content = body.content;
 
     if (!content) {
       return sendSongError(reply, "missing_audio_content", "Audio content is required.", 400);
@@ -122,7 +145,37 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
       return sendSongError(reply, "audio_size_mismatch", "Audio content does not match the declared size.", 400);
     }
 
-    if (options.songRepository.sumReadySongBytesForUser(user.id) + content.byteLength > userQuotaBytes) {
+    let processedAudio: ProcessedAudioImport;
+
+    try {
+      processedAudio = await audioProcessor.process({
+        content,
+        fileName: validMetadata.fileName,
+        mimeType: validMetadata.mimeType
+      });
+    } catch {
+      return sendSongError(reply, "audio_processing_failed", "Audio file could not be normalized.", 500);
+    }
+
+    const processedValidationError = validateAudioImportMetadata(
+      {
+        fileName: processedAudio.fileName,
+        mimeType: processedAudio.mimeType,
+        sizeBytes: processedAudio.content.byteLength
+      },
+      { maxFileSizeBytes }
+    );
+
+    if (processedValidationError) {
+      return sendSongError(
+        reply,
+        processedValidationError,
+        messageForValidationError(processedValidationError),
+        processedValidationError === "audio_file_too_large" ? 413 : 400
+      );
+    }
+
+    if (options.songRepository.sumReadySongBytesForUser(user.id) + processedAudio.content.byteLength > userQuotaBytes) {
       return sendSongError(reply, "storage_quota_exceeded", "Import would exceed the account storage quota.", 413);
     }
 
@@ -135,8 +188,9 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
       title: titleFromPayload(body.title, validMetadata.fileName),
       artist: nullableText(body.artist),
       album: nullableText(body.album),
-      mimeType: validMetadata.mimeType,
-      sizeBytes: content.byteLength,
+      durationMs: processedAudio.durationMs,
+      mimeType: processedAudio.mimeType,
+      sizeBytes: processedAudio.content.byteLength,
       checksum: "",
       storagePath: expectedStoragePath,
       importStatus: "pending"
@@ -154,16 +208,23 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
       storedPath = await audioStorage.writeOriginal({
         userId: user.id,
         songId: song.id,
-        content
+        content: processedAudio.content
       });
-      const checksum = `sha256:${createHash("sha256").update(content).digest("hex")}`;
+      const checksum = `sha256:${createHash("sha256").update(processedAudio.content).digest("hex")}`;
       options.songRepository.markSongReady({
         userId: user.id,
         songId: song.id,
         checksum,
+        durationMs: processedAudio.durationMs,
+        mimeType: processedAudio.mimeType,
+        sizeBytes: processedAudio.content.byteLength,
         storagePath: storedPath
       });
       const readySong = options.songRepository.findSongForUser(user.id, song.id);
+      options.libraryEvents?.emitLibraryChanged(user.id, {
+        reason: "audio_import_completed",
+        songId: (readySong ?? song).id
+      });
 
       return reply.code(201).send({ song: readySong ? serializeSong(readySong) : serializeSong(song) });
     } catch {
@@ -307,7 +368,7 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
     let fileSize: number;
 
     try {
-      fileSize = (await statStoredAudio(audioStorage, song.storagePath)).sizeBytes;
+      fileSize = await sizeForStreaming(audioStorage, song);
     } catch {
       return sendSongError(reply, "audio_file_missing", "Audio file is not available.", 404);
     }
@@ -320,20 +381,36 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
       return sendSongError(reply, "invalid_range", "Requested byte range is not satisfiable.", 416);
     }
 
-    reply.header("accept-ranges", "bytes");
-    reply.header("content-type", song.mimeType);
-
     if (parsedRange) {
       const contentLength = parsedRange.end - parsedRange.start + 1;
+      let stream;
 
+      try {
+        stream = await readStoredAudio(audioStorage, song.storagePath, parsedRange);
+      } catch {
+        return sendSongError(reply, "audio_file_missing", "Audio file is not available.", 404);
+      }
+
+      reply.header("accept-ranges", "bytes");
+      reply.header("content-type", song.mimeType);
       reply.code(206);
       reply.header("content-length", String(contentLength));
       reply.header("content-range", `bytes ${parsedRange.start}-${parsedRange.end}/${fileSize}`);
-      return reply.send(await readStoredAudio(audioStorage, song.storagePath, parsedRange));
+      return reply.send(stream);
     }
 
+    let stream;
+
+    try {
+      stream = await readStoredAudio(audioStorage, song.storagePath);
+    } catch {
+      return sendSongError(reply, "audio_file_missing", "Audio file is not available.", 404);
+    }
+
+    reply.header("accept-ranges", "bytes");
+    reply.header("content-type", song.mimeType);
     reply.header("content-length", String(fileSize));
-    return reply.send(await readStoredAudio(audioStorage, song.storagePath));
+    return reply.send(stream);
   });
 
   app.post("/api/songs/:id/cache-intent", async (request, reply) => {
@@ -460,6 +537,44 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
   });
 }
 
+function registerAudioContentTypeParser(app: FastifyInstance) {
+  app.addContentTypeParser(/^audio\/.*/i, { parseAs: "buffer" }, (_request, body, done) => {
+    done(null, body);
+  });
+}
+
+function normalizeImportPayload(request: FastifyRequest): NormalizedImportPayload {
+  if (Buffer.isBuffer(request.body)) {
+    const query = asRecord(request.query);
+    const contentType = cleanMimeType(headerValue(request.headers["content-type"]));
+    const sizeBytes = numberFromUnknown(query.sizeBytes) ?? request.body.byteLength;
+
+    return {
+      album: query.album,
+      artist: query.artist,
+      content: request.body,
+      fileName: query.fileName,
+      importPolicyMode: query.importPolicyMode,
+      mimeType: query.mimeType ?? contentType,
+      sizeBytes,
+      title: query.title
+    };
+  }
+
+  const body = (request.body && typeof request.body === "object" ? request.body : {}) as ImportPayload;
+
+  return {
+    album: body.album,
+    artist: body.artist,
+    content: decodeBase64Content(body.contentBase64),
+    fileName: body.fileName,
+    importPolicyMode: body.importPolicyMode,
+    mimeType: body.mimeType,
+    sizeBytes: body.sizeBytes,
+    title: body.title
+  };
+}
+
 async function authenticate(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -502,6 +617,28 @@ function songIdFromParams(params: unknown) {
   return String((params as { id?: string }).id ?? "");
 }
 
+function asRecord(value: unknown) {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function numberFromUnknown(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value !== "string" || value.trim() === "") {
+    return null;
+  }
+
+  const numberValue = Number(value);
+
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function cleanMimeType(value: string | undefined) {
+  return value?.split(";")[0]?.trim() || undefined;
+}
+
 function findReadySongForUser(
   songRepository: SQLiteSongRepository,
   userId: string,
@@ -534,6 +671,14 @@ async function statStoredAudio(audioStorage: AudioStorage, storagePath: string) 
   }
 
   return { sizeBytes: (await stat(storagePath)).size };
+}
+
+async function sizeForStreaming(audioStorage: AudioStorage, song: Song) {
+  if (storageObjectLocation(song.storagePath) === "r2" && song.sizeBytes > 0) {
+    return song.sizeBytes;
+  }
+
+  return (await statStoredAudio(audioStorage, song.storagePath)).sizeBytes;
 }
 
 async function readStoredAudio(

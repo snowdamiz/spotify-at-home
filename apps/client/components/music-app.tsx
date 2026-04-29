@@ -12,6 +12,7 @@ import { LibraryView } from '@/components/library-view'
 import { SearchView } from '@/components/search-view'
 import { CollectionView } from '@/components/collection-view'
 import { AddMusicDialog, type Download } from '@/components/add-music-dialog'
+import { CsvImportStatusToast } from '@/components/csv-import-status-toast'
 import {
   SettingsView,
   type LibraryDeviceSyncState,
@@ -26,6 +27,7 @@ import {
 } from '@/components/playlist-dialogs'
 import { Button } from '@/components/ui/button'
 import {
+  apiUrl,
   addSongToPlaylist,
   cancelCsvImportBatch,
   createCsvImportBatches,
@@ -51,16 +53,19 @@ import {
   type CsvImportItem,
   type ServerPlaylist,
   type ServerPlaylistDetail,
+  type ServerSong,
 } from '@/lib/api'
 import { AuthProvider, useAuth } from '@/lib/auth'
 import { useImportPolicy, useLibrarySummary, useSongs } from '@/lib/library-hooks'
 import { isLikelyYouTubeUrl } from '@/lib/url-import'
 import { toast } from '@/hooks/use-toast'
+import { useOnlineStatus } from '@/hooks/use-online-status'
 import {
   canStoreOffline,
   deleteOfflineAudio,
   downloadOfflineAudio,
   getOfflineAudioBlob,
+  getOfflineAudioServerSongs,
   getOfflineAudioStates,
   type OfflineAudioStateMap,
 } from '@/lib/offline-audio-cache'
@@ -110,7 +115,391 @@ function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+) {
+  let nextIndex = 0
+  const workerCount = Math.min(Math.max(1, limit), items.length)
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const item = items[nextIndex]
+        nextIndex += 1
+        await worker(item)
+      }
+    }),
+  )
+}
+
 const CSV_IMPORT_STATUS_REFRESH_FAILURE_LIMIT = 4
+const OFFLINE_DOWNLOAD_CONCURRENCY = 3
+const DEFAULT_VOLUME = 0.8
+const PLAYER_VOLUME_STORAGE_KEY = 'onvibe:player-volume:v1'
+const PLAYER_NAVIGATION_STORAGE_KEY = 'onvibe:navigation:v1'
+const PLAYER_SHUFFLE_STORAGE_KEY = 'onvibe:player-shuffle:v1'
+const PLAYER_REPEAT_STORAGE_KEY = 'onvibe:player-repeat:v1'
+const CSV_IMPORT_DOWNLOADS_STORAGE_KEY = 'onvibe:csv-import-downloads:v1'
+
+type RepeatMode = 'off' | 'all' | 'one'
+const REPEAT_MODES = new Set<RepeatMode>(['off', 'all', 'one'])
+
+export type PlayingFromLabel = {
+  kind: 'library' | 'playlist' | 'liked' | 'search' | 'home'
+  name?: string
+}
+
+type StoredNavigation = {
+  collection: CollectionRef | null
+  view: View
+}
+
+type StoredCsvImportDownloads = {
+  downloads: Partial<Download>[]
+  userId: string
+}
+
+const VIEWS = new Set<View>(['home', 'search', 'library', 'settings', 'admin'])
+const DOWNLOAD_STATUSES = new Set<Download['status']>([
+  'canceled',
+  'complete',
+  'downloading',
+  'error',
+])
+
+function clampVolume(value: number) {
+  return Math.min(1, Math.max(0, value))
+}
+
+function readStoredVolume() {
+  if (typeof window === 'undefined') {
+    return DEFAULT_VOLUME
+  }
+
+  try {
+    const storedVolume = window.localStorage.getItem(PLAYER_VOLUME_STORAGE_KEY)
+    if (storedVolume === null) {
+      return DEFAULT_VOLUME
+    }
+
+    const parsedVolume = Number(storedVolume)
+    return Number.isFinite(parsedVolume)
+      ? clampVolume(parsedVolume)
+      : DEFAULT_VOLUME
+  } catch {
+    return DEFAULT_VOLUME
+  }
+}
+
+function writeStoredVolume(volume: number) {
+  if (typeof window === 'undefined') return
+
+  try {
+    window.localStorage.setItem(
+      PLAYER_VOLUME_STORAGE_KEY,
+      String(clampVolume(volume)),
+    )
+  } catch {
+    // Some browser privacy modes can disable local storage.
+  }
+}
+
+function readStoredShuffle(): boolean {
+  if (typeof window === 'undefined') return false
+
+  try {
+    return window.localStorage.getItem(PLAYER_SHUFFLE_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeStoredShuffle(enabled: boolean) {
+  if (typeof window === 'undefined') return
+
+  try {
+    window.localStorage.setItem(
+      PLAYER_SHUFFLE_STORAGE_KEY,
+      enabled ? '1' : '0',
+    )
+  } catch {
+    // Some browser privacy modes can disable local storage.
+  }
+}
+
+function readStoredRepeat(): RepeatMode {
+  if (typeof window === 'undefined') return 'off'
+
+  try {
+    const value = window.localStorage.getItem(PLAYER_REPEAT_STORAGE_KEY)
+    return REPEAT_MODES.has(value as RepeatMode)
+      ? (value as RepeatMode)
+      : 'off'
+  } catch {
+    return 'off'
+  }
+}
+
+function writeStoredRepeat(mode: RepeatMode) {
+  if (typeof window === 'undefined') return
+
+  try {
+    window.localStorage.setItem(PLAYER_REPEAT_STORAGE_KEY, mode)
+  } catch {
+    // Some browser privacy modes can disable local storage.
+  }
+}
+
+function isStoredView(value: unknown): value is View {
+  return typeof value === 'string' && VIEWS.has(value as View)
+}
+
+function isStoredCollection(value: unknown): value is CollectionRef {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const collection = value as { id?: unknown; kind?: unknown }
+
+  if (collection.kind === 'system') {
+    return collection.id === 'liked-songs'
+  }
+
+  return (
+    (collection.kind === 'playlist' || collection.kind === 'category') &&
+    typeof collection.id === 'string' &&
+    collection.id.length > 0
+  )
+}
+
+function readStoredNavigation(): StoredNavigation {
+  const fallback: StoredNavigation = { collection: null, view: 'home' }
+
+  if (typeof window === 'undefined') {
+    return fallback
+  }
+
+  try {
+    const storedNavigation = window.localStorage.getItem(
+      PLAYER_NAVIGATION_STORAGE_KEY,
+    )
+    if (!storedNavigation) {
+      return fallback
+    }
+
+    const parsedNavigation = JSON.parse(storedNavigation) as {
+      collection?: unknown
+      view?: unknown
+    }
+
+    return {
+      collection: isStoredCollection(parsedNavigation.collection)
+        ? parsedNavigation.collection
+        : null,
+      view: isStoredView(parsedNavigation.view) ? parsedNavigation.view : 'home',
+    }
+  } catch {
+    return fallback
+  }
+}
+
+function writeStoredNavigation(navigation: StoredNavigation) {
+  if (typeof window === 'undefined') return
+
+  try {
+    window.localStorage.setItem(
+      PLAYER_NAVIGATION_STORAGE_KEY,
+      JSON.stringify(navigation),
+    )
+  } catch {
+    // Some browser privacy modes can disable local storage.
+  }
+}
+
+function readStoredCsvImportDownloads(userId: string | undefined) {
+  if (!userId || typeof window === 'undefined') {
+    return []
+  }
+
+  try {
+    const storedDownloads = window.localStorage.getItem(
+      CSV_IMPORT_DOWNLOADS_STORAGE_KEY,
+    )
+    if (!storedDownloads) {
+      return []
+    }
+
+    const parsedDownloads = JSON.parse(
+      storedDownloads,
+    ) as Partial<StoredCsvImportDownloads>
+
+    if (
+      parsedDownloads.userId !== userId ||
+      !Array.isArray(parsedDownloads.downloads)
+    ) {
+      return []
+    }
+
+    return parsedDownloads.downloads
+      .map(csvImportDownloadFromStoredValue)
+      .filter((download): download is Download => Boolean(download))
+  } catch {
+    return []
+  }
+}
+
+function writeStoredCsvImportDownloads(
+  userId: string | undefined,
+  downloads: Download[],
+) {
+  if (!userId || typeof window === 'undefined') return
+
+  const csvDownloads = downloads
+    .filter(shouldPersistCsvImportDownload)
+    .map(csvImportDownloadToStoredValue)
+
+  try {
+    if (csvDownloads.length === 0) {
+      window.localStorage.removeItem(CSV_IMPORT_DOWNLOADS_STORAGE_KEY)
+      return
+    }
+
+    window.localStorage.setItem(
+      CSV_IMPORT_DOWNLOADS_STORAGE_KEY,
+      JSON.stringify({ downloads: csvDownloads, userId }),
+    )
+  } catch {
+    // Some browser privacy modes can disable local storage.
+  }
+}
+
+function csvImportDownloadFromStoredValue(
+  value: Partial<Download>,
+): Download | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const batchIds = Array.isArray(value.batchIds)
+    ? value.batchIds.filter((batchId) => typeof batchId === 'string')
+    : []
+  const csvImportBatches = Array.isArray(value.csvImportBatches)
+    ? value.csvImportBatches
+    : undefined
+  const csvImportItems = Array.isArray(value.csvImportItems)
+    ? value.csvImportItems
+    : undefined
+  const status = DOWNLOAD_STATUSES.has(value.status as Download['status'])
+    ? (value.status as Download['status'])
+    : 'downloading'
+
+  if (
+    typeof value.id !== 'string' ||
+    typeof value.title !== 'string' ||
+    (batchIds.length === 0 && !csvImportBatches?.length)
+  ) {
+    return null
+  }
+
+  return {
+    artist: typeof value.artist === 'string' ? value.artist : 'CSV playlists',
+    batchIds,
+    cancelable: true,
+    canceling: false,
+    csvImportBatches,
+    csvImportItems,
+    id: value.id,
+    message: typeof value.message === 'string' ? value.message : undefined,
+    platform: 'url' as const,
+    progress:
+      typeof value.progress === 'number' && Number.isFinite(value.progress)
+        ? Math.min(1, Math.max(0, value.progress))
+        : 0.1,
+    retrying: false,
+    status,
+    title: value.title,
+    url: '',
+  } satisfies Download
+}
+
+function csvImportDownloadToStoredValue(download: Download) {
+  return {
+    artist: download.artist,
+    batchIds: csvImportBatchIds(download),
+    csvImportBatches: download.csvImportBatches,
+    csvImportItems: download.csvImportItems,
+    id: download.id,
+    message: download.message,
+    progress: download.progress,
+    status: download.status,
+    title: download.title,
+  } satisfies Partial<Download>
+}
+
+function shouldPersistCsvImportDownload(download: Download) {
+  return (
+    isCsvImportDownload(download) &&
+    (download.status === 'downloading' || download.status === 'error') &&
+    csvImportBatchIds(download).length > 0
+  )
+}
+
+function isCsvImportDownload(download: Download) {
+  return (
+    download.id.startsWith('csv-import-') ||
+    Boolean(
+      download.batchIds?.length ||
+        download.csvImportBatches?.length ||
+        download.csvImportItems?.length,
+    )
+  )
+}
+
+function csvImportBatchIds(download: Download) {
+  const ids = [
+    ...(download.batchIds ?? []),
+    ...(download.csvImportBatches?.map((batch) => batch.id) ?? []),
+  ]
+
+  return [...new Set(ids)]
+}
+
+async function loadCsvImportStatesForDownload(download: Download) {
+  const existingBatches = new Map(
+    download.csvImportBatches?.map((batch) => [batch.id, batch]) ?? [],
+  )
+  const existingItems = download.csvImportItems ?? []
+  const states = await Promise.all(
+    csvImportBatchIds(download).map(async (batchId) => {
+      try {
+        const next = await fetchCsvImportBatch(batchId)
+
+        if (next.status === 'authenticated' && next.batch) {
+          return {
+            batch: next.batch,
+            items: next.items,
+          }
+        }
+      } catch {
+        // Fall back to the last stored snapshot below.
+      }
+
+      const batch = existingBatches.get(batchId)
+      if (!batch) {
+        return null
+      }
+
+      return {
+        batch,
+        items: existingItems.filter((item) => item.batchId === batchId),
+      }
+    }),
+  )
+
+  return states.filter((state): state is CsvImportBatchState => Boolean(state))
+}
 
 function summarizeCsvImportBatches(batches: CsvImportBatch[]) {
   return batches.reduce(
@@ -276,22 +665,35 @@ function MusicAppInner() {
 
 function AuthenticatedMusicApp() {
   const { user } = useAuth()
+  const isOnline = useOnlineStatus()
   const [revision, setRevision] = useState(0)
   const songsState = useSongs(revision)
   const library = useLibrarySummary(revision)
   const importPolicy = useImportPolicy()
-  const [view, setView] = useState<View>('home')
-  const [collection, setCollection] = useState<CollectionRef | null>(null)
+  const [offlineServerSongs, setOfflineServerSongs] = useState<ServerSong[]>([])
+  const [storedNavigation] = useState(readStoredNavigation)
+  const [view, setView] = useState<View>(storedNavigation.view)
+  const [collection, setCollection] = useState<CollectionRef | null>(
+    storedNavigation.collection,
+  )
   const [queue, setQueue] = useState<Song[]>([])
   const [currentSongId, setCurrentSongId] = useState<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [progress, setProgress] = useState(0)
   const [duration, setDuration] = useState(0)
-  const [volume, setVolume] = useState(0.8)
+  const [volume, setVolume] = useState(readStoredVolume)
   const [muted, setMuted] = useState(false)
+  const [shuffleEnabled, setShuffleEnabled] = useState(readStoredShuffle)
+  const [repeatMode, setRepeatMode] = useState<RepeatMode>(readStoredRepeat)
+  const [playingFromLabel, setPlayingFromLabel] = useState<PlayingFromLabel | null>(
+    null,
+  )
+  const [showQueue, setShowQueue] = useState(false)
   const [showNowPlaying, setShowNowPlaying] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
-  const [downloads, setDownloads] = useState<Download[]>([])
+  const [downloads, setDownloads] = useState<Download[]>(() =>
+    readStoredCsvImportDownloads(user?.id),
+  )
   const [deletingSongId, setDeletingSongId] = useState<string | null>(null)
   const [likingSongId, setLikingSongId] = useState<string | null>(null)
   const [likedOverrides, setLikedOverrides] = useState<Record<string, boolean>>(
@@ -321,31 +723,57 @@ function AuthenticatedMusicApp() {
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const playNextRef = useRef<() => void>(() => undefined)
+  const repeatModeRef = useRef<RepeatMode>(repeatMode)
   const canceledCsvImportIdsRef = useRef<Set<string>>(new Set())
   const promptedCsvManualMatchIdsRef = useRef<Set<string>>(new Set())
+  const resumedCsvImportIdsRef = useRef<Set<string>>(new Set())
   const activeCsvManualMatchItemIdRef = useRef<string | null>(null)
   const promptCsvManualMatchRef = useRef<
     (downloadId: string, item: CsvImportItem) => void
   >(() => undefined)
 
+  const reloadOfflineServerSongs = useCallback(async () => {
+    try {
+      setOfflineServerSongs(await getOfflineAudioServerSongs())
+    } catch {
+      setOfflineServerSongs([])
+    }
+  }, [])
+
+  const offlineOnlyMode =
+    songsState.status !== 'loading' &&
+    songsState.status !== 'authenticated' &&
+    offlineServerSongs.length > 0
+
+  const activeServerSongs = offlineOnlyMode ? offlineServerSongs : songsState.songs
+
   const serverSongs = useMemo(
     () =>
-      songsState.songs.map((song) =>
+      activeServerSongs.map((song) =>
         likedOverrides[song.id] === undefined
           ? song
           : { ...song, liked: likedOverrides[song.id] },
       ),
-    [likedOverrides, songsState.songs],
+    [activeServerSongs, likedOverrides],
   )
   const likedAwareSummary = useMemo(() => {
-    if (songsState.status === 'authenticated') {
+    if (songsState.status === 'authenticated' || offlineOnlyMode) {
+      const likedSongs = serverSongs.filter((song) => song.liked)
+
       return {
         ...library.summary,
         counts: {
           ...library.summary.counts,
-          likedSongs: serverSongs.filter((song) => song.liked).length,
+          likedSongs: likedSongs.length,
+          playlists: offlineOnlyMode ? 0 : library.summary.counts.playlists,
+          songs: serverSongs.length,
         },
-        likedSongs: serverSongs.filter((song) => song.liked),
+        isEmpty: serverSongs.length === 0,
+        likedSongs,
+        playlists: offlineOnlyMode ? [] : library.summary.playlists,
+        recentSongs: offlineOnlyMode
+          ? serverSongs.slice(0, 6)
+          : library.summary.recentSongs,
       }
     }
 
@@ -357,7 +785,13 @@ function AuthenticatedMusicApp() {
           : { ...song, liked: likedOverrides[song.id] },
       ),
     }
-  }, [library.summary, likedOverrides, serverSongs, songsState.status])
+  }, [
+    library.summary,
+    likedOverrides,
+    offlineOnlyMode,
+    serverSongs,
+    songsState.status,
+  ])
   const userSongs = useMemo(
     () =>
       serverSongs
@@ -366,6 +800,10 @@ function AuthenticatedMusicApp() {
     [locallyDeletedSongIds, serverSongs],
   )
   const playlists = likedAwareSummary.playlists
+  const libraryStatus =
+    offlineOnlyMode || (!isOnline && songsState.status === 'error')
+      ? 'offline'
+      : songsState.status
   const currentSong = useMemo(
     () =>
       userSongs.find((song) => song.id === currentSongId) ??
@@ -374,6 +812,44 @@ function AuthenticatedMusicApp() {
     [currentSongId, queue, userSongs],
   )
   const activeCollectionId = collection?.id ?? null
+  const requireOnlineAction = useCallback(
+    (description: string) => {
+      if (isOnline) return true
+
+      toast({
+        title: 'Offline mode',
+        description,
+        variant: 'destructive',
+      })
+      return false
+    },
+    [isOnline],
+  )
+  const openAddMusic = useCallback(() => {
+    if (!requireOnlineAction('Reconnect to add or import music.')) return
+    setAddOpen(true)
+  }, [requireOnlineAction])
+
+  useEffect(() => {
+    void reloadOfflineServerSongs()
+  }, [reloadOfflineServerSongs])
+
+  useEffect(() => {
+    writeStoredCsvImportDownloads(user?.id, downloads)
+  }, [downloads, user?.id])
+
+  useEffect(() => {
+    if (view !== 'admin' || user?.isAdmin) {
+      return
+    }
+
+    setCollection(null)
+    setView('home')
+  }, [user?.isAdmin, view])
+
+  useEffect(() => {
+    writeStoredNavigation({ collection, view })
+  }, [collection, view])
 
   useEffect(() => {
     setLikedOverrides((current) => {
@@ -416,7 +892,17 @@ function AuthenticatedMusicApp() {
 
     const onTime = () => setProgress(audio.currentTime)
     const onLoaded = () => setDuration(audio.duration || currentSong?.duration || 0)
-    const onEnded = () => playNextRef.current()
+    const onEnded = () => {
+      if (repeatModeRef.current === 'one') {
+        const a = audioRef.current
+        if (a) {
+          a.currentTime = 0
+          a.play().catch(() => undefined)
+        }
+        return
+      }
+      playNextRef.current()
+    }
     const onPlay = () => setIsPlaying(true)
     const onPause = () => setIsPlaying(false)
 
@@ -443,6 +929,19 @@ function AuthenticatedMusicApp() {
     audio.volume = volume
     audio.muted = muted
   }, [volume, muted])
+
+  useEffect(() => {
+    writeStoredVolume(volume)
+  }, [volume])
+
+  useEffect(() => {
+    writeStoredShuffle(shuffleEnabled)
+  }, [shuffleEnabled])
+
+  useEffect(() => {
+    writeStoredRepeat(repeatMode)
+    repeatModeRef.current = repeatMode
+  }, [repeatMode])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -518,21 +1017,33 @@ function AuthenticatedMusicApp() {
   }, [currentSongId])
 
   const playSong = useCallback(
-    (song: Song, contextQueue?: Song[]) => {
+    (song: Song, contextQueue?: Song[], from?: PlayingFromLabel) => {
       setCurrentSongId(song.id)
       setIsPlaying(true)
-      setQueue(contextQueue && contextQueue.length > 0 ? contextQueue : [song])
+      const baseQueue =
+        contextQueue && contextQueue.length > 0 ? contextQueue : [song]
+      // If shuffle is on and the queue has more than one item, shuffle the
+      // remaining items but keep the requested song at the front.
+      let resolvedQueue = baseQueue
+      if (shuffleEnabled && baseQueue.length > 1) {
+        const rest = baseQueue.filter((item) => item.id !== song.id)
+        resolvedQueue = [song, ...shuffleArray(rest)]
+      }
+      setQueue(resolvedQueue)
+      if (from !== undefined) {
+        setPlayingFromLabel(from)
+      }
       updatePlaybackState({
         positionMs: 0,
-        repeatMode: 'off',
-        shuffleEnabled: false,
+        repeatMode,
+        shuffleEnabled,
         songId: song.id,
       }).catch(() => undefined)
       setTimeout(() => {
         audioRef.current?.play().catch(() => setIsPlaying(false))
       }, 0)
     },
-    [],
+    [repeatMode, shuffleEnabled],
   )
 
   const togglePlay = useCallback(() => {
@@ -548,18 +1059,19 @@ function AuthenticatedMusicApp() {
   }, [currentSong])
 
   const playCollection = useCallback(
-    (songs: Song[], shuffle = false) => {
+    (songs: Song[], shuffle = false, from?: PlayingFromLabel) => {
       if (songs.length === 0) return
       const ordered = shuffle ? shuffleArray(songs) : songs
       const alreadyHere = ordered.find((song) => song.id === currentSongId)
 
       if (alreadyHere) {
         setQueue(ordered)
+        if (from !== undefined) setPlayingFromLabel(from)
         togglePlay()
         return
       }
 
-      playSong(ordered[0], ordered)
+      playSong(ordered[0], ordered, from)
     },
     [currentSongId, playSong, togglePlay],
   )
@@ -568,9 +1080,16 @@ function AuthenticatedMusicApp() {
     const list = queue.length > 0 ? queue : userSongs
     if (list.length === 0) return
     const idx = list.findIndex((song) => song.id === currentSongId)
+    if (idx === -1) return
+    const isLast = idx === list.length - 1
+    if (isLast && repeatMode === 'off') {
+      // Stop at the end of the queue when repeat is off.
+      audioRef.current?.pause()
+      return
+    }
     const next = list[(idx + 1) % list.length]
     if (next) playSong(next, list)
-  }, [currentSongId, playSong, queue, userSongs])
+  }, [currentSongId, playSong, queue, repeatMode, userSongs])
 
   useEffect(() => {
     playNextRef.current = playNext
@@ -591,6 +1110,57 @@ function AuthenticatedMusicApp() {
     if (prev) playSong(prev, list)
   }, [currentSongId, playSong, queue, userSongs])
 
+  const toggleShuffle = useCallback(() => {
+    setShuffleEnabled((current) => {
+      const next = !current
+      if (next) {
+        // Reshuffle queue but pin the current song at position 0.
+        setQueue((q) => {
+          if (q.length <= 1) return q
+          const idx = q.findIndex((song) => song.id === currentSongId)
+          if (idx === -1) return shuffleArray(q)
+          const before = q.slice(0, idx)
+          const here = q[idx]
+          const after = q.slice(idx + 1)
+          return [here, ...shuffleArray([...before, ...after])]
+        })
+      }
+      return next
+    })
+  }, [currentSongId])
+
+  const cycleRepeat = useCallback(() => {
+    setRepeatMode((current) => {
+      if (current === 'off') return 'all'
+      if (current === 'all') return 'one'
+      return 'off'
+    })
+  }, [])
+
+  const removeFromQueue = useCallback(
+    (songId: string) => {
+      if (songId === currentSongId) return
+      setQueue((q) => q.filter((s) => s.id !== songId))
+    },
+    [currentSongId],
+  )
+
+  const derivePlayingFromLabel = useCallback((): PlayingFromLabel => {
+    if (collection?.kind === 'system' && collection.id === 'liked-songs') {
+      return { kind: 'liked', name: 'Liked Songs' }
+    }
+    if (collection?.kind === 'playlist') {
+      const match = playlists.find((p) => p.id === collection.id)
+      return { kind: 'playlist', name: match?.name }
+    }
+    if (collection?.kind === 'category') {
+      return { kind: 'library' }
+    }
+    if (view === 'search') return { kind: 'search' }
+    if (view === 'home') return { kind: 'home' }
+    return { kind: 'library' }
+  }, [collection, playlists, view])
+
   const seek = useCallback((value: number) => {
     const audio = audioRef.current
     if (!audio) return
@@ -602,8 +1172,45 @@ function AuthenticatedMusicApp() {
     setRevision((value) => value + 1)
   }, [])
 
+  useEffect(() => {
+    if (offlineOnlyMode || !user?.id || typeof EventSource === 'undefined') {
+      return
+    }
+
+    const events = new EventSource(apiUrl('/api/library/events'), {
+      withCredentials: true,
+    })
+    let refreshTimer: number | null = null
+
+    const scheduleRefresh = () => {
+      if (refreshTimer !== null) {
+        return
+      }
+
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null
+        refreshLibrary()
+      }, 150)
+    }
+
+    events.addEventListener('library_changed', scheduleRefresh)
+
+    return () => {
+      if (refreshTimer !== null) {
+        window.clearTimeout(refreshTimer)
+      }
+
+      events.removeEventListener('library_changed', scheduleRefresh)
+      events.close()
+    }
+  }, [offlineOnlyMode, refreshLibrary, user?.id])
+
   const downloadSongForOffline = useCallback(
     async (song: Song, notify = true) => {
+      if (!requireOnlineAction('Reconnect to save this song on this device.')) {
+        return false
+      }
+
       setOfflineAudio((states) => ({
         ...states,
         [song.id]: { progress: 0, status: 'downloading' },
@@ -623,6 +1230,7 @@ function AuthenticatedMusicApp() {
           ...states,
           [song.id]: state,
         }))
+        void reloadOfflineServerSongs()
 
         if (notify) {
           toast({
@@ -652,12 +1260,15 @@ function AuthenticatedMusicApp() {
         return false
       }
     },
-    [],
+    [reloadOfflineServerSongs, requireOnlineAction],
   )
 
   const deleteSongFromLibrary = useCallback(
     async (song: Song) => {
       if (deletingSongId) return
+      if (!requireOnlineAction('Reconnect to remove songs from your library.')) {
+        return
+      }
 
       setDeletingSongId(song.id)
 
@@ -679,7 +1290,9 @@ function AuthenticatedMusicApp() {
           return next
         })
         setQueue((current) => current.filter((item) => item.id !== song.id))
-        deleteOfflineAudio(song.id).catch(() => undefined)
+        deleteOfflineAudio(song.id)
+          .then(reloadOfflineServerSongs)
+          .catch(() => undefined)
         setOfflineAudio((states) => ({
           ...states,
           [song.id]: { status: 'idle' },
@@ -721,7 +1334,13 @@ function AuthenticatedMusicApp() {
         setDeletingSongId(null)
       }
     },
-    [currentSongId, deletingSongId, refreshLibrary],
+    [
+      currentSongId,
+      deletingSongId,
+      refreshLibrary,
+      reloadOfflineServerSongs,
+      requireOnlineAction,
+    ],
   )
 
   const handleTracksWiped = useCallback(
@@ -763,7 +1382,9 @@ function AuthenticatedMusicApp() {
           songIds.map((songId) =>
             deleteOfflineAudio(songId).catch(() => undefined),
           ),
-        ).catch(() => undefined)
+        )
+          .then(reloadOfflineServerSongs)
+          .catch(() => undefined)
       }
 
       if (currentSongId && wipedSongIds.has(currentSongId)) {
@@ -791,12 +1412,13 @@ function AuthenticatedMusicApp() {
       })
       refreshLibrary()
     },
-    [currentSongId, refreshLibrary],
+    [currentSongId, refreshLibrary, reloadOfflineServerSongs],
   )
 
   const toggleSongLike = useCallback(
     async (song: Song) => {
       if (!song.serverSong || likingSongId) return
+      if (!requireOnlineAction('Reconnect to update Liked Songs.')) return
 
       const wasLiked = songLiked(song)
       const nextLiked = !wasLiked
@@ -869,7 +1491,7 @@ function AuthenticatedMusicApp() {
         setLikingSongId(null)
       }
     },
-    [likingSongId, refreshLibrary],
+    [likingSongId, refreshLibrary, requireOnlineAction],
   )
 
   const toggleSongOffline = useCallback(async (song: Song) => {
@@ -881,6 +1503,7 @@ function AuthenticatedMusicApp() {
 
     if (current?.status === 'downloaded') {
       await deleteOfflineAudio(song.id)
+      void reloadOfflineServerSongs()
       setOfflineAudio((states) => ({
         ...states,
         [song.id]: { status: 'idle' },
@@ -892,8 +1515,17 @@ function AuthenticatedMusicApp() {
       return
     }
 
+    if (!requireOnlineAction('Reconnect to save this song on this device.')) {
+      return
+    }
+
     await downloadSongForOffline(song)
-  }, [downloadSongForOffline, offlineAudio])
+  }, [
+    downloadSongForOffline,
+    offlineAudio,
+    reloadOfflineServerSongs,
+    requireOnlineAction,
+  ])
 
   const toggleCollectionOffline = useCallback(
     async (songs: Song[]) => {
@@ -907,6 +1539,7 @@ function AuthenticatedMusicApp() {
 
       if (allDownloaded) {
         await Promise.all(downloadable.map((song) => deleteOfflineAudio(song.id)))
+        void reloadOfflineServerSongs()
         setOfflineAudio((states) => {
           const next = { ...states }
           downloadable.forEach((song) => {
@@ -923,17 +1556,25 @@ function AuthenticatedMusicApp() {
         return
       }
 
+      if (!requireOnlineAction('Reconnect to save this collection on this device.')) {
+        return
+      }
+
+      const pending = downloadable.filter((song) => {
+        const state = offlineAudio[song.id]?.status
+        return state !== 'downloaded' && state !== 'downloading'
+      })
       let savedCount = 0
 
-      for (const song of downloadable) {
-        const state = offlineAudio[song.id]?.status
-
-        if (state === 'downloaded' || state === 'downloading') continue
-
-        if (await downloadSongForOffline(song, false)) {
-          savedCount += 1
-        }
-      }
+      await runWithConcurrency(
+        pending,
+        OFFLINE_DOWNLOAD_CONCURRENCY,
+        async (song) => {
+          if (await downloadSongForOffline(song, false)) {
+            savedCount += 1
+          }
+        },
+      )
 
       toast({
         title: savedCount > 0 ? 'Collection saved offline' : 'Nothing new to download',
@@ -945,11 +1586,17 @@ function AuthenticatedMusicApp() {
             : 'The available songs were already saved or downloading.',
       })
     },
-    [downloadSongForOffline, offlineAudio],
+    [
+      downloadSongForOffline,
+      offlineAudio,
+      reloadOfflineServerSongs,
+      requireOnlineAction,
+    ],
   )
 
   const syncLibraryToDevice = useCallback(async () => {
     if (librarySync.status === 'syncing') return
+    if (!requireOnlineAction('Reconnect to sync songs to this device.')) return
 
     const downloadable = userSongs.filter(canStoreOffline)
 
@@ -989,19 +1636,23 @@ function AuthenticatedMusicApp() {
       total: downloadable.length,
     })
 
-    for (const song of pending) {
-      const saved = await downloadSongForOffline(song, false)
+    await runWithConcurrency(
+      pending,
+      OFFLINE_DOWNLOAD_CONCURRENCY,
+      async (song) => {
+        const saved = await downloadSongForOffline(song, false)
 
-      completed += 1
-      if (!saved) failed += 1
+        completed += 1
+        if (!saved) failed += 1
 
-      setLibrarySync({
-        completed,
-        failed,
-        status: 'syncing',
-        total: downloadable.length,
-      })
-    }
+        setLibrarySync({
+          completed,
+          failed,
+          status: 'syncing',
+          total: downloadable.length,
+        })
+      },
+    )
 
     setLibrarySync({
       completed,
@@ -1020,12 +1671,19 @@ function AuthenticatedMusicApp() {
             } saved on this device.`,
       variant: failed > 0 ? 'destructive' : 'default',
     })
-  }, [downloadSongForOffline, librarySync.status, offlineAudio, userSongs])
+  }, [
+    downloadSongForOffline,
+    librarySync.status,
+    offlineAudio,
+    requireOnlineAction,
+    userSongs,
+  ])
 
   const onFilesSelected = useCallback(
     async (files: FileList | File[]) => {
       const list = Array.from(files)
       if (list.length === 0) return
+      if (!requireOnlineAction('Reconnect to import audio.')) return
 
       const id = `upload-${Date.now()}`
       setDownloads((prev) => [
@@ -1091,13 +1749,14 @@ function AuthenticatedMusicApp() {
         )
       }
     },
-    [importPolicy.policy.mode, refreshLibrary],
+    [importPolicy.policy.mode, refreshLibrary, requireOnlineAction],
   )
 
   const monitorCsvImportBatches = useCallback(
     async (downloadId: string, initialStates: CsvImportBatchState[]) => {
       let states = initialStates
       let summary = summarizeCsvImportStates(states)
+      let refreshedCompletedItems = summary.completedItems
 
       setDownloads((prev) =>
         prev.map((download) =>
@@ -1169,6 +1828,12 @@ function AuthenticatedMusicApp() {
 
         states = refreshedStates.map((result) => result.state)
         summary = summarizeCsvImportStates(states)
+
+        if (summary.completedItems > refreshedCompletedItems) {
+          refreshedCompletedItems = summary.completedItems
+          refreshLibrary()
+        }
+
         setDownloads((prev) =>
           prev.map((download) =>
             download.id === downloadId
@@ -1278,12 +1943,64 @@ function AuthenticatedMusicApp() {
     [refreshLibrary],
   )
 
+  useEffect(() => {
+    for (const download of downloads) {
+      if (
+        download.status !== 'downloading' ||
+        resumedCsvImportIdsRef.current.has(download.id) ||
+        csvImportBatchIds(download).length === 0
+      ) {
+        continue
+      }
+
+      resumedCsvImportIdsRef.current.add(download.id)
+      void loadCsvImportStatesForDownload(download).then((states) => {
+        if (states.length === 0) {
+          setDownloads((prev) =>
+            prev.map((item) =>
+              item.id === download.id
+                ? {
+                    ...item,
+                    message: 'CSV import could not be restored.',
+                    progress: 1,
+                    status: 'error',
+                  }
+                : item,
+            ),
+          )
+          return
+        }
+
+        void monitorCsvImportBatches(download.id, states).catch((error) => {
+          setDownloads((prev) =>
+            prev.map((item) =>
+              item.id === download.id
+                ? {
+                    ...item,
+                    message:
+                      error instanceof Error
+                        ? error.message
+                        : 'CSV import status could not be refreshed.',
+                    progress: 1,
+                    retrying: false,
+                    status: 'error',
+                  }
+                : item,
+            ),
+          )
+        })
+      })
+    }
+  }, [downloads, monitorCsvImportBatches])
+
   const onCsvFilesSelected = useCallback(
     async (files: File[]) => {
       if (files.length === 0) return
+      if (!requireOnlineAction('Reconnect to import CSV playlists.')) return
 
       const id = `csv-import-${Date.now()}`
       canceledCsvImportIdsRef.current.delete(id)
+      resumedCsvImportIdsRef.current.add(id)
       setDownloads((prev) => [
         {
           artist: 'CSV playlists',
@@ -1427,12 +2144,13 @@ function AuthenticatedMusicApp() {
         )
       }
     },
-    [monitorCsvImportBatches, refreshLibrary],
+    [monitorCsvImportBatches, refreshLibrary, requireOnlineAction],
   )
 
   const cancelCsvImport = useCallback(
     async (download: Download) => {
       if (download.status !== 'downloading' || download.canceling) return
+      if (!requireOnlineAction('Reconnect to cancel CSV imports.')) return
 
       canceledCsvImportIdsRef.current.add(download.id)
       setDownloads((prev) =>
@@ -1509,7 +2227,7 @@ function AuthenticatedMusicApp() {
         })
       }
     },
-    [refreshLibrary],
+    [refreshLibrary, requireOnlineAction],
   )
 
   const retryCsvImport = useCallback(
@@ -1517,8 +2235,10 @@ function AuthenticatedMusicApp() {
       const batchIds = download.batchIds ?? []
 
       if (download.retrying || batchIds.length === 0) return
+      if (!requireOnlineAction('Reconnect to retry CSV imports.')) return
 
       canceledCsvImportIdsRef.current.delete(download.id)
+      resumedCsvImportIdsRef.current.add(download.id)
       setDownloads((prev) =>
         prev.map((item) =>
           item.id === download.id
@@ -1607,10 +2327,12 @@ function AuthenticatedMusicApp() {
         )
       }
     },
-    [monitorCsvImportBatches],
+    [monitorCsvImportBatches, requireOnlineAction],
   )
 
   const onSubmitUrl = useCallback(async (rawInput: string) => {
+    if (!requireOnlineAction('Reconnect to search external sources.')) return
+
     setIsDiscoveringLink(true)
     setExternalResults([])
     const id = `link-discovery-${Date.now()}`
@@ -1692,9 +2414,11 @@ function AuthenticatedMusicApp() {
     } finally {
       setIsDiscoveringLink(false)
     }
-  }, [])
+  }, [requireOnlineAction])
 
   const searchCsvManualMatchQuery = useCallback(async (rawInput: string) => {
+    if (!requireOnlineAction('Reconnect to search CSV matches.')) return
+
     setIsDiscoveringLink(true)
     setExternalResults([])
 
@@ -1732,12 +2456,11 @@ function AuthenticatedMusicApp() {
     } finally {
       setIsDiscoveringLink(false)
     }
-  }, [])
+  }, [requireOnlineAction])
 
   const promptCsvManualMatch = useCallback(
     (downloadId: string, item: CsvImportItem) => {
       setCsvManualMatchTarget({ downloadId, item })
-      setAddOpen(true)
       void searchCsvManualMatchQuery(item.searchQuery)
     },
     [searchCsvManualMatchQuery],
@@ -1749,10 +2472,13 @@ function AuthenticatedMusicApp() {
 
   const openCsvManualMatch = useCallback(
     (download: Download, item: CsvImportItem) => {
+      if (!requireOnlineAction('Reconnect to match CSV rows.')) return
+
       promptedCsvManualMatchIdsRef.current.add(item.id)
+      setAddOpen(true)
       promptCsvManualMatch(download.id, item)
     },
-    [promptCsvManualMatch],
+    [promptCsvManualMatch, requireOnlineAction],
   )
 
   const clearCsvManualMatch = useCallback(() => {
@@ -1762,6 +2488,8 @@ function AuthenticatedMusicApp() {
 
   const onImportCsvMatch = useCallback(
     async (item: CsvImportItem, result: ExternalDiscoveryResult) => {
+      if (!requireOnlineAction('Reconnect to import CSV matches.')) return
+
       const target = csvManualMatchTarget
 
       if (!target || target.item.id !== item.id) return
@@ -1863,11 +2591,21 @@ function AuthenticatedMusicApp() {
         description: `"${item.title}" was added.`,
       })
     },
-    [csvManualMatchTarget, downloads, promptCsvManualMatch, refreshLibrary],
+    [
+      csvManualMatchTarget,
+      downloads,
+      promptCsvManualMatch,
+      refreshLibrary,
+      requireOnlineAction,
+    ],
   )
 
   const onImportExternalResult = useCallback(
     async (result: ExternalDiscoveryResult) => {
+      if (!requireOnlineAction('Reconnect to import from external sources.')) {
+        return
+      }
+
       const id = `link-import-${result.sourceId}-${Date.now()}`
 
       setDownloads((prev) => [
@@ -1944,7 +2682,7 @@ function AuthenticatedMusicApp() {
         )
       }
     },
-    [refreshLibrary],
+    [refreshLibrary, requireOnlineAction],
   )
 
   const openCollection = useCallback((ref: CollectionRef) => {
@@ -1958,6 +2696,8 @@ function AuthenticatedMusicApp() {
 
   const handleCreatePlaylistSubmit = useCallback(
     async (input: { name: string; description: string | null }) => {
+      if (!requireOnlineAction('Reconnect to create playlists.')) return
+
       try {
         const result = await createPlaylist(input)
 
@@ -2008,11 +2748,13 @@ function AuthenticatedMusicApp() {
         throw error
       }
     },
-    [pendingSongForPlaylist, refreshLibrary],
+    [pendingSongForPlaylist, refreshLibrary, requireOnlineAction],
   )
 
   const handleAddSongToPlaylist = useCallback(
     async (song: Song, playlistId: string) => {
+      if (!requireOnlineAction('Reconnect to update playlists.')) return
+
       try {
         const result = await addSongToPlaylist(playlistId, song.id)
         const playlistName =
@@ -2052,11 +2794,13 @@ function AuthenticatedMusicApp() {
         })
       }
     },
-    [playlists, refreshLibrary],
+    [playlists, refreshLibrary, requireOnlineAction],
   )
 
   const handleRemoveSongFromPlaylist = useCallback(
     async (playlistId: string, song: Song) => {
+      if (!requireOnlineAction('Reconnect to update playlists.')) return
+
       try {
         const result = await removeSongFromPlaylist(playlistId, song.id)
 
@@ -2083,13 +2827,14 @@ function AuthenticatedMusicApp() {
         })
       }
     },
-    [refreshLibrary],
+    [refreshLibrary, requireOnlineAction],
   )
 
   const handleEditPlaylistSubmit = useCallback(
     async (input: { name: string; description: string | null }) => {
       const target = editingPlaylist
       if (!target) return
+      if (!requireOnlineAction('Reconnect to edit playlists.')) return
 
       try {
         const result = await updatePlaylist(target.id, input)
@@ -2121,11 +2866,13 @@ function AuthenticatedMusicApp() {
         throw error
       }
     },
-    [editingPlaylist, refreshLibrary],
+    [editingPlaylist, refreshLibrary, requireOnlineAction],
   )
 
   const handleDeletePlaylist = useCallback(
     async (playlist: ServerPlaylist) => {
+      if (!requireOnlineAction('Reconnect to delete playlists.')) return
+
       try {
         const result = await deletePlaylist(playlist.id)
 
@@ -2157,18 +2904,22 @@ function AuthenticatedMusicApp() {
         })
       }
     },
-    [refreshLibrary],
+    [refreshLibrary, requireOnlineAction],
   )
 
   const openCreatePlaylist = useCallback(() => {
+    if (!requireOnlineAction('Reconnect to create playlists.')) return
+
     setPendingSongForPlaylist(null)
     setCreatePlaylistOpen(true)
-  }, [])
+  }, [requireOnlineAction])
 
   const openCreatePlaylistWithSong = useCallback((song: Song) => {
+    if (!requireOnlineAction('Reconnect to create playlists.')) return
+
     setPendingSongForPlaylist(song)
     setCreatePlaylistOpen(true)
-  }, [])
+  }, [requireOnlineAction])
 
   const openEditPlaylist = useCallback((playlist: ServerPlaylistDetail) => {
     setEditingPlaylist(playlist)
@@ -2184,7 +2935,7 @@ function AuthenticatedMusicApp() {
           playlists={playlists}
           likedCount={likedAwareSummary.counts.likedSongs}
           isAdmin={Boolean(user?.isAdmin)}
-          onImportClick={() => setAddOpen(true)}
+          onImportClick={openAddMusic}
           onCreatePlaylistClick={openCreatePlaylist}
           onOpenCollection={openCollection}
           onDeletePlaylist={handleDeletePlaylist}
@@ -2207,7 +2958,7 @@ function AuthenticatedMusicApp() {
                 size="icon"
                 variant="ghost"
                 className="h-9 w-9 rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
-                onClick={() => setAddOpen(true)}
+                onClick={openAddMusic}
                 aria-label="Add music"
               >
                 <Plus className="h-5 w-5" />
@@ -2219,7 +2970,7 @@ function AuthenticatedMusicApp() {
             <BrandLockup />
             <div className="flex items-center gap-2">
               <Button
-                onClick={() => setAddOpen(true)}
+                onClick={openAddMusic}
                 className="h-9 rounded-full bg-foreground px-4 text-background shadow-sm transition-transform hover:bg-foreground/90 hover:scale-[1.02] active:scale-100"
               >
                 <Plus className="mr-2 h-4 w-4" />
@@ -2249,8 +3000,12 @@ function AuthenticatedMusicApp() {
                 offlineAudio={offlineAudio}
                 revision={revision}
                 onBack={() => setCollection(null)}
-                onPlay={(song, nextQueue) => playSong(song, nextQueue)}
-                onPlayAll={playCollection}
+                onPlay={(song, nextQueue) =>
+                  playSong(song, nextQueue, derivePlayingFromLabel())
+                }
+                onPlayAll={(songs, shuffle) =>
+                  playCollection(songs, shuffle, derivePlayingFromLabel())
+                }
                 onToggleCollectionOffline={toggleCollectionOffline}
                 onToggleSongLike={toggleSongLike}
                 onToggleSongOffline={toggleSongOffline}
@@ -2266,32 +3021,34 @@ function AuthenticatedMusicApp() {
             ) : view === 'home' ? (
               <HomeView
                 songs={userSongs}
-                libraryStatus={songsState.status}
+                libraryStatus={libraryStatus}
                 playlists={playlists}
                 summary={likedAwareSummary}
                 onPlay={(song) =>
-                  playSong(song, [
+                  playSong(
                     song,
-                    ...userSongs.filter((item) => item.id !== song.id),
-                  ])
+                    [song, ...userSongs.filter((item) => item.id !== song.id)],
+                    { kind: 'home' },
+                  )
                 }
-                onImportClick={() => setAddOpen(true)}
+                onImportClick={openAddMusic}
                 onOpenCollection={openCollection}
               />
             ) : view === 'library' ? (
               <LibraryView
                 songs={userSongs}
-                libraryStatus={songsState.status}
+                libraryStatus={libraryStatus}
                 playlists={playlists}
                 likedCount={likedAwareSummary.counts.likedSongs}
                 currentSongId={currentSongId}
                 isPlaying={isPlaying}
                 offlineAudio={offlineAudio}
                 onPlay={(song) =>
-                  playSong(song, [
+                  playSong(
                     song,
-                    ...userSongs.filter((item) => item.id !== song.id),
-                  ])
+                    [song, ...userSongs.filter((item) => item.id !== song.id)],
+                    { kind: 'library' },
+                  )
                 }
                 onToggleSongLike={toggleSongLike}
                 onToggleSongOffline={toggleSongOffline}
@@ -2302,7 +3059,7 @@ function AuthenticatedMusicApp() {
                 onDeletePlaylist={handleDeletePlaylist}
                 deletingSongId={deletingSongId}
                 likingSongId={likingSongId}
-                onImportClick={() => setAddOpen(true)}
+                onImportClick={openAddMusic}
                 onOpenCollection={openCollection}
               />
             ) : view === 'settings' ? (
@@ -2312,23 +3069,31 @@ function AuthenticatedMusicApp() {
                 syncState={librarySync}
                 onSignedOut={() => setView('home')}
                 onSyncLibraryOffline={syncLibraryToDevice}
+                onOpenAdmin={user?.isAdmin ? goToView : undefined}
               />
             ) : view === 'admin' && user?.isAdmin ? (
               <AdminView songs={userSongs} onTracksWiped={handleTracksWiped} />
             ) : (
               <SearchView
                 songs={userSongs}
+                playlists={playlists}
                 currentSongId={currentSongId}
                 isPlaying={isPlaying}
                 offlineAudio={offlineAudio}
+                libraryStatus={libraryStatus}
                 revision={revision}
-                onPlay={(song, nextQueue) => playSong(song, nextQueue)}
+                onPlay={(song, nextQueue) =>
+                  playSong(song, nextQueue, { kind: 'search' })
+                }
                 onToggleSongLike={toggleSongLike}
                 onToggleSongOffline={toggleSongOffline}
                 onDeleteSong={deleteSongFromLibrary}
+                onAddSongToPlaylist={handleAddSongToPlaylist}
+                onCreatePlaylistWithSong={openCreatePlaylistWithSong}
                 deletingSongId={deletingSongId}
                 likingSongId={likingSongId}
                 onOpenCollection={openCollection}
+                onImportClick={openAddMusic}
               />
             )}
           </div>
@@ -2343,7 +3108,11 @@ function AuthenticatedMusicApp() {
           duration={duration}
           volume={volume}
           muted={muted}
+          shuffleEnabled={shuffleEnabled}
+          repeatMode={repeatMode}
           onTogglePlay={togglePlay}
+          onToggleShuffle={toggleShuffle}
+          onCycleRepeat={cycleRepeat}
           onToggleLike={
             currentSong ? () => toggleSongLike(currentSong) : undefined
           }
@@ -2356,13 +3125,10 @@ function AuthenticatedMusicApp() {
           }}
           onToggleMute={() => setMuted((value) => !value)}
           onExpand={() => setShowNowPlaying(true)}
+          onShowQueue={() => setShowQueue(true)}
           isLikePending={currentSong ? likingSongId === currentSong.id : false}
         />
-        <MobileNav
-          isAdmin={Boolean(user?.isAdmin)}
-          view={view}
-          setView={goToView}
-        />
+        <MobileNav view={view} setView={goToView} />
       </div>
 
       <NowPlaying
@@ -2371,14 +3137,28 @@ function AuthenticatedMusicApp() {
         isPlaying={isPlaying}
         progress={progress}
         duration={duration}
+        shuffleEnabled={shuffleEnabled}
+        repeatMode={repeatMode}
+        playingFromLabel={playingFromLabel}
+        queue={queue}
+        currentSongId={currentSongId}
+        showQueue={showQueue}
+        onShowQueue={() => setShowQueue(true)}
+        onCloseQueue={() => setShowQueue(false)}
         onClose={() => setShowNowPlaying(false)}
         onTogglePlay={togglePlay}
+        onToggleShuffle={toggleShuffle}
+        onCycleRepeat={cycleRepeat}
         onToggleLike={
           currentSong ? () => toggleSongLike(currentSong) : undefined
         }
         onSeek={seek}
         onPrev={playPrev}
         onNext={playNext}
+        onSelectQueueItem={(song) => {
+          playSong(song, queue, playingFromLabel ?? undefined)
+        }}
+        onRemoveFromQueue={removeFromQueue}
         isLikePending={currentSong ? likingSongId === currentSong.id : false}
       />
 
@@ -2405,6 +3185,16 @@ function AuthenticatedMusicApp() {
         onSubmitUrl={
           csvManualMatchTarget ? searchCsvManualMatchQuery : onSubmitUrl
         }
+      />
+
+      <CsvImportStatusToast
+        avoidPlayerBar={Boolean(currentSong)}
+        downloads={downloads}
+        hidden={addOpen}
+        onCancelImport={cancelCsvImport}
+        onMatchCsvImportItem={openCsvManualMatch}
+        onOpenImports={() => setAddOpen(true)}
+        onRetryCsvImport={retryCsvImport}
       />
 
       <CreatePlaylistDialog

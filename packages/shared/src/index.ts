@@ -1,5 +1,32 @@
 export const APP_NAME = "OnVibe" as const;
 
+// Tailwind gradient classes used to color playlist covers. Kept in shared so
+// both the client (CoverArt) and the API (CSV import / create endpoints) draw
+// from the same palette and avoid hex/class drift.
+export const PLAYLIST_COVER_PALETTE = [
+  "from-emerald-500 to-emerald-900",
+  "from-sky-600 to-indigo-900",
+  "from-rose-500 to-fuchsia-900",
+  "from-amber-500 to-rose-900",
+  "from-teal-500 to-emerald-900",
+  "from-fuchsia-600 to-indigo-900",
+  "from-orange-500 to-red-900",
+  "from-cyan-500 to-blue-900",
+  "from-violet-600 to-purple-900",
+  "from-lime-500 to-green-900"
+] as const;
+
+export function pickPlaylistColor(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash << 5) - hash + seed.charCodeAt(i);
+    hash |= 0;
+  }
+  return PLAYLIST_COVER_PALETTE[
+    Math.abs(hash) % PLAYLIST_COVER_PALETTE.length
+  ];
+}
+
 export const IMPORT_POLICY_MODES = [
   "open_test",
   "review_required",

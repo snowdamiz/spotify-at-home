@@ -809,10 +809,10 @@ function StorageObjectRow({ object }: { object: StorageObjectSummary }) {
         <button
           type="button"
           onClick={copyPath}
-          title="Copy storage path"
-          className="mt-1 flex w-full items-center gap-2 truncate text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+          title={displayPath}
+          className="mt-1 flex w-full min-w-0 items-center gap-2 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
         >
-          <code className="truncate font-mono">{displayPath}</code>
+          <code className="min-w-0 flex-1 truncate font-mono">{displayPath}</code>
           {copied ? (
             <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-primary" />
           ) : (

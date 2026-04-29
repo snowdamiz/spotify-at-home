@@ -11,7 +11,7 @@ const SITE_TITLE = 'OnVibe — Your music, anywhere'
 const SITE_DESCRIPTION =
   'A private music player for importing, syncing, and streaming your own library.'
 const SITE_URL = new URL('https://onvibe.dev')
-const APP_BACKGROUND_COLOR = '#000000'
+const APP_CHROME_COLOR = '#000000'
 
 export const metadata: Metadata = {
   metadataBase: SITE_URL,
@@ -24,7 +24,7 @@ export const metadata: Metadata = {
   },
   appleWebApp: {
     capable: true,
-    statusBarStyle: 'black',
+    statusBarStyle: 'black-translucent',
     title: 'OnVibe',
   },
   formatDetection: {
@@ -53,12 +53,10 @@ export const metadata: Metadata = {
 }
 
 export const viewport: Viewport = {
-  themeColor: APP_BACKGROUND_COLOR,
+  themeColor: APP_CHROME_COLOR,
   colorScheme: 'dark',
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
   viewportFit: 'cover',
 }
 
@@ -68,8 +66,8 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" className={`${geist.variable} bg-background`}>
-      <body className="font-sans antialiased bg-background text-foreground">
+    <html lang="en" className={`${geist.variable} bg-[var(--pwa-chrome)]`}>
+      <body className="bg-[var(--pwa-chrome)] font-sans antialiased text-foreground">
         {children}
         <PwaInstallPrompt />
         <Toaster />

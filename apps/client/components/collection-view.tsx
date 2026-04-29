@@ -1,10 +1,11 @@
 'use client'
 
 import {
-  ArrowLeft,
   CheckCircle2,
+  ChevronLeft,
   Download,
   Loader2,
+  Music,
   MoreHorizontal,
   Pause,
   Pencil,
@@ -14,6 +15,8 @@ import {
 } from 'lucide-react'
 import { CoverArt } from '@/components/cover-art'
 import { SongRow } from '@/components/song-row'
+import { EmptyState } from '@/components/ui/empty-state'
+import { cn } from '@/lib/utils'
 import {
   playlistSubtitle,
   serverSongToSong,
@@ -25,6 +28,7 @@ import { usePlaylist } from '@/lib/library-hooks'
 import {
   formatTime,
   getCollectionMeta,
+  resolvePlaylistColor,
   type CollectionRef,
   type Song,
 } from '@/lib/music-types'
@@ -114,15 +118,17 @@ export function CollectionView({
       : null
 
   if (!meta) {
+    const title =
+      playlistState.status === 'loading'
+        ? 'Loading collection…'
+        : playlistState.status === 'anonymous'
+          ? 'Log in to view server-backed playlists.'
+          : playlistState.status === 'error'
+            ? "Couldn't reach the server."
+            : 'Collection not found.'
     return (
-      <div className="px-4 py-10 text-center text-sm text-muted-foreground md:px-6">
-        {playlistState.status === 'loading'
-          ? 'Loading collection...'
-          : playlistState.status === 'anonymous'
-            ? 'Log in to view server-backed playlists.'
-            : playlistState.status === 'error'
-              ? 'Could not reach the OnVibe server.'
-              : 'Collection not found.'}
+      <div className="px-4 py-6 md:px-6">
+        <EmptyState variant="section" title={title} />
       </div>
     )
   }
@@ -140,47 +146,71 @@ export function CollectionView({
   const isCollectionDownloaded =
     downloadableSongs.length > 0 && downloadedCount === downloadableSongs.length
 
+  const showSubtitle = Boolean(meta.subtitle && !looksLikeImportFilename(meta.subtitle))
+  const showSubtitleDetail =
+    'subtitleDetail' in meta && meta.subtitleDetail && meta.songs.length > 0
+
   return (
     <div>
-      {/* Hero */}
-      <div
-        className={`relative bg-gradient-to-b ${meta.coverColor} to-background px-4 pt-3 pb-8 md:px-6`}
-      >
-        <div className="absolute inset-0 bg-gradient-to-b from-black/20 to-transparent" aria-hidden />
-        <button
+      {/* Hero — soft color wash that fades to background. Wash is clipped to
+          the hero box (overflow-hidden + inset-0) so it never paints over the
+          action bar that follows. */}
+      <div className="relative overflow-hidden px-4 pt-3 pb-6 md:px-6 md:pt-4 md:pb-8">
+        {/* Color wash backdrop */}
+        <div
+          aria-hidden
+          className={cn(
+            'pointer-events-none absolute inset-0 bg-gradient-to-b opacity-50',
+            meta.coverColor,
+          )}
+        />
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent via-background/60 to-background"
+        />
+
+        <Button
           type="button"
+          variant="ghost"
+          size="icon"
           onClick={onBack}
-          className="relative mb-5 inline-flex items-center gap-1.5 rounded-full bg-background/40 px-3 py-1.5 text-xs font-medium text-foreground backdrop-blur transition-colors hover:bg-background/60"
+          className="relative -ml-2 mb-4 h-9 w-9 rounded-full text-foreground/90 hover:bg-foreground/10 hover:text-foreground"
           aria-label="Back"
         >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          Back
-        </button>
+          <ChevronLeft className="h-5 w-5" />
+        </Button>
 
         <div className="relative flex flex-col items-center gap-5 text-center sm:flex-row sm:items-end sm:gap-6 sm:text-left">
           <CoverArt
             colorClass={meta.coverColor}
             title={meta.title}
-            className="h-44 w-44 rounded-md text-3xl shadow-2xl shadow-black/40 sm:h-48 sm:w-48 md:h-56 md:w-56"
-            rounded="md"
+            className="h-44 w-44 shrink-0 text-5xl shadow-2xl shadow-black/50 sm:h-48 sm:w-48 sm:text-6xl md:h-56 md:w-56 md:text-7xl"
+            rounded="lg"
           />
           <div className="min-w-0 flex-1">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-foreground/80">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-foreground/80">
               {meta.kindLabel}
             </div>
-            <h1 className="mt-2 text-4xl font-extrabold tracking-tight text-balance md:text-6xl">
+            <h1 className="mt-2 text-3xl font-extrabold tracking-tight text-balance sm:text-4xl md:text-5xl lg:text-6xl">
               {meta.title}
             </h1>
-            <p className="mt-3 max-w-xl text-sm text-foreground/80 text-pretty">
-              {meta.subtitle}
-            </p>
+            {showSubtitle && (
+              <p className="mt-3 max-w-xl text-sm text-foreground/80 text-pretty">
+                {meta.subtitle}
+              </p>
+            )}
             <div className="mt-3 text-xs text-foreground/70">
-              {meta.songs.length} {meta.songs.length === 1 ? 'song' : 'songs'}
-              {'subtitleDetail' in meta && meta.subtitleDetail ? (
-                <> &middot; {meta.subtitleDetail}</>
-              ) : null}
-              {meta.songs.length > 0 && (
-                <> &middot; {formatTime(totalSeconds)}</>
+              {meta.songs.length === 0 ? (
+                'Empty'
+              ) : (
+                <>
+                  {meta.songs.length}{' '}
+                  {meta.songs.length === 1 ? 'song' : 'songs'}
+                  {showSubtitleDetail ? (
+                    <> &middot; {meta.subtitleDetail}</>
+                  ) : null}
+                  <> &middot; {formatTime(totalSeconds)}</>
+                </>
               )}
             </div>
           </div>
@@ -249,14 +279,11 @@ export function CollectionView({
       {/* Track list */}
       <div className="px-2 pb-8 md:px-4">
         {meta.songs.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-border bg-card/30 px-6 py-10 text-center">
-            <h3 className="text-lg font-semibold tracking-tight">
-              No songs yet
-            </h3>
-            <p className="mt-1.5 text-sm text-muted-foreground">
-              This collection is empty.
-            </p>
-          </div>
+          <EmptyState
+            icon={<Music className="h-5 w-5" />}
+            title="No songs yet"
+            description="This collection is empty."
+          />
         ) : (
           <ul className="space-y-1">
             {meta.songs.map((song) => (
@@ -352,6 +379,12 @@ function PlaylistHeaderMenu({
   )
 }
 
+function looksLikeImportFilename(text: string) {
+  // Hide subtitles like "Imported from sadge_&_sappy.csv" — they read as
+  // metadata noise inside a hero card.
+  return /^Imported from .+\.(csv|json|txt|xml)$/i.test(text.trim())
+}
+
 function resolveCollectionMeta({
   collection,
   playlistState,
@@ -381,7 +414,10 @@ function resolveCollectionMeta({
       const songsById = new Map(songs.map((song) => [song.id, song]))
 
       return {
-        coverColor: playlistState.playlist.color ?? 'from-zinc-700 to-zinc-950',
+        coverColor: resolvePlaylistColor(
+          playlistState.playlist.color,
+          playlistState.playlist.name,
+        ),
         kindLabel: 'Playlist',
         songs: playlistState.playlist.songs.map(
           (song) => songsById.get(song.id) ?? serverSongToSong(song),
@@ -400,7 +436,7 @@ function resolveCollectionMeta({
     }
 
     return {
-      coverColor: fallback.color ?? 'from-zinc-700 to-zinc-950',
+      coverColor: resolvePlaylistColor(fallback.color, fallback.name),
       kindLabel: 'Playlist',
       songs: [],
       subtitle: fallback.description ?? playlistSubtitle(fallback),

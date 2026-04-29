@@ -1,10 +1,12 @@
 'use client'
 
-import { Play, Plus } from 'lucide-react'
+import { Music, Play, Plus, WifiOff } from 'lucide-react'
 import { CoverArt } from '@/components/cover-art'
 import { Button } from '@/components/ui/button'
+import { EmptyState } from '@/components/ui/empty-state'
+import { SectionHeader } from '@/components/ui/section-header'
 import { playlistSubtitle, type LibraryLoadStatus, type LibrarySummary, type ServerPlaylist } from '@/lib/api'
-import { type CollectionRef, type Song } from '@/lib/music-types'
+import { resolvePlaylistColor, type CollectionRef, type Song } from '@/lib/music-types'
 
 type HomeViewProps = {
   songs: Song[]
@@ -45,7 +47,9 @@ export function HomeView({
           {getGreeting()}
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Pick up where you left off.
+          {libraryStatus === 'offline'
+            ? 'Offline mode. Playing saved tracks from this device.'
+            : 'Pick up where you left off.'}
         </p>
       </header>
 
@@ -116,7 +120,7 @@ export function HomeView({
               className="ov-card group rounded-xl p-3 text-left"
             >
               <CoverArt
-                colorClass={p.color ?? 'from-zinc-700 to-zinc-950'}
+                colorClass={resolvePlaylistColor(p.color, p.name)}
                 title={p.name}
                 size="full"
                 rounded="md"
@@ -133,39 +137,35 @@ export function HomeView({
       </section>
 
       {libraryStatus === 'loading' ? (
-        <section className="rounded-xl bg-card/40 p-5 text-sm text-muted-foreground">
-          Loading your server library...
-        </section>
+        <EmptyState variant="section" title="Loading your library…" />
+      ) : libraryStatus === 'offline' && songs.length === 0 ? (
+        <EmptyState
+          icon={<WifiOff className="h-5 w-5" />}
+          title="No offline songs on this device"
+          description="Reconnect, then sync songs in Settings to listen without a connection."
+        />
       ) : libraryStatus === 'error' ? (
-        <section className="rounded-xl bg-card/40 p-5 text-sm text-muted-foreground">
-          Could not reach the OnVibe server.
-        </section>
+        <EmptyState
+          variant="section"
+          title="Couldn't reach the server."
+          description="Check your connection and try again."
+        />
       ) : songs.length === 0 ? (
-        <section className="rounded-2xl border border-dashed border-border bg-card/30 px-6 py-10 text-center">
-          <h3 className="text-lg font-semibold tracking-tight">
-            Your library is empty
-          </h3>
-          <p className="mx-auto mt-1.5 max-w-sm text-sm text-muted-foreground">
-            Upload audio from your device to start listening.
-          </p>
-          <Button
-            onClick={onImportClick}
-            className="mt-5 h-10 rounded-full bg-foreground text-background hover:bg-foreground/90"
-          >
-            <Plus className="mr-2 h-4 w-4" />
-            Add music
-          </Button>
-        </section>
+        <EmptyState
+          icon={<Music className="h-5 w-5" />}
+          title="Your library is empty"
+          description="Upload audio from your device to start listening."
+          action={
+            <Button
+              onClick={onImportClick}
+              className="h-10 rounded-full bg-foreground text-background hover:bg-foreground/90"
+            >
+              <Plus className="mr-2 h-4 w-4" />
+              Add music
+            </Button>
+          }
+        />
       ) : null}
-    </div>
-  )
-}
-
-function SectionHeader({ title, action }: { title: string; action?: React.ReactNode }) {
-  return (
-    <div className="mb-4 flex items-end justify-between">
-      <h2 className="text-xl font-bold tracking-tight md:text-2xl">{title}</h2>
-      {action}
     </div>
   )
 }

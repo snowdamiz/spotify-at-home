@@ -108,6 +108,21 @@ export function pickCoverColor(seed: string) {
   return COVER_PALETTE[Math.abs(hash) % COVER_PALETTE.length]
 }
 
+// Server stores playlist `color` as either a tailwind gradient class
+// ("from-emerald-500 to-emerald-900") or — for older rows — a raw hex like
+// "#d97706" that the client can't render as a gradient. Use the stored value
+// when it looks like a class; otherwise derive a deterministic gradient from
+// the playlist name so the same playlist always paints the same color.
+export function resolvePlaylistColor(
+  storedColor: string | null | undefined,
+  seed: string,
+): string {
+  if (storedColor && storedColor.startsWith('from-')) {
+    return storedColor
+  }
+  return pickCoverColor(seed)
+}
+
 export function formatTime(seconds: number) {
   if (!isFinite(seconds) || seconds < 0) return '0:00'
   const m = Math.floor(seconds / 60)

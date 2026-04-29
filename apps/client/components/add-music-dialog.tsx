@@ -12,7 +12,6 @@ import {
   Music2,
   RefreshCcw,
   Search,
-  Sparkles,
   Upload,
   X,
 } from 'lucide-react'
@@ -74,12 +73,6 @@ type AddMusicDialogProps = {
   onRetryCsvImport?: (download: Download) => void | Promise<void>
   onSubmitUrl: (url: string) => void | Promise<void>
 }
-
-const QUICK_SEARCHES = [
-  'Tame Impala',
-  'lo-fi beats',
-  'Daft Punk - Around the World',
-]
 
 const SUPPORTED_FORMATS = ['MP3', 'WAV', 'OGG', 'FLAC', 'M4A']
 
@@ -174,12 +167,6 @@ export function AddMusicDialog({
     submitQuery(url)
   }
 
-  const onSuggestionClick = (value: string) => {
-    setUrl(value)
-    inputRef.current?.focus()
-    submitQuery(value)
-  }
-
   const handleImport = async (result: ExternalDiscoveryResult) => {
     if (pendingResultIdsRef.current.has(result.sourceId)) return
 
@@ -199,7 +186,6 @@ export function AddMusicDialog({
     result.eligibility?.state !== 'blocked'
 
   const showResults = externalResults.length > 0
-  const showEmptySearchHint = !hasSearched && !isDiscoveringLink && !showResults
   const showNoMatches = hasSearched && !isDiscoveringLink && !showResults
 
   return (
@@ -300,13 +286,11 @@ export function AddMusicDialog({
                 error={error}
                 setError={setError}
                 onSubmit={onSubmit}
-                onSuggestionClick={onSuggestionClick}
                 isDiscoveringLink={isDiscoveringLink}
                 pendingResultIds={pendingResultIds}
                 externalResults={externalResults}
                 manualMatchItem={manualMatchItem}
                 showResults={showResults}
-                showEmptySearchHint={showEmptySearchHint}
                 showNoMatches={showNoMatches}
                 onImport={handleImport}
                 canImportExternal={canImportExternal}
@@ -386,13 +370,11 @@ type SearchPanelProps = {
   error: string | null
   setError: (v: string | null) => void
   onSubmit: (e: React.FormEvent) => void
-  onSuggestionClick: (value: string) => void
   isDiscoveringLink: boolean
   pendingResultIds: Set<string>
   externalResults: ExternalDiscoveryResult[]
   manualMatchItem?: CsvImportItem | null
   showResults: boolean
-  showEmptySearchHint: boolean
   showNoMatches: boolean
   onImport: (result: ExternalDiscoveryResult) => void | Promise<void>
   canImportExternal: (result: ExternalDiscoveryResult) => boolean
@@ -406,13 +388,11 @@ function SearchPanel({
   error,
   setError,
   onSubmit,
-  onSuggestionClick,
   isDiscoveringLink,
   pendingResultIds,
   externalResults,
   manualMatchItem,
   showResults,
-  showEmptySearchHint,
   showNoMatches,
   onImport,
   canImportExternal,
@@ -424,9 +404,6 @@ function SearchPanel({
         <h1 className="text-3xl font-bold tracking-tight md:text-5xl">
           What do you want to hear?
         </h1>
-        <p className="mt-3 text-sm text-muted-foreground md:text-base">
-          Search YouTube or paste a link — we&rsquo;ll bring it into your library.
-        </p>
       </div>
 
       <form
@@ -481,24 +458,6 @@ function SearchPanel({
             {error}
           </div>
         )}
-
-        {/* Quick suggestions */}
-        <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
-          <span className="inline-flex items-center gap-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-            <Sparkles className="h-3 w-3" />
-            Try
-          </span>
-          {QUICK_SEARCHES.map((q) => (
-            <button
-              key={q}
-              type="button"
-              onClick={() => onSuggestionClick(q)}
-              className="rounded-full border border-border/60 bg-card/40 px-3 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:bg-card hover:text-foreground"
-            >
-              {q}
-            </button>
-          ))}
-        </div>
       </form>
 
       {manualMatchItem && (
@@ -568,10 +527,6 @@ function SearchPanel({
           </div>
         )}
 
-        {showEmptySearchHint && (
-          <EmptySearchHint />
-        )}
-
         {showNoMatches && (
           <div className="rounded-2xl border border-dashed border-border/70 bg-card/30 px-6 py-12 text-center">
             <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
@@ -587,44 +542,6 @@ function SearchPanel({
         )}
       </div>
     </section>
-  )
-}
-
-function EmptySearchHint() {
-  const tips = [
-    {
-      icon: <Search className="h-4 w-4" />,
-      title: 'Search by title or artist',
-      desc: 'We surface the closest matches on YouTube.',
-    },
-    {
-      icon: <ExternalLink className="h-4 w-4" />,
-      title: 'Paste a link',
-      desc: 'Drop in any YouTube URL to import directly.',
-    },
-    {
-      icon: <Music2 className="h-4 w-4" />,
-      title: 'One click to your library',
-      desc: 'Tracks are converted and ready to play offline.',
-    },
-  ]
-  return (
-    <div className="grid gap-3 sm:grid-cols-3">
-      {tips.map((t) => (
-        <div
-          key={t.title}
-          className="rounded-xl border border-border/50 bg-card/40 p-4"
-        >
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            {t.icon}
-          </div>
-          <div className="mt-3 text-sm font-semibold">{t.title}</div>
-          <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            {t.desc}
-          </div>
-        </div>
-      ))}
-    </div>
   )
 }
 

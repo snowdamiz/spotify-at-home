@@ -1,12 +1,25 @@
 'use client'
 
-import { CheckCircle2, DownloadCloud, Loader2, LogOut, ShieldCheck, UserRound } from 'lucide-react'
+import type { ReactNode } from 'react'
+import {
+  ChevronRight,
+  CheckCircle2,
+  DownloadCloud,
+  HardDrive,
+  Loader2,
+  LogOut,
+  ShieldCheck,
+  ShieldQuestion,
+  UserRound,
+  WifiOff,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { logout, startGoogleSignIn } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import { useImportPolicy } from '@/lib/library-hooks'
-import type { Song } from '@/lib/music-types'
+import type { Song, View } from '@/lib/music-types'
 import type { OfflineAudioStateMap } from '@/lib/offline-audio-cache'
+import { useOnlineStatus } from '@/hooks/use-online-status'
 
 export type LibraryDeviceSyncState = {
   completed: number
@@ -21,6 +34,7 @@ type SettingsViewProps = {
   syncState: LibraryDeviceSyncState
   onSyncLibraryOffline: () => void
   onSignedOut: () => void
+  onOpenAdmin?: (view: View) => void
 }
 
 export function SettingsView({
@@ -29,9 +43,11 @@ export function SettingsView({
   syncState,
   onSignedOut,
   onSyncLibraryOffline,
+  onOpenAdmin,
 }: SettingsViewProps) {
   const { setUser, user } = useAuth()
   const importPolicy = useImportPolicy()
+  const isOnline = useOnlineStatus()
   const deviceSongs = songs.filter((song) => !song.isMock && song.serverSong)
   const downloadedCount = deviceSongs.filter(
     (song) => offlineAudio[song.id]?.status === 'downloaded',
@@ -50,159 +66,226 @@ export function SettingsView({
         : 0
 
   async function handleLogout() {
-    await logout()
+    if (isOnline) {
+      await logout().catch(() => undefined)
+    }
     setUser(null)
     onSignedOut()
   }
 
+  const accountSubtitle = user
+    ? (user.displayName ?? user.email ?? 'Signed in')
+    : 'Not signed in.'
+
+  const storageSubtitle =
+    totalCount === 0
+      ? 'No server-backed songs to save offline yet.'
+      : isSyncing
+        ? `Syncing ${syncState.completed} of ${syncState.total}${
+            syncState.failed > 0 ? ` · ${syncState.failed} failed` : ''
+          }`
+        : `${downloadedCount} of ${totalCount} saved offline${
+            downloadingCount > 0 ? ` · ${downloadingCount} downloading` : ''
+          }`
+
   return (
     <div className="px-4 pb-8 md:px-6">
+      <div className="mx-auto w-full max-w-2xl">
       <header className="pt-2 pb-6">
         <h1 className="text-3xl font-bold tracking-tight md:text-4xl">
           Settings
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Account, storage, and import controls for this OnVibe client.
+          Account, storage, and import controls.
         </p>
       </header>
 
       {importPolicy.policy.mode === 'open_test' && (
-        <section className="mb-4 rounded-xl bg-primary p-4 text-primary-foreground shadow-lg shadow-primary/10">
-          <div className="text-[11px] font-bold uppercase tracking-[0.14em]">
+        <div className="mb-4 rounded-2xl bg-primary px-4 py-3 text-primary-foreground shadow-md shadow-primary/10">
+          <div className="text-[11px] font-bold uppercase tracking-[0.18em]">
             {importPolicy.policy.copy.badge}
           </div>
-          <p className="mt-1 text-sm font-semibold">
+          <p className="mt-0.5 text-sm font-semibold">
             {importPolicy.policy.copy.description}
           </p>
-        </section>
+        </div>
       )}
 
-      <div className="grid gap-3 md:max-w-2xl">
-        <section className="rounded-xl border border-border/40 bg-card/60 p-5">
-          <div className="flex items-start gap-4">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
-              <UserRound className="h-5 w-5" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <h2 className="text-base font-semibold tracking-tight">
-                Account
-              </h2>
-              <p className="mt-1 truncate text-sm text-muted-foreground">
-                {user
-                  ? `Signed in as ${user.displayName ?? user.email}`
-                  : 'You are not signed in.'}
-              </p>
+      <div className="grid gap-2">
+        {user?.isAdmin && onOpenAdmin && (
+          <SettingsLink
+            icon={<ShieldCheck className="h-4 w-4" />}
+            iconClassName="bg-primary/20 text-primary"
+            title="Admin"
+            subtitle="Entry keys, storage, maintenance"
+            onClick={() => onOpenAdmin('admin')}
+          />
+        )}
+
+        <SettingsCard
+          icon={<UserRound className="h-4 w-4" />}
+          title="Account"
+          subtitle={accountSubtitle}
+          action={
+            user ? (
               <Button
                 type="button"
-                onClick={user ? handleLogout : startGoogleSignIn}
-                variant={user ? 'secondary' : 'default'}
-                className="mt-4 h-9 rounded-full"
+                onClick={handleLogout}
+                variant="ghost"
+                className="h-9 rounded-full px-4 text-sm text-muted-foreground hover:text-foreground"
               >
-                {user ? (
-                  <>
-                    <LogOut className="mr-2 h-4 w-4" />
-                    Log out
-                  </>
-                ) : (
-                  'Continue with Google'
-                )}
+                <LogOut className="mr-2 h-4 w-4" />
+                Log out
               </Button>
-            </div>
-          </div>
-        </section>
+            ) : (
+              <Button
+                type="button"
+                onClick={startGoogleSignIn}
+                disabled={!isOnline}
+                className="h-9 rounded-full bg-foreground px-4 text-background hover:bg-foreground/90"
+              >
+                {!isOnline ? (
+                  <WifiOff className="mr-2 h-4 w-4" />
+                ) : null}
+                {isOnline ? 'Continue with Google' : 'Offline'}
+              </Button>
+            )
+          }
+        />
 
-        <section className="rounded-xl border border-border/40 bg-card/60 p-5">
-          <div className="flex items-start gap-4">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-primary">
-              <ShieldCheck className="h-5 w-5" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <h2 className="text-base font-semibold tracking-tight">
-                Storage
-              </h2>
-              <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                Imported music syncs through your self-hosted OnVibe server and
-                can be saved locally on this browser for offline playback.
-              </p>
-              <div className="mt-4 rounded-lg border border-border/60 bg-background/40 p-4">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 text-sm font-semibold">
-                      {isSynced ? (
-                        <CheckCircle2 className="h-4 w-4 text-primary" />
-                      ) : isSyncing ? (
-                        <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                      ) : (
-                        <DownloadCloud className="h-4 w-4 text-muted-foreground" />
-                      )}
-                      <span>Current device</span>
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {totalCount === 0
-                        ? 'No server-backed songs in your library.'
-                        : isSyncing
-                          ? `${syncState.completed} of ${syncState.total} checked${
-                              syncState.failed > 0
-                                ? `, ${syncState.failed} failed`
-                                : ''
-                            }`
-                          : `${downloadedCount} of ${totalCount} songs saved locally${
-                              downloadingCount > 0
-                                ? `, ${downloadingCount} downloading`
-                                : ''
-                            }`}
-                    </p>
-                  </div>
-                  <Button
-                    type="button"
-                    variant={isSynced ? 'secondary' : 'default'}
-                    className="h-9 rounded-full"
-                    disabled={isSyncing || totalCount === 0}
-                    onClick={onSyncLibraryOffline}
-                  >
-                    {isSyncing ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Syncing
-                      </>
-                    ) : isSynced ? (
-                      <>
-                        <CheckCircle2 className="mr-2 h-4 w-4" />
-                        Library synced
-                      </>
-                    ) : (
-                      <>
-                        <DownloadCloud className="mr-2 h-4 w-4" />
-                        Sync library
-                      </>
-                    )}
-                  </Button>
-                </div>
-                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className="h-full rounded-full bg-primary transition-[width] duration-300"
-                    style={{ width: `${syncProgress}%` }}
-                  />
-                </div>
+        <SettingsCard
+          icon={<HardDrive className="h-4 w-4" />}
+          title="Offline library"
+          subtitle={storageSubtitle}
+          action={
+            <Button
+              type="button"
+              disabled={isSyncing || totalCount === 0}
+              onClick={onSyncLibraryOffline}
+              className={
+                isSynced
+                  ? 'h-9 rounded-full bg-card text-muted-foreground hover:bg-card hover:text-foreground'
+                  : 'h-9 rounded-full bg-foreground text-background hover:bg-foreground/90'
+              }
+            >
+              {isSyncing ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Syncing
+                </>
+              ) : isSynced ? (
+                <>
+                  <CheckCircle2 className="mr-2 h-4 w-4" />
+                  Synced
+                </>
+              ) : (
+                <>
+                  <DownloadCloud className="mr-2 h-4 w-4" />
+                  Sync to device
+                </>
+              )}
+            </Button>
+          }
+        >
+          {totalCount > 0 && (
+            <div className="mt-3">
+              <div className="h-1 w-full overflow-hidden rounded-full bg-foreground/10">
+                <div
+                  className="h-full rounded-full bg-foreground transition-[width] duration-300"
+                  style={{ width: `${syncProgress}%` }}
+                />
+              </div>
+              <div className="mt-1.5 flex justify-between text-[11px] tabular-nums text-muted-foreground">
+                <span>
+                  {isSyncing ? syncState.completed : downloadedCount} /{' '}
+                  {isSyncing ? syncState.total : totalCount}
+                </span>
+                <span>{syncProgress}%</span>
               </div>
             </div>
-          </div>
-        </section>
+          )}
+        </SettingsCard>
 
-        <section className="rounded-xl border border-border/40 bg-card/60 p-5">
-          <h2 className="text-base font-semibold tracking-tight">
-            Import policy
-          </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {importPolicy.policy.copy.label}
-          </p>
+        <SettingsCard
+          icon={<ShieldQuestion className="h-4 w-4" />}
+          title="Import policy"
+          subtitle={importPolicy.policy.copy.label}
+        >
           {importPolicy.status === 'error' && (
             <p className="mt-2 text-xs text-destructive">
-              Could not refresh the import policy from the server.
+              Couldn't refresh the import policy from the server.
             </p>
           )}
-        </section>
+        </SettingsCard>
+      </div>
       </div>
     </div>
+  )
+}
+
+function SettingsCard({
+  icon,
+  title,
+  subtitle,
+  action,
+  children,
+}: {
+  icon: ReactNode
+  title: string
+  subtitle: ReactNode
+  action?: ReactNode
+  children?: ReactNode
+}) {
+  return (
+    <section className="rounded-2xl bg-card/40 px-4 py-3.5">
+      <div className="flex items-center gap-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-foreground/[0.06] text-muted-foreground">
+          {icon}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold tracking-tight">{title}</div>
+          <div className="mt-0.5 truncate text-xs text-muted-foreground">
+            {subtitle}
+          </div>
+        </div>
+        {action ? <div className="shrink-0">{action}</div> : null}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+function SettingsLink({
+  icon,
+  iconClassName,
+  title,
+  subtitle,
+  onClick,
+}: {
+  icon: ReactNode
+  iconClassName: string
+  title: string
+  subtitle: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group flex w-full items-center gap-3 rounded-2xl bg-card/40 px-4 py-3.5 text-left transition-colors hover:bg-card/60"
+    >
+      <div
+        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${iconClassName}`}
+      >
+        {icon}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-semibold tracking-tight">{title}</div>
+        <div className="mt-0.5 truncate text-xs text-muted-foreground">
+          {subtitle}
+        </div>
+      </div>
+      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+    </button>
   )
 }

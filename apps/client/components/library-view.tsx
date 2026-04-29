@@ -8,16 +8,19 @@ import {
   Plus,
   Search as SearchIcon,
   Trash2,
+  WifiOff,
 } from 'lucide-react'
 import { SongRow } from '@/components/song-row'
 import { CoverArt } from '@/components/cover-art'
 import { Button } from '@/components/ui/button'
+import { EmptyState } from '@/components/ui/empty-state'
+import { SectionHeader } from '@/components/ui/section-header'
 import {
   playlistSubtitle,
   type LibraryLoadStatus,
   type ServerPlaylist,
 } from '@/lib/api'
-import { type CollectionRef, type Song } from '@/lib/music-types'
+import { resolvePlaylistColor, type CollectionRef, type Song } from '@/lib/music-types'
 import type { OfflineAudioStateMap } from '@/lib/offline-audio-cache'
 import {
   AlertDialog,
@@ -151,21 +154,29 @@ export function LibraryView({
       {/* Playlists */}
       {showPlaylists && (
         <section className="mb-7">
-          <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-              Playlists
-            </h2>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onCreatePlaylistClick}
-              className="h-8 rounded-full px-3 text-xs"
-            >
-              <Plus className="mr-1 h-3.5 w-3.5" />
-              New playlist
-            </Button>
-          </div>
-          {filteredPlaylists.length > 0 ? (
+          <SectionHeader
+            title="Playlists"
+            size="sm"
+            className="mb-2"
+            action={
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={onCreatePlaylistClick}
+                className="h-8 rounded-full px-3 text-xs"
+              >
+                <Plus className="mr-1 h-3.5 w-3.5" />
+                New playlist
+              </Button>
+            }
+          />
+          {libraryStatus === 'offline' && playlists.length === 0 ? (
+            <EmptyState
+              variant="section"
+              title="Playlists are unavailable offline."
+              description="Saved songs are still available on this device."
+            />
+          ) : filteredPlaylists.length > 0 ? (
             <ul className="space-y-1">
               {filteredPlaylists.map((p) => (
                 <li key={p.id}>
@@ -178,7 +189,7 @@ export function LibraryView({
                       className="flex min-w-0 flex-1 items-center gap-3 px-2 py-2 text-left"
                     >
                       <CoverArt
-                        colorClass={p.color ?? 'from-zinc-700 to-zinc-950'}
+                        colorClass={resolvePlaylistColor(p.color, p.name)}
                         title={p.name}
                         size="md"
                         rounded="md"
@@ -201,27 +212,25 @@ export function LibraryView({
               ))}
             </ul>
           ) : playlists.length === 0 ? (
-            <button
-              type="button"
-              onClick={onCreatePlaylistClick}
-              className="flex w-full items-center gap-3 rounded-lg border border-dashed border-border px-3 py-3 text-left transition-colors hover:bg-card/40"
-            >
-              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md bg-card text-muted-foreground">
-                <ListMusic className="h-5 w-5" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium">
-                  Create your first playlist
-                </div>
-                <div className="truncate text-xs text-muted-foreground">
-                  Group songs into a custom mix.
-                </div>
-              </div>
-            </button>
+            <EmptyState
+              icon={<ListMusic className="h-5 w-5" />}
+              title="Create your first playlist"
+              description="Group songs into a custom mix."
+              action={
+                <Button
+                  onClick={onCreatePlaylistClick}
+                  className="h-10 rounded-full bg-foreground text-background hover:bg-foreground/90"
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  New playlist
+                </Button>
+              }
+            />
           ) : (
-            <div className="py-6 text-center text-xs text-muted-foreground">
-              No playlists match.
-            </div>
+            <EmptyState
+              variant="section"
+              title="No playlists match."
+            />
           )}
         </section>
       )}
@@ -229,38 +238,42 @@ export function LibraryView({
       {/* Songs */}
       {showSongs && (
         <section>
-          <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-            Your songs
-          </h2>
+          <SectionHeader title="Your songs" size="sm" className="mb-2" />
 
           {libraryStatus === 'loading' ? (
-            <div className="py-10 text-center text-sm text-muted-foreground">
-              Loading your server library...
-            </div>
+            <EmptyState variant="section" title="Loading your library…" />
+          ) : libraryStatus === 'offline' && songs.length === 0 ? (
+            <EmptyState
+              icon={<WifiOff className="h-5 w-5" />}
+              title="No offline songs on this device"
+              description="Reconnect, then sync your library to save tracks here."
+            />
           ) : libraryStatus === 'error' ? (
-            <div className="py-10 text-center text-sm text-muted-foreground">
-              Could not reach the OnVibe server.
-            </div>
+            <EmptyState
+              variant="section"
+              title="Couldn't reach the server."
+              description="Check your connection and try again."
+            />
           ) : songs.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-border bg-card/30 px-6 py-10 text-center">
-              <h3 className="text-lg font-semibold tracking-tight">
-                No songs yet
-              </h3>
-              <p className="mx-auto mt-1.5 max-w-sm text-sm text-muted-foreground">
-                Upload audio from your device to store it on your OnVibe server.
-              </p>
-              <Button
-                onClick={onImportClick}
-                className="mt-5 h-10 rounded-full bg-foreground text-background hover:bg-foreground/90"
-              >
-                <Plus className="mr-2 h-4 w-4" />
-                Add music
-              </Button>
-            </div>
+            <EmptyState
+              icon={<Plus className="h-5 w-5" />}
+              title="No songs yet"
+              description="Upload audio from your device to store it in your library."
+              action={
+                <Button
+                  onClick={onImportClick}
+                  className="h-10 rounded-full bg-foreground text-background hover:bg-foreground/90"
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add music
+                </Button>
+              }
+            />
           ) : filteredSongs.length === 0 ? (
-            <div className="py-10 text-center text-sm text-muted-foreground">
-              No matches in your library.
-            </div>
+            <EmptyState
+              variant="section"
+              title="No matches in your library."
+            />
           ) : (
             <ul className="space-y-1">
               {filteredSongs.map((song) => (
@@ -293,9 +306,7 @@ export function LibraryView({
 
       {showPlaylists && (
         <section className="mt-7">
-          <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-            System
-          </h2>
+          <SectionHeader title="System" size="sm" className="mb-2" />
           <button
             type="button"
             onClick={() => onOpenCollection({ kind: 'system', id: 'liked-songs' })}

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  pickPlaylistColor,
   validateAudioImportMetadata,
   type ExternalDiscoveryResult,
   type ImportPolicyMode
@@ -21,7 +22,13 @@ import {
   YouTubeDiscoveryProvider,
   type YouTubeDiscoveryClient
 } from "../external-discovery/youtube.js";
+import {
+  createAudioImportProcessorFromEnv,
+  type AudioImportProcessor,
+  type ProcessedAudioImport
+} from "../songs/audio-processing.js";
 import { createAudioStorageFromEnv, type AudioStorage } from "../songs/storage.js";
+import type { LibraryEventSink } from "../library/events.js";
 import {
   YtDlpYouTubeImportAdapter,
   YouTubeImportAdapterError,
@@ -53,8 +60,11 @@ export interface CsvImportRoutesOptions {
   playlistRepository: SQLitePlaylistRepository;
   songRepository: SQLiteSongRepository;
   audioStorage?: AudioStorage;
+  audioProcessor?: AudioImportProcessor;
+  csvImportConcurrency?: number;
   csvYouTubeSearchIntervalMs?: number;
   importPolicyConfig?: ImportPolicyRuntimeConfig;
+  libraryEvents?: LibraryEventSink;
   processImportsInline?: boolean;
   recoverableFailurePauseThreshold?: number;
   recoverableSearchAttempts?: number;
@@ -65,8 +75,9 @@ export interface CsvImportRoutesOptions {
 }
 
 const DEFAULT_CSV_IMPORT_BODY_LIMIT_BYTES = 25 * 1024 * 1024;
+const DEFAULT_CSV_IMPORT_CONCURRENCY = 3;
 const DEFAULT_CSV_UPLOAD_CHUNK_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
-const DEFAULT_CSV_YOUTUBE_SEARCH_INTERVAL_MS = 1800;
+const DEFAULT_CSV_YOUTUBE_SEARCH_INTERVAL_MS = 500;
 const DEFAULT_RECOVERABLE_FAILURE_PAUSE_THRESHOLD = 3;
 const DEFAULT_RECOVERABLE_SEARCH_ATTEMPTS = 2;
 const DEFAULT_RECOVERABLE_SEARCH_RETRY_DELAY_MS = 1500;
@@ -76,6 +87,7 @@ const RECOVERABLE_SEARCH_ERROR_CODES = [
   "youtube_search_unavailable"
 ] as const;
 const AUTO_RETRYABLE_CSV_IMPORT_ERROR_CODES = [
+  "audio_processing_failed",
   "csv_import_canceled",
   "csv_import_failed",
   "external_audio_download_failed",
@@ -94,16 +106,23 @@ export function registerCsvImportRoutes(app: FastifyInstance, options: CsvImport
   const audioStorage =
     options.audioStorage ??
     createAudioStorageFromEnv({ storageRoot: options.storageRoot });
+  const audioProcessor = options.audioProcessor ?? createAudioImportProcessorFromEnv();
   const importPolicyConfig = options.importPolicyConfig ?? readImportPolicyRuntimeConfig();
   const worker = new CsvImportQueue({
     app,
+    audioProcessor,
     audioStorage,
     csvImportRepository: options.csvImportRepository,
+    csvImportConcurrency: normalizePositiveInteger(
+      options.csvImportConcurrency,
+      DEFAULT_CSV_IMPORT_CONCURRENCY
+    ),
     csvYouTubeSearchIntervalMs: normalizeNonNegativeInteger(
       options.csvYouTubeSearchIntervalMs,
       DEFAULT_CSV_YOUTUBE_SEARCH_INTERVAL_MS
     ),
     importPolicyConfig,
+    libraryEvents: options.libraryEvents,
     playlistRepository: options.playlistRepository,
     processInline: options.processImportsInline ?? false,
     recoverableFailurePauseThreshold: normalizePositiveInteger(
@@ -428,6 +447,7 @@ export function registerCsvImportRoutes(app: FastifyInstance, options: CsvImport
 
     try {
       const result = await importYouTubeDiscoveryForCsvItem({
+        audioProcessor,
         audioStorage,
         discovery,
         importPolicyMode: batch.importPolicyMode,
@@ -460,6 +480,12 @@ export function registerCsvImportRoutes(app: FastifyInstance, options: CsvImport
       const refreshedBatch = options.csvImportRepository.refreshBatchCounts({
         batchId,
         userId: user.id
+      });
+      options.libraryEvents?.emitLibraryChanged(user.id, {
+        csvImportBatchId: batchId,
+        csvImportItemId: item.id,
+        reason: "csv_import_item_completed",
+        songId: result.song.id
       });
 
       return {
@@ -498,16 +524,21 @@ class CsvImportQueue {
   private readonly queuedBatches = new Map<string, PublicUser>();
   private readonly canceledBatches = new Set<string>();
   private activeBatchId: string | null = null;
+  private csvYouTubeSearchGate: Promise<void> = Promise.resolve();
   private drainScheduled = false;
-  private lastCsvYouTubeSearchFinishedAt = 0;
+  private lastCsvYouTubeSearchStartedAt = 0;
+  private releaseCsvYouTubeSearchGate: (() => void) | null = null;
 
   constructor(
     private readonly options: {
       app: FastifyInstance;
+      audioProcessor: AudioImportProcessor;
       audioStorage: AudioStorage;
+      csvImportConcurrency: number;
       csvImportRepository: SQLiteCsvImportRepository;
       csvYouTubeSearchIntervalMs: number;
       importPolicyConfig: ImportPolicyRuntimeConfig;
+      libraryEvents?: LibraryEventSink;
       playlistRepository: SQLitePlaylistRepository;
       processInline: boolean;
       recoverableFailurePauseThreshold: number;
@@ -614,82 +645,146 @@ class CsvImportQueue {
 
     this.options.csvImportRepository.markBatchRunning({ batchId, userId: user.id });
     let consecutiveRecoverableSearchFailures = 0;
+    let pausedAfterRecoverableSearchFailures = false;
+    let pauseLogged = false;
+    const pendingItems = this.options.csvImportRepository.listPendingImportItems({
+      batchId,
+      userId: user.id
+    });
 
-    while (!this.canceledBatches.has(batchId)) {
-      const item = this.options.csvImportRepository.findNextPendingImportItem({
-        batchId,
-        userId: user.id
-      });
+    for (
+      let index = 0;
+      index < pendingItems.length &&
+      !this.canceledBatches.has(batchId) &&
+      !pausedAfterRecoverableSearchFailures;
+      index += this.options.csvImportConcurrency
+    ) {
+      const items = pendingItems.slice(index, index + this.options.csvImportConcurrency);
 
-      if (!item) {
-        return;
-      }
-
-      this.options.csvImportRepository.markItemRunning({ itemId: item.id, userId: user.id });
-
-      try {
-        const result = await this.processItemWithRecoverableRetries(
-          user,
-          batch,
-          item,
-          () => !this.canceledBatches.has(batchId)
-        );
-        consecutiveRecoverableSearchFailures = 0;
-
-        this.options.csvImportRepository.markItemCompleted({
-          itemId: item.id,
-          songId: result.song.id,
-          userId: user.id,
-          youtubeSourceId: result.youtubeSourceId
-        });
-
-        if (this.canceledBatches.has(batchId)) {
-          break;
+      await Promise.all(items.map(async (item) => {
+        if (this.canceledBatches.has(batchId) || pausedAfterRecoverableSearchFailures) {
+          return;
         }
-      } catch (error) {
-        this.options.csvImportRepository.markItemFailed({
-          errorCode: this.canceledBatches.has(batchId)
-            ? "csv_import_canceled"
-            : errorCodeForCsvImport(error),
-          errorMessage: this.canceledBatches.has(batchId)
-            ? "CSV import canceled."
-            : messageForError(error),
+
+        const freshItem = this.options.csvImportRepository.findImportItemForUser({
+          batchId,
           itemId: item.id,
           userId: user.id
         });
 
-        const errorCode = this.canceledBatches.has(batchId)
-          ? "csv_import_canceled"
-          : errorCodeForCsvImport(error);
-
-        if (isRecoverableSearchErrorCode(errorCode)) {
-          consecutiveRecoverableSearchFailures += 1;
-
-          if (
-            consecutiveRecoverableSearchFailures >=
-            this.options.recoverableFailurePauseThreshold
-          ) {
-            this.options.csvImportRepository.markBatchFailedRetainingPending({
-              batchId,
-              userId: user.id
-            });
-            this.options.app.log.warn({
-              csvImportBatchId: batchId,
-              event: "csv_import_paused_after_recoverable_search_failures",
-              failureThreshold: this.options.recoverableFailurePauseThreshold,
-              userId: user.id
-            });
-            return;
-          }
-        } else {
-          consecutiveRecoverableSearchFailures = 0;
+        if (!freshItem || freshItem.status !== "pending") {
+          return;
         }
-      }
 
-      this.options.csvImportRepository.refreshBatchCounts({ batchId, userId: user.id });
+        await this.processPendingItem({
+          batch,
+          batchId,
+          item: freshItem,
+          onRecoverableSearchFailure: () => {
+            consecutiveRecoverableSearchFailures += 1;
+
+            if (
+              consecutiveRecoverableSearchFailures >=
+              this.options.recoverableFailurePauseThreshold
+            ) {
+              pausedAfterRecoverableSearchFailures = true;
+
+              if (!pauseLogged) {
+                pauseLogged = true;
+                this.options.app.log.warn({
+                  csvImportBatchId: batchId,
+                  event: "csv_import_paused_after_recoverable_search_failures",
+                  failureThreshold: this.options.recoverableFailurePauseThreshold,
+                  userId: user.id
+                });
+              }
+            }
+          },
+          onSearchFailureReset: () => {
+            consecutiveRecoverableSearchFailures = 0;
+          },
+          user
+        });
+      }));
+    }
+
+    if (pausedAfterRecoverableSearchFailures && !this.canceledBatches.has(batchId)) {
+      this.options.csvImportRepository.markBatchFailedRetainingPending({
+        batchId,
+        userId: user.id
+      });
+      return;
     }
 
     this.options.csvImportRepository.refreshBatchCounts({ batchId, userId: user.id });
+  }
+
+  private async processPendingItem(input: {
+    batch: CsvImportBatch;
+    batchId: string;
+    item: CsvImportItem;
+    onRecoverableSearchFailure: () => void;
+    onSearchFailureReset: () => void;
+    user: PublicUser;
+  }) {
+    this.options.csvImportRepository.markItemRunning({
+      itemId: input.item.id,
+      userId: input.user.id
+    });
+
+    try {
+      const result = await this.processItemWithRecoverableRetries(
+        input.user,
+        input.batch,
+        input.item,
+        () => !this.canceledBatches.has(input.batchId)
+      );
+      input.onSearchFailureReset();
+
+      this.options.csvImportRepository.markItemCompleted({
+        itemId: input.item.id,
+        songId: result.song.id,
+        userId: input.user.id,
+        youtubeSourceId: result.youtubeSourceId
+      });
+      this.options.libraryEvents?.emitLibraryChanged(input.user.id, {
+        csvImportBatchId: input.batchId,
+        csvImportItemId: input.item.id,
+        reason: "csv_import_item_completed",
+        songId: result.song.id
+      });
+    } catch (error) {
+      this.options.csvImportRepository.markItemFailed({
+        errorCode: this.canceledBatches.has(input.batchId)
+          ? "csv_import_canceled"
+          : errorCodeForCsvImport(error),
+        errorMessage: this.canceledBatches.has(input.batchId)
+          ? "CSV import canceled."
+          : messageForError(error),
+        itemId: input.item.id,
+        userId: input.user.id
+      });
+
+      const errorCode = this.canceledBatches.has(input.batchId)
+        ? "csv_import_canceled"
+        : errorCodeForCsvImport(error);
+
+      if (isRecoverableSearchErrorCode(errorCode)) {
+        input.onRecoverableSearchFailure();
+        this.options.csvImportRepository.refreshBatchCounts({
+          batchId: input.batchId,
+          userId: input.user.id
+        });
+        return;
+      }
+
+      input.onSearchFailureReset();
+    }
+
+    this.options.csvImportRepository.refreshBatchCounts({
+      batchId: input.batchId,
+      userId: input.user.id
+    });
   }
 
   private async processItemWithRecoverableRetries(
@@ -729,10 +824,8 @@ class CsvImportQueue {
     }
 
     const match = await findBestCsvYouTubeMatch({
-      afterSearch: () => {
-        this.lastCsvYouTubeSearchFinishedAt = Date.now();
-      },
-      beforeSearch: () => this.waitForCsvYouTubeSearchCooldown(shouldContinue),
+      afterSearch: () => this.releaseCsvYouTubeSearchSlot(),
+      beforeSearch: () => this.acquireCsvYouTubeSearchSlot(shouldContinue),
       importPolicyMode: batch.importPolicyMode,
       item,
       maxSearchQueries: 2,
@@ -757,6 +850,7 @@ class CsvImportQueue {
     }
 
     const imported = await importYouTubeDiscoveryForCsvItem({
+      audioProcessor: this.options.audioProcessor,
       audioStorage: this.options.audioStorage,
       discovery,
       importPolicyMode: batch.importPolicyMode,
@@ -782,29 +876,57 @@ class CsvImportQueue {
     return imported;
   }
 
-  private async waitForCsvYouTubeSearchCooldown(shouldContinue: () => boolean) {
-    if (!shouldContinue()) {
-      throw new CsvImportWorkerError("csv_import_canceled", "CSV import canceled.");
-    }
+  private async acquireCsvYouTubeSearchSlot(shouldContinue: () => boolean) {
+    let releaseQueuedSearch!: () => void;
+    const previousGate = this.csvYouTubeSearchGate;
+    const nextGate = new Promise<void>((resolve) => {
+      releaseQueuedSearch = resolve;
+    });
 
-    if (this.lastCsvYouTubeSearchFinishedAt === 0) {
+    this.csvYouTubeSearchGate = previousGate.then(() => nextGate);
+    await previousGate;
+
+    try {
+      if (!shouldContinue()) {
+        throw new CsvImportWorkerError("csv_import_canceled", "CSV import canceled.");
+      }
+
+      const elapsedMs = Date.now() - this.lastCsvYouTubeSearchStartedAt;
+      const waitMs =
+        this.lastCsvYouTubeSearchStartedAt === 0
+          ? 0
+          : Math.max(0, this.options.csvYouTubeSearchIntervalMs - elapsedMs);
+
+      if (waitMs > 0) {
+        await wait(waitMs);
+      }
+
+      if (!shouldContinue()) {
+        throw new CsvImportWorkerError("csv_import_canceled", "CSV import canceled.");
+      }
+
+      this.lastCsvYouTubeSearchStartedAt = Date.now();
+      this.releaseCsvYouTubeSearchGate = releaseQueuedSearch;
+    } catch (error) {
+      releaseQueuedSearch();
+      throw error;
+    }
+  }
+
+  private releaseCsvYouTubeSearchSlot() {
+    const release = this.releaseCsvYouTubeSearchGate;
+
+    if (!release) {
       return;
     }
 
-    const elapsedMs = Date.now() - this.lastCsvYouTubeSearchFinishedAt;
-    const waitMs = Math.max(0, this.options.csvYouTubeSearchIntervalMs - elapsedMs);
-
-    if (waitMs > 0) {
-      await wait(waitMs);
-    }
-
-    if (!shouldContinue()) {
-      throw new CsvImportWorkerError("csv_import_canceled", "CSV import canceled.");
-    }
+    this.releaseCsvYouTubeSearchGate = null;
+    release();
   }
 }
 
 async function importYouTubeDiscoveryForCsvItem(input: {
+  audioProcessor: AudioImportProcessor;
   audioStorage: AudioStorage;
   discovery: ExternalDiscoveryResult;
   importPolicyMode: ImportPolicyMode;
@@ -824,6 +946,30 @@ async function importYouTubeDiscoveryForCsvItem(input: {
       song: duplicate.song,
       youtubeSourceId: input.discovery.sourceId
     };
+  }
+
+  const reusable = input.songRepository.findReadySongByExternalSource({
+    provider: "youtube",
+    sourceId: input.discovery.sourceId
+  });
+
+  if (reusable) {
+    const reused = await createCsvSongFromReusableExternalAudio({
+      audioStorage: input.audioStorage,
+      discovery: input.discovery,
+      importPolicyMode: input.importPolicyMode,
+      item: input.item,
+      reusableSong: reusable.song,
+      songRepository: input.songRepository,
+      user: input.user
+    });
+
+    if (reused) {
+      return {
+        song: reused,
+        youtubeSourceId: input.discovery.sourceId
+      };
+    }
   }
 
   const songId = randomToken(16);
@@ -890,9 +1036,36 @@ async function importYouTubeDiscoveryForCsvItem(input: {
       throw new CsvImportWorkerError(validationError, validationError);
     }
 
+    let processedAudio: ProcessedAudioImport;
+
+    try {
+      processedAudio = await input.audioProcessor.process({
+        content: resolved.content,
+        durationMs: resolved.durationMs,
+        fileName: resolved.fileName,
+        mimeType: resolved.mimeType
+      });
+    } catch {
+      throw new CsvImportWorkerError(
+        "audio_processing_failed",
+        "Audio file could not be normalized."
+      );
+    }
+
+    const processedValidationError = validateAudioImportMetadata({
+      fileName: processedAudio.fileName,
+      mimeType: processedAudio.mimeType,
+      sizeBytes: processedAudio.content.byteLength
+    });
+
+    if (processedValidationError) {
+      throw new CsvImportWorkerError(processedValidationError, processedValidationError);
+    }
+
     input.songRepository.updateExternalSourceProvenance({
       provenance: csvProvenance(input.item, input.discovery, {
         ...resolved.provenance,
+        ...processedAudio.provenance,
         selectedImportPath: resolved.adapter
       }),
       sourceId: source.id,
@@ -907,28 +1080,29 @@ async function importYouTubeDiscoveryForCsvItem(input: {
         searchSource: "csv_metadata",
         sourceId: input.discovery.sourceId,
         sourceKey: input.item.sourceKey,
-        ...resolved.provenance
+        ...resolved.provenance,
+        ...processedAudio.provenance
       },
       userId: input.user.id
     });
 
     storedPath = input.audioStorage.writeSharedOriginal
       ? await input.audioStorage.writeSharedOriginal({
-          content: resolved.content,
+          content: processedAudio.content,
           provider: "youtube",
           sourceId: input.discovery.sourceId
         })
       : await input.audioStorage.writeOriginal({
-          content: resolved.content,
+          content: processedAudio.content,
           songId: song.id,
           userId: input.user.id
         });
 
     input.songRepository.markSongReady({
-      checksum: `sha256:${createHash("sha256").update(resolved.content).digest("hex")}`,
-      durationMs: resolved.durationMs ?? input.item.durationMs,
-      mimeType: resolved.mimeType,
-      sizeBytes: resolved.content.byteLength,
+      checksum: `sha256:${createHash("sha256").update(processedAudio.content).digest("hex")}`,
+      durationMs: processedAudio.durationMs ?? input.item.durationMs,
+      mimeType: processedAudio.mimeType,
+      sizeBytes: processedAudio.content.byteLength,
       songId: song.id,
       storagePath: storedPath,
       userId: input.user.id
@@ -955,6 +1129,68 @@ async function importYouTubeDiscoveryForCsvItem(input: {
   }
 }
 
+async function createCsvSongFromReusableExternalAudio(input: {
+  audioStorage: AudioStorage;
+  discovery: ExternalDiscoveryResult;
+  importPolicyMode: ImportPolicyMode;
+  item: CsvImportItem;
+  reusableSong: Song;
+  songRepository: SQLiteSongRepository;
+  user: PublicUser;
+}) {
+  try {
+    await statStoredAudio(input.audioStorage, input.reusableSong.storagePath);
+  } catch {
+    return null;
+  }
+
+  const song = input.songRepository.createSong({
+    album: input.item.album,
+    artist: input.item.artist,
+    checksum: input.reusableSong.checksum,
+    durationMs: input.item.durationMs ?? input.discovery.durationMs ?? input.reusableSong.durationMs,
+    id: randomToken(16),
+    importStatus: "ready",
+    mimeType: input.reusableSong.mimeType,
+    sizeBytes: input.reusableSong.sizeBytes,
+    storagePath: input.reusableSong.storagePath,
+    title: input.item.title,
+    userId: input.user.id
+  });
+  const source = input.songRepository.createExternalSource({
+    canonicalUrl: input.discovery.canonicalUrl,
+    importPolicyMode: input.importPolicyMode,
+    originalTitle: input.discovery.title,
+    originalUploader: input.discovery.creator,
+    provider: "youtube",
+    provenance: csvProvenance(input.item, input.discovery, {
+      selectedImportPath: "shared_artifact_reuse"
+    }),
+    songId: song.id,
+    sourceId: input.discovery.sourceId,
+    thumbnailUrl: input.item.artworkUrl ?? input.discovery.thumbnailUrl,
+    userId: input.user.id
+  });
+
+  input.songRepository.createImportJob({
+    importPolicyMode: input.importPolicyMode,
+    provenance: {
+      adapter: "shared_artifact_reuse",
+      csvFileName: input.item.fileName,
+      provider: "youtube",
+      searchSource: "csv_metadata",
+      sourceId: input.discovery.sourceId,
+      sourceKey: input.item.sourceKey
+    },
+    songId: song.id,
+    sourceId: source.id,
+    status: "ready",
+    userId: input.user.id
+  });
+
+  return input.songRepository.findSongForUser(input.user.id, song.id) ?? song;
+}
+
 function createBatchItemsFromPlaylists(input: {
   parsedPlaylists: ParsedCsvPlaylist[];
   playlistRepository: SQLitePlaylistRepository;
@@ -968,7 +1204,7 @@ function createBatchItemsFromPlaylists(input: {
     }
 
     const createdPlaylist = input.playlistRepository.createPlaylist({
-      color: "#d97706",
+      color: pickPlaylistColor(playlist.playlistName),
       description: `Imported from ${playlist.fileName}`,
       name: playlist.playlistName,
       userId: input.userId
@@ -1047,6 +1283,16 @@ async function deleteStoredAudioIfUnreferenced(
   if (songRepository.countSongsByStoragePath({ exceptSongId, storagePath }) === 0) {
     await audioStorage.deleteOriginal(storagePath);
   }
+}
+
+async function statStoredAudio(audioStorage: AudioStorage, storagePath: string) {
+  if (audioStorage.statOriginal) {
+    return audioStorage.statOriginal(storagePath);
+  }
+
+  const { stat } = await import("node:fs/promises");
+
+  return { sizeBytes: (await stat(storagePath)).size };
 }
 
 async function authenticate(

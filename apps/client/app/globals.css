@@ -6,6 +6,7 @@
 :root {
   color-scheme: dark;
   /* Dark, layered palette */
+  --pwa-chrome: #000000;
   --background: oklch(0.06 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.16 0 0);
@@ -91,15 +92,36 @@
     @apply border-border outline-ring/50;
   }
   html {
-    background: var(--background);
+    min-height: 100%;
+    background: var(--pwa-chrome);
   }
   body {
     @apply bg-background text-foreground antialiased;
     min-height: 100dvh;
+    background: var(--pwa-chrome);
+    overscroll-behavior-y: none;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     font-feature-settings: 'cv11', 'ss01', 'ss03';
     text-rendering: optimizeLegibility;
+  }
+  body::before,
+  body::after {
+    content: '';
+    position: fixed;
+    right: 0;
+    left: 0;
+    z-index: 2147483647;
+    pointer-events: none;
+    background: var(--pwa-chrome);
+  }
+  body::before {
+    top: 0;
+    height: var(--safe-top);
+  }
+  body::after {
+    bottom: 0;
+    height: var(--safe-bottom);
   }
   /* Hide scrollbars but keep scrolling for the mobile-style views */
   .no-scrollbar {
@@ -111,7 +133,9 @@
   }
   /* Subtle, consistent focus ring */
   :focus-visible {
-    outline: none;
+    outline: 2px solid color-mix(in oklab, var(--primary) 70%, transparent);
+    outline-offset: 2px;
+    border-radius: inherit;
   }
   ::selection {
     background: oklch(0.76 0.16 55 / 0.35);
@@ -188,7 +212,8 @@
     }
   }
 
-  /* Subtle hover-only thumb sliders for media controls */
+  /* Sliders for media controls — thumb is always faintly visible
+     so it can be grabbed without first hovering. */
   .ov-slider {
     --slider-track: color-mix(in oklab, var(--foreground) 18%, transparent);
     --slider-fill: var(--foreground);
@@ -201,31 +226,37 @@
   }
   .ov-slider input[type='range']::-webkit-slider-thumb {
     appearance: none;
-    height: 0.75rem;
-    width: 0.75rem;
+    height: 0.875rem;
+    width: 0.875rem;
     border-radius: 9999px;
     background: var(--slider-thumb);
-    opacity: 0;
-    transition: opacity 120ms ease;
+    opacity: 0.55;
+    transition:
+      opacity 120ms ease,
+      transform 120ms ease;
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
   }
   .ov-slider:hover input[type='range']::-webkit-slider-thumb,
   .ov-slider:focus-within input[type='range']::-webkit-slider-thumb {
     opacity: 1;
+    transform: scale(1.1);
   }
   .ov-slider input[type='range']::-moz-range-thumb {
-    height: 0.75rem;
-    width: 0.75rem;
+    height: 0.875rem;
+    width: 0.875rem;
     border-radius: 9999px;
     border: 0;
     background: var(--slider-thumb);
-    opacity: 0;
-    transition: opacity 120ms ease;
+    opacity: 0.55;
+    transition:
+      opacity 120ms ease,
+      transform 120ms ease;
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
   }
   .ov-slider:hover input[type='range']::-moz-range-thumb,
   .ov-slider:focus-within input[type='range']::-moz-range-thumb {
     opacity: 1;
+    transform: scale(1.1);
   }
 
   /* Cards that gently lift on hover */
@@ -238,7 +269,7 @@
   }
   .ov-card:hover {
     background: color-mix(in oklab, var(--card) 100%, transparent);
-    box-shadow: 0 18px 40px -20px rgba(0, 0, 0, 0.65);
+    box-shadow: 0 12px 32px -16px rgba(0, 0, 0, 0.55);
   }
 
   /* Reusable: subtle inset divider line */

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { Loader2 } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -12,10 +13,15 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 
+const NAME_MAX = 120
+const DESCRIPTION_MAX = 500
+
+type PlaylistFormInput = { name: string; description: string | null }
+
 type CreatePlaylistDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onCreate: (input: { name: string; description: string | null }) => Promise<void>
+  onCreate: (input: PlaylistFormInput) => Promise<void>
 }
 
 export function CreatePlaylistDialog({
@@ -23,91 +29,17 @@ export function CreatePlaylistDialog({
   onOpenChange,
   onCreate,
 }: CreatePlaylistDialogProps) {
-  const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-
-  useEffect(() => {
-    if (!open) {
-      setName('')
-      setDescription('')
-      setSubmitting(false)
-    }
-  }, [open])
-
-  const trimmedName = name.trim()
-  const canSubmit = trimmedName.length > 0 && !submitting
-
-  const handleSubmit = async (event: React.FormEvent) => {
-    event.preventDefault()
-    if (!canSubmit) return
-    setSubmitting(true)
-    try {
-      await onCreate({
-        name: trimmedName,
-        description: description.trim() === '' ? null : description.trim(),
-      })
-      onOpenChange(false)
-    } catch {
-      setSubmitting(false)
-    }
-  }
-
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <DialogHeader>
-            <DialogTitle>Create playlist</DialogTitle>
-            <DialogDescription>
-              Give your playlist a name so you can drop songs into it.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-3">
-            <label className="block text-sm font-medium">
-              Name
-              <input
-                autoFocus
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="My favorite mix"
-                maxLength={120}
-                className="mt-1 h-10 w-full rounded-md bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-              />
-            </label>
-            <label className="block text-sm font-medium">
-              Description
-              <textarea
-                value={description}
-                onChange={(event) => setDescription(event.target.value)}
-                placeholder="Optional"
-                rows={3}
-                maxLength={500}
-                className="mt-1 w-full resize-none rounded-md bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-              />
-            </label>
-          </div>
-
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => onOpenChange(false)}
-              disabled={submitting}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" disabled={!canSubmit}>
-              {submitting ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : null}
-              Create
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <PlaylistDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Create playlist"
+      description="Give your playlist a name so you can drop songs into it."
+      submitLabel="Create"
+      submittingLabel="Creating…"
+      namePlaceholder="My favorite mix"
+      onSubmit={onCreate}
+    />
   )
 }
 
@@ -116,7 +48,7 @@ type EditPlaylistDialogProps = {
   onOpenChange: (open: boolean) => void
   initialName: string
   initialDescription: string | null
-  onSave: (input: { name: string; description: string | null }) => Promise<void>
+  onSave: (input: PlaylistFormInput) => Promise<void>
 }
 
 export function EditPlaylistDialog({
@@ -126,29 +58,75 @@ export function EditPlaylistDialog({
   initialDescription,
   onSave,
 }: EditPlaylistDialogProps) {
+  return (
+    <PlaylistDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Edit playlist"
+      description="Update the name or description for this playlist."
+      submitLabel="Save"
+      submittingLabel="Saving…"
+      initialName={initialName}
+      initialDescription={initialDescription ?? ''}
+      onSubmit={onSave}
+    />
+  )
+}
+
+type PlaylistDialogProps = {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  title: string
+  description: string
+  submitLabel: string
+  submittingLabel: string
+  namePlaceholder?: string
+  initialName?: string
+  initialDescription?: string
+  onSubmit: (input: PlaylistFormInput) => Promise<void>
+}
+
+function PlaylistDialog({
+  open,
+  onOpenChange,
+  title,
+  description,
+  submitLabel,
+  submittingLabel,
+  namePlaceholder,
+  initialName = '',
+  initialDescription = '',
+  onSubmit,
+}: PlaylistDialogProps) {
   const [name, setName] = useState(initialName)
-  const [description, setDescription] = useState(initialDescription ?? '')
+  const [descriptionValue, setDescriptionValue] = useState(initialDescription)
+  const [touched, setTouched] = useState(false)
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
     if (open) {
       setName(initialName)
-      setDescription(initialDescription ?? '')
+      setDescriptionValue(initialDescription)
+      setTouched(false)
       setSubmitting(false)
     }
   }, [open, initialName, initialDescription])
 
   const trimmedName = name.trim()
-  const canSubmit = trimmedName.length > 0 && !submitting
+  const nameIsEmpty = trimmedName.length === 0
+  const showNameError = touched && nameIsEmpty
+  const canSubmit = !nameIsEmpty && !submitting
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
+    setTouched(true)
     if (!canSubmit) return
     setSubmitting(true)
     try {
-      await onSave({
+      await onSubmit({
         name: trimmedName,
-        description: description.trim() === '' ? null : description.trim(),
+        description:
+          descriptionValue.trim() === '' ? null : descriptionValue.trim(),
       })
       onOpenChange(false)
     } catch {
@@ -158,56 +136,131 @@ export function EditPlaylistDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <form onSubmit={handleSubmit} className="space-y-4">
+      <DialogContent className="sm:max-w-md">
+        <form onSubmit={handleSubmit} className="space-y-5">
           <DialogHeader>
-            <DialogTitle>Edit playlist</DialogTitle>
-            <DialogDescription>
-              Update the name or description for this playlist.
-            </DialogDescription>
+            <DialogTitle>{title}</DialogTitle>
+            <DialogDescription>{description}</DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-3">
-            <label className="block text-sm font-medium">
-              Name
+          <div className="space-y-4">
+            <Field
+              label="Name"
+              hint={
+                showNameError
+                  ? 'Name is required.'
+                  : undefined
+              }
+              counter={
+                name.length > NAME_MAX - 20
+                  ? `${name.length} / ${NAME_MAX}`
+                  : undefined
+              }
+              hasError={showNameError}
+            >
               <input
                 autoFocus
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                maxLength={120}
-                className="mt-1 h-10 w-full rounded-md bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                onBlur={() => setTouched(true)}
+                placeholder={namePlaceholder}
+                maxLength={NAME_MAX}
+                className={cn(inputClass, showNameError && inputErrorClass)}
               />
-            </label>
-            <label className="block text-sm font-medium">
-              Description
+            </Field>
+            <Field
+              label="Description"
+              counter={
+                descriptionValue.length > DESCRIPTION_MAX - 40
+                  ? `${descriptionValue.length} / ${DESCRIPTION_MAX}`
+                  : undefined
+              }
+            >
               <textarea
-                value={description}
-                onChange={(event) => setDescription(event.target.value)}
+                value={descriptionValue}
+                onChange={(event) =>
+                  setDescriptionValue(event.target.value)
+                }
+                placeholder="Optional"
                 rows={3}
-                maxLength={500}
-                className="mt-1 w-full resize-none rounded-md bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                maxLength={DESCRIPTION_MAX}
+                className={cn(textareaClass)}
               />
-            </label>
+            </Field>
           </div>
 
-          <DialogFooter>
+          <DialogFooter className="gap-2">
             <Button
               type="button"
               variant="ghost"
+              className="h-10 rounded-full px-5"
               onClick={() => onOpenChange(false)}
               disabled={submitting}
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={!canSubmit}>
+            <Button
+              type="submit"
+              disabled={!canSubmit}
+              className="h-10 rounded-full px-5"
+            >
               {submitting ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : null}
-              Save
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  {submittingLabel}
+                </>
+              ) : (
+                submitLabel
+              )}
             </Button>
           </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
+  )
+}
+
+const inputClass =
+  'h-11 w-full rounded-full bg-card/80 px-4 text-sm text-foreground placeholder:text-muted-foreground transition-shadow focus:bg-card focus:outline-none focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--primary)_30%,transparent)]'
+
+const inputErrorClass =
+  'focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--destructive)_30%,transparent)] ring-1 ring-destructive/40'
+
+const textareaClass =
+  'w-full resize-none rounded-2xl bg-card/80 px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground transition-shadow focus:bg-card focus:outline-none focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--primary)_30%,transparent)]'
+
+function Field({
+  label,
+  hint,
+  counter,
+  hasError,
+  children,
+}: {
+  label: string
+  hint?: string
+  counter?: string
+  hasError?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <label className="block">
+      <div className="mb-1.5 flex items-center justify-between text-sm font-medium">
+        <span>{label}</span>
+        {counter ? (
+          <span className="text-xs text-muted-foreground">{counter}</span>
+        ) : null}
+      </div>
+      {children}
+      {hint ? (
+        <div
+          className={cn(
+            'mt-1.5 text-xs',
+            hasError ? 'text-destructive' : 'text-muted-foreground',
+          )}
+        >
+          {hint}
+        </div>
+      ) : null}
+    </label>
   )
 }
