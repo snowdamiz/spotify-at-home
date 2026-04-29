@@ -64,6 +64,7 @@ import { cacheTrackThumbnails } from '@/lib/track-thumbnail-cache'
 import {
   canStoreOffline,
   deleteOfflineAudio,
+  deleteOfflineAudioExcept,
   downloadOfflineAudio,
   getOfflineAudioBlob,
   getOfflineAudioServerSongs,
@@ -92,12 +93,35 @@ function mergeOfflineStates(
   const next = { ...fresh }
 
   for (const [songId, state] of Object.entries(current)) {
-    if (state.status === 'downloading') {
+    if (state.status === 'downloading' && songId in fresh) {
       next[songId] = state
     }
   }
 
   return next
+}
+
+type LibraryChangedMessage = {
+  reason?: string
+  songId?: string
+}
+
+function parseLibraryChangedMessage(event: Event): LibraryChangedMessage | null {
+  if (!(event instanceof MessageEvent) || typeof event.data !== 'string') {
+    return null
+  }
+
+  try {
+    const payload = JSON.parse(event.data) as unknown
+
+    if (!payload || typeof payload !== 'object') {
+      return null
+    }
+
+    return payload as LibraryChangedMessage
+  } catch {
+    return null
+  }
 }
 
 function applyLikedToSong(song: Song, liked: boolean): Song {
@@ -136,6 +160,7 @@ async function runWithConcurrency<T>(
 }
 
 const CSV_IMPORT_STATUS_REFRESH_FAILURE_LIMIT = 4
+const CSV_IMPORT_CANCEL_DISMISS_DELAY_MS = 5000
 const OFFLINE_DOWNLOAD_CONCURRENCY = 3
 const DEFAULT_VOLUME = 0.8
 const PLAYER_VOLUME_STORAGE_KEY = 'onvibe:player-volume:v1'
@@ -727,12 +752,15 @@ function AuthenticatedMusicApp() {
   const playNextRef = useRef<() => void>(() => undefined)
   const repeatModeRef = useRef<RepeatMode>(repeatMode)
   const canceledCsvImportIdsRef = useRef<Set<string>>(new Set())
+  const csvImportDismissTimeoutsRef = useRef<Map<string, number>>(new Map())
   const promptedCsvManualMatchIdsRef = useRef<Set<string>>(new Set())
   const resumedCsvImportIdsRef = useRef<Set<string>>(new Set())
   const activeCsvManualMatchItemIdRef = useRef<string | null>(null)
   const promptCsvManualMatchRef = useRef<
     (downloadId: string, item: CsvImportItem) => void
   >(() => undefined)
+  const activeSongIdsRef = useRef<Set<string>>(new Set())
+  const wasOnlineRef = useRef(isOnline)
 
   const reloadOfflineServerSongs = useCallback(async () => {
     try {
@@ -832,9 +860,36 @@ function AuthenticatedMusicApp() {
     setAddOpen(true)
   }, [requireOnlineAction])
 
+  const scheduleCsvImportDismiss = useCallback((downloadId: string) => {
+    const existingTimeout = csvImportDismissTimeoutsRef.current.get(downloadId)
+
+    if (existingTimeout !== undefined) {
+      window.clearTimeout(existingTimeout)
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      csvImportDismissTimeoutsRef.current.delete(downloadId)
+      setDownloads((prev) =>
+        prev.filter((download) => download.id !== downloadId),
+      )
+    }, CSV_IMPORT_CANCEL_DISMISS_DELAY_MS)
+
+    csvImportDismissTimeoutsRef.current.set(downloadId, timeoutId)
+  }, [])
+
   useEffect(() => {
     void reloadOfflineServerSongs()
   }, [reloadOfflineServerSongs])
+
+  useEffect(() => {
+    return () => {
+      for (const timeoutId of csvImportDismissTimeoutsRef.current.values()) {
+        window.clearTimeout(timeoutId)
+      }
+
+      csvImportDismissTimeoutsRef.current.clear()
+    }
+  }, [])
 
   useEffect(() => {
     writeStoredCsvImportDownloads(user?.id, downloads)
@@ -874,19 +929,42 @@ function AuthenticatedMusicApp() {
   }, [csvManualMatchTarget])
 
   useEffect(() => {
+    activeSongIdsRef.current = new Set(userSongs.map((song) => song.id))
+  }, [userSongs])
+
+  useEffect(() => {
     let cancelled = false
 
-    getOfflineAudioStates(userSongs)
-      .then((states) => {
+    async function syncOfflineAudioStates() {
+      try {
+        if (songsState.status === 'authenticated') {
+          await deleteOfflineAudioExcept(userSongs.map((song) => song.id))
+          if (cancelled) return
+          await reloadOfflineServerSongs()
+        }
+
+        const states = await getOfflineAudioStates(userSongs)
+        if (!cancelled) {
+          setOfflineAudio((current) => mergeOfflineStates(current, states))
+        }
+      } catch {
         if (cancelled) return
-        setOfflineAudio((current) => mergeOfflineStates(current, states))
-      })
-      .catch(() => undefined)
+
+        getOfflineAudioStates(userSongs)
+          .then((states) => {
+            if (cancelled) return
+            setOfflineAudio((current) => mergeOfflineStates(current, states))
+          })
+          .catch(() => undefined)
+      }
+    }
+
+    void syncOfflineAudioStates()
 
     return () => {
       cancelled = true
     }
-  }, [userSongs])
+  }, [reloadOfflineServerSongs, songsState.status, userSongs])
 
   useEffect(() => {
     cacheTrackThumbnails(userSongs.map((song) => song.coverImageUrl))
@@ -1211,6 +1289,91 @@ function AuthenticatedMusicApp() {
   }, [])
 
   useEffect(() => {
+    const wasOnline = wasOnlineRef.current
+
+    wasOnlineRef.current = isOnline
+
+    if (!wasOnline && isOnline) {
+      refreshLibrary()
+    }
+  }, [isOnline, refreshLibrary])
+
+  const removeSongsFromDeviceState = useCallback(
+    (songIds: string[]) => {
+      const removedSongIds = new Set(songIds.filter(Boolean))
+
+      if (removedSongIds.size === 0) return
+
+      for (const songId of removedSongIds) {
+        activeSongIdsRef.current.delete(songId)
+      }
+
+      setLocallyDeletedSongIds((current) => {
+        const next = new Set(current)
+
+        for (const songId of removedSongIds) {
+          next.add(songId)
+        }
+
+        return next
+      })
+      setLikedOverrides((current) => {
+        const next = { ...current }
+
+        for (const songId of removedSongIds) {
+          delete next[songId]
+        }
+
+        return next
+      })
+      setQueue((current) =>
+        current.filter((item) => !removedSongIds.has(item.id)),
+      )
+      setOfflineAudio((states) => {
+        const next = { ...states }
+
+        for (const songId of removedSongIds) {
+          next[songId] = { status: 'idle' }
+        }
+
+        return next
+      })
+      Promise.all(
+        [...removedSongIds].map((songId) =>
+          deleteOfflineAudio(songId).catch(() => undefined),
+        ),
+      )
+        .then(reloadOfflineServerSongs)
+        .catch(() => undefined)
+
+      if (currentSongId && removedSongIds.has(currentSongId)) {
+        const audio = audioRef.current
+        audio?.pause()
+        audio?.removeAttribute('src')
+        audio?.load()
+        setCurrentSongId(null)
+        setIsPlaying(false)
+        setProgress(0)
+        setDuration(0)
+        updatePlaybackState({
+          positionMs: 0,
+          repeatMode: 'off',
+          shuffleEnabled: false,
+          songId: null,
+        }).catch(() => undefined)
+      }
+
+      setLibrarySync({
+        completed: 0,
+        failed: 0,
+        status: 'idle',
+        total: 0,
+      })
+    },
+    [currentSongId, reloadOfflineServerSongs],
+  )
+
+  useEffect(() => {
     if (offlineOnlyMode || !user?.id || typeof EventSource === 'undefined') {
       return
     }
@@ -1231,17 +1394,36 @@ function AuthenticatedMusicApp() {
       }, 150)
     }
 
-    events.addEventListener('library_changed', scheduleRefresh)
+    const handleLibraryChanged = (event: Event) => {
+      const message = parseLibraryChangedMessage(event)
+
+      if (message?.reason === 'song_removed' && message.songId) {
+        removeSongsFromDeviceState([message.songId])
+      }
+
+      if (message?.reason === 'account_tracks_wiped') {
+        setLibrarySync({
+          completed: 0,
+          failed: 0,
+          status: 'idle',
+          total: 0,
+        })
+      }
+
+      scheduleRefresh()
+    }
+
+    events.addEventListener('library_changed', handleLibraryChanged)
 
     return () => {
       if (refreshTimer !== null) {
         window.clearTimeout(refreshTimer)
       }
 
-      events.removeEventListener('library_changed', scheduleRefresh)
+      events.removeEventListener('library_changed', handleLibraryChanged)
       events.close()
     }
-  }, [offlineOnlyMode, refreshLibrary, user?.id])
+  }, [offlineOnlyMode, refreshLibrary, removeSongsFromDeviceState, user?.id])
 
   const downloadSongForOffline = useCallback(
     async (song: Song, notify = true) => {
@@ -1263,6 +1445,16 @@ function AuthenticatedMusicApp() {
             }))
           },
         })
+
+        if (!activeSongIdsRef.current.has(song.id)) {
+          await deleteOfflineAudio(song.id)
+          setOfflineAudio((states) => ({
+            ...states,
+            [song.id]: { status: 'idle' },
+          }))
+          void reloadOfflineServerSongs()
+          return false
+        }
 
         setOfflineAudio((states) => ({
           ...states,
@@ -1322,37 +1514,7 @@ function AuthenticatedMusicApp() {
           return
         }
 
-        setLocallyDeletedSongIds((current) => {
-          const next = new Set(current)
-          next.add(song.id)
-          return next
-        })
-        setQueue((current) => current.filter((item) => item.id !== song.id))
-        deleteOfflineAudio(song.id)
-          .then(reloadOfflineServerSongs)
-          .catch(() => undefined)
-        setOfflineAudio((states) => ({
-          ...states,
-          [song.id]: { status: 'idle' },
-        }))
-
-        if (currentSongId === song.id) {
-          const audio = audioRef.current
-          audio?.pause()
-          audio?.removeAttribute('src')
-          audio?.load()
-          setCurrentSongId(null)
-          setIsPlaying(false)
-          setProgress(0)
-          setDuration(0)
-          updatePlaybackState({
-            positionMs: 0,
-            repeatMode: 'off',
-            shuffleEnabled: false,
-            songId: null,
-          }).catch(() => undefined)
-        }
-
+        removeSongsFromDeviceState([song.id])
         refreshLibrary()
         toast({
           title:
@@ -1373,84 +1535,19 @@ function AuthenticatedMusicApp() {
       }
     },
     [
-      currentSongId,
       deletingSongId,
       refreshLibrary,
-      reloadOfflineServerSongs,
+      removeSongsFromDeviceState,
       requireOnlineAction,
     ],
   )
 
   const handleTracksWiped = useCallback(
     (songIds: string[]) => {
-      const wipedSongIds = new Set(songIds)
-
-      if (wipedSongIds.size > 0) {
-        setLocallyDeletedSongIds((current) => {
-          const next = new Set(current)
-
-          for (const songId of wipedSongIds) {
-            next.add(songId)
-          }
-
-          return next
-        })
-        setLikedOverrides((current) => {
-          const next = { ...current }
-
-          for (const songId of wipedSongIds) {
-            delete next[songId]
-          }
-
-          return next
-        })
-        setQueue((current) =>
-          current.filter((item) => !wipedSongIds.has(item.id)),
-        )
-        setOfflineAudio((states) => {
-          const next = { ...states }
-
-          for (const songId of wipedSongIds) {
-            next[songId] = { status: 'idle' }
-          }
-
-          return next
-        })
-        Promise.all(
-          songIds.map((songId) =>
-            deleteOfflineAudio(songId).catch(() => undefined),
-          ),
-        )
-          .then(reloadOfflineServerSongs)
-          .catch(() => undefined)
-      }
-
-      if (currentSongId && wipedSongIds.has(currentSongId)) {
-        const audio = audioRef.current
-        audio?.pause()
-        audio?.removeAttribute('src')
-        audio?.load()
-        setCurrentSongId(null)
-        setIsPlaying(false)
-        setProgress(0)
-        setDuration(0)
-        updatePlaybackState({
-          positionMs: 0,
-          repeatMode: 'off',
-          shuffleEnabled: false,
-          songId: null,
-        }).catch(() => undefined)
-      }
-
-      setLibrarySync({
-        completed: 0,
-        failed: 0,
-        status: 'idle',
-        total: 0,
-      })
+      removeSongsFromDeviceState(songIds)
       refreshLibrary()
     },
-    [currentSongId, refreshLibrary, reloadOfflineServerSongs],
+    [refreshLibrary, removeSongsFromDeviceState],
   )
 
   const toggleSongLike = useCallback(
@@ -2120,6 +2217,7 @@ function AuthenticatedMusicApp() {
             ),
           )
           refreshLibrary()
+          scheduleCsvImportDismiss(id)
           return
         }
 
@@ -2162,6 +2260,7 @@ function AuthenticatedMusicApp() {
                 : download,
             ),
           )
+          scheduleCsvImportDismiss(id)
           return
         }
 
@@ -2182,7 +2281,12 @@ function AuthenticatedMusicApp() {
         )
       }
     },
-    [monitorCsvImportBatches, refreshLibrary, requireOnlineAction],
+    [
+      monitorCsvImportBatches,
+      refreshLibrary,
+      requireOnlineAction,
+      scheduleCsvImportDismiss,
+    ],
   )
 
   const cancelCsvImport = useCallback(
@@ -2241,6 +2345,7 @@ function AuthenticatedMusicApp() {
           ),
         )
         refreshLibrary()
+        scheduleCsvImportDismiss(download.id)
       } catch (error) {
         canceledCsvImportIdsRef.current.delete(download.id)
         setDownloads((prev) =>
@@ -2265,7 +2370,7 @@ function AuthenticatedMusicApp() {
         })
       }
     },
-    [refreshLibrary, requireOnlineAction],
+    [refreshLibrary, requireOnlineAction, scheduleCsvImportDismiss],
   )
 
   const retryCsvImport = useCallback(

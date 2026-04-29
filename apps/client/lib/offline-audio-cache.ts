@@ -203,6 +203,20 @@ export async function deleteOfflineAudio(songId: string) {
   await deleteRecord(songId)
 }
 
+export async function deleteOfflineAudioExcept(songIds: Iterable<string>) {
+  if (!isIndexedDbAvailable()) return []
+
+  const allowedSongIds = new Set(songIds)
+  const records = await readAllRecords()
+  const staleSongIds = records
+    .map((record) => record.songId)
+    .filter((songId) => !allowedSongIds.has(songId))
+
+  await Promise.all(staleSongIds.map((songId) => deleteRecord(songId)))
+
+  return staleSongIds
+}
+
 function isIndexedDbAvailable() {
   return typeof indexedDB !== 'undefined'
 }
@@ -394,7 +408,7 @@ async function readRangedBlob(
 
   options.onProgress?.(1)
 
-  return new Blob(chunks, { type: mimeType })
+  return new Blob(chunks.map(arrayBufferFromChunk), { type: mimeType })
 }
 
 async function downloadRangeWithRetries(
@@ -475,9 +489,15 @@ async function readResponseBlob(
 
   options.onProgress?.(1)
 
-  return new Blob(chunks, {
+  return new Blob(chunks.map(arrayBufferFromChunk), {
     type: cleanMimeType(response.headers.get('content-type')) ?? 'audio/mpeg',
   })
+}
+
+function arrayBufferFromChunk(chunk: Uint8Array): ArrayBuffer {
+  const copy = new Uint8Array(chunk.byteLength)
+  copy.set(chunk)
+  return copy.buffer
 }
 
 async function runWithConcurrency<T>(

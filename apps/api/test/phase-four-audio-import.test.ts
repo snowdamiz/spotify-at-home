@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiApp } from "../src/app";
 import type { GoogleOAuthClient } from "../src/auth/google";
 import { closeBroadsideDatabase, openBroadsideDatabase, type SqliteDatabase } from "../src/db";
+import type { LibraryEventSink } from "../src/library/events";
 import type { AudioImportProcessor } from "../src/songs/audio-processing";
 import type { AudioStorage } from "../src/songs/storage";
 
@@ -298,8 +299,9 @@ describe("Phase 4 audio imports and private storage", () => {
     expect(library.json()).toEqual({ songs: [] });
   });
 
-  it("removes a song from the user library while keeping cached audio", async () => {
-    const { app } = createTestApp();
+  it("removes a song from the user library, emits a sync event, and keeps cached audio", async () => {
+    const libraryEvents = createLibraryEventSink();
+    const { app } = createTestApp({ libraryEvents });
     const token = await signIn(app);
     const imported = await app.inject({
       method: "POST",
@@ -311,6 +313,8 @@ describe("Phase 4 audio imports and private storage", () => {
     });
     const song = imported.json().song;
 
+    vi.mocked(libraryEvents.emitLibraryChanged).mockClear();
+
     const deletion = await app.inject({
       method: "DELETE",
       url: `/api/songs/${song.id}`,
@@ -321,6 +325,14 @@ describe("Phase 4 audio imports and private storage", () => {
 
     expect(deletion.statusCode).toBe(204);
     expect(existsSync(song.storagePath)).toBe(true);
+    expect(libraryEvents.emitLibraryChanged).toHaveBeenCalledTimes(1);
+    expect(libraryEvents.emitLibraryChanged).toHaveBeenCalledWith(
+      expect.any(String),
+      {
+        reason: "song_removed",
+        songId: song.id
+      }
+    );
 
     const deletedSong = await app.inject({
       method: "GET",
@@ -565,6 +577,7 @@ describe("Phase 4 audio imports and private storage", () => {
       email: string;
       sub: string;
     }>;
+    libraryEvents?: LibraryEventSink;
     maxFileSizeBytes?: number;
   } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "broadside-phase-four-"));
@@ -579,6 +592,7 @@ describe("Phase 4 audio imports and private storage", () => {
       songs: {
         audioProcessor: options.audioProcessor,
         audioStorage: options.audioStorage,
+        libraryEvents: options.libraryEvents,
         storageRoot,
         maxFileSizeBytes: options.maxFileSizeBytes
       }
@@ -626,5 +640,17 @@ function mp3Payload(overrides: Partial<{
     sizeBytes: overrides.sizeBytes ?? tinyMp3.byteLength,
     title: overrides.title ?? "Overture",
     contentBase64: tinyMp3.toString("base64")
+  };
+}
+
+function createLibraryEventSink(): LibraryEventSink {
+  return {
+    emitLibraryChanged: vi.fn((userId, payload) => ({
+      ...payload,
+      createdAt: new Date().toISOString(),
+      id: "test-event",
+      type: "library_changed" as const,
+      userId
+    }))
   };
 }

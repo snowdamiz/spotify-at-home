@@ -7,7 +7,8 @@ export type LibraryChangeReason =
   | "audio_import_completed"
   | "account_tracks_wiped"
   | "csv_import_item_completed"
-  | "external_import_completed";
+  | "external_import_completed"
+  | "song_removed";
 
 export interface LibraryChangedPayload {
   reason: LibraryChangeReason;

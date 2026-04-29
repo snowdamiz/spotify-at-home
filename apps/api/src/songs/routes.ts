@@ -489,7 +489,14 @@ export function registerSongRoutes(app: FastifyInstance, options: SongRoutesOpti
       return sendSongError(reply, "song_not_found", "Song not found.", 404);
     }
 
-    options.songRepository.deleteSongForUser(user.id, song.id);
+    const removed = options.songRepository.deleteSongForUser(user.id, song.id);
+
+    if (removed) {
+      options.libraryEvents?.emitLibraryChanged(user.id, {
+        reason: "song_removed",
+        songId: song.id
+      });
+    }
 
     return reply.code(204).send();
   });

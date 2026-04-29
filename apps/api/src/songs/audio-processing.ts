@@ -12,6 +12,7 @@ const defaultTargetLra = 11;
 const defaultOutputBitrate = "192k";
 const defaultTimeoutMs = 240_000;
 const defaultFfmpegThreads = 1;
+const defaultNormalizationMode: FfmpegLoudnessNormalizationMode = "two-pass";
 const commandOutputLimitBytes = 10 * 1024 * 1024;
 
 export interface AudioImportProcessingInput {
@@ -32,6 +33,8 @@ export interface ProcessedAudioImport {
 export interface AudioImportProcessor {
   process(input: AudioImportProcessingInput): Promise<ProcessedAudioImport>;
 }
+
+export type FfmpegLoudnessNormalizationMode = "single-pass" | "two-pass";
 
 export class AudioImportProcessingError extends Error {
   constructor(
@@ -58,6 +61,7 @@ export class PassthroughAudioImportProcessor implements AudioImportProcessor {
 export interface FfmpegLoudnessNormalizerOptions {
   ffmpegThreads?: number;
   ffmpegPath?: string;
+  normalizationMode?: FfmpegLoudnessNormalizationMode;
   outputBitrate?: string;
   targetIntegratedLufs?: number;
   targetLra?: number;
@@ -69,6 +73,7 @@ export interface FfmpegLoudnessNormalizerOptions {
 export class FfmpegLoudnessNormalizer implements AudioImportProcessor {
   private readonly ffmpegThreads: number;
   private readonly ffmpegPath: string;
+  private readonly normalizationMode: FfmpegLoudnessNormalizationMode;
   private readonly outputBitrate: string;
   private readonly targetIntegratedLufs: number;
   private readonly targetLra: number;
@@ -82,6 +87,7 @@ export class FfmpegLoudnessNormalizer implements AudioImportProcessor {
       defaultFfmpegThreads
     );
     this.ffmpegPath = options.ffmpegPath ?? process.env.FFMPEG_PATH ?? "ffmpeg";
+    this.normalizationMode = options.normalizationMode ?? defaultNormalizationMode;
     this.outputBitrate = options.outputBitrate ?? defaultOutputBitrate;
     this.targetIntegratedLufs = finiteOrDefault(
       options.targetIntegratedLufs,
@@ -104,6 +110,10 @@ export class FfmpegLoudnessNormalizer implements AudioImportProcessor {
       const outputPath = join(tempDir, "normalized.mp3");
 
       await writeFile(inputPath, input.content);
+
+      if (this.normalizationMode === "single-pass") {
+        return await this.processSinglePass(input, inputPath, outputPath);
+      }
 
       const analysis = await this.runFfmpeg([
         "-hide_banner",
@@ -157,6 +167,7 @@ export class FfmpegLoudnessNormalizer implements AudioImportProcessor {
             inputLra: numberFromLoudnormValue(stats.input_lra),
             inputThreshold: numberFromLoudnormValue(stats.input_thresh),
             inputTruePeakDbtp: numberFromLoudnormValue(stats.input_tp),
+            mode: "two-pass",
             outputBitrate: this.outputBitrate,
             outputMimeType: "audio/mpeg",
             targetIntegratedLufs: this.targetIntegratedLufs,
@@ -187,6 +198,53 @@ export class FfmpegLoudnessNormalizer implements AudioImportProcessor {
       targetLra: this.targetLra,
       targetTruePeakDbtp: this.targetTruePeakDbtp
     });
+  }
+
+  private async processSinglePass(
+    input: AudioImportProcessingInput,
+    inputPath: string,
+    outputPath: string
+  ): Promise<ProcessedAudioImport> {
+    await this.runFfmpeg([
+      "-hide_banner",
+      "-nostdin",
+      "-y",
+      "-threads",
+      String(this.ffmpegThreads),
+      "-i",
+      inputPath,
+      "-vn",
+      "-map_metadata",
+      "0",
+      "-id3v2_version",
+      "3",
+      "-codec:a",
+      "libmp3lame",
+      "-b:a",
+      this.outputBitrate,
+      "-af",
+      this.firstPassFilter(),
+      outputPath
+    ]);
+
+    return {
+      content: await readFile(outputPath),
+      durationMs: input.durationMs ?? null,
+      fileName: normalizedFileName(input.fileName),
+      mimeType: "audio/mpeg",
+      provenance: {
+        audioNormalization: {
+          algorithm: "ffmpeg_loudnorm_ebu_r128_single_pass",
+          applied: true,
+          mode: "single-pass",
+          outputBitrate: this.outputBitrate,
+          outputMimeType: "audio/mpeg",
+          targetIntegratedLufs: this.targetIntegratedLufs,
+          targetLra: this.targetLra,
+          targetTruePeakDbtp: this.targetTruePeakDbtp
+        }
+      }
+    };
   }
 
   private secondPassFilter(stats: LoudnormStats) {
@@ -230,6 +288,7 @@ export function createAudioImportProcessorFromEnv(env: NodeJS.ProcessEnv = proce
   return new FfmpegLoudnessNormalizer({
     ffmpegThreads: numberFromEnv(env.BROADSIDE_FFMPEG_THREADS, defaultFfmpegThreads),
     ffmpegPath: env.FFMPEG_PATH,
+    normalizationMode: normalizationModeFromEnv(env.BROADSIDE_AUDIO_NORMALIZATION_MODE),
     outputBitrate: env.BROADSIDE_AUDIO_NORMALIZATION_BITRATE ?? defaultOutputBitrate,
     targetIntegratedLufs: numberFromEnv(
       env.BROADSIDE_AUDIO_NORMALIZATION_TARGET_LUFS,
@@ -361,6 +420,25 @@ function numberFromEnv(value: string | undefined, fallback: number) {
   }
 
   return finiteOrDefault(Number(value), fallback);
+}
+
+function normalizationModeFromEnv(
+  value: string | undefined
+): FfmpegLoudnessNormalizationMode {
+  switch (value?.trim().toLowerCase()) {
+    case "1":
+    case "one":
+    case "one-pass":
+    case "single":
+    case "single-pass":
+      return "single-pass";
+    case "2":
+    case "two":
+    case "two-pass":
+      return "two-pass";
+    default:
+      return defaultNormalizationMode;
+  }
 }
 
 function finiteOrDefault(value: number | undefined, fallback: number) {
