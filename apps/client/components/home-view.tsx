@@ -48,7 +48,7 @@ export function HomeView({
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
           {libraryStatus === 'offline'
-            ? 'Offline mode. Playing saved tracks from this device.'
+            ? 'Offline mode. Playing saved tracks and playlists from this device.'
             : 'Pick up where you left off.'}
         </p>
       </header>

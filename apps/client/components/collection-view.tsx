@@ -59,6 +59,7 @@ type CollectionViewProps = {
   songs: Song[]
   summary: LibrarySummary
   playlists: ServerPlaylist[]
+  playlistDetails: ServerPlaylistDetail[]
   currentSongId: string | null
   isPlaying: boolean
   offlineAudio: OfflineAudioStateMap
@@ -84,6 +85,7 @@ export function CollectionView({
   songs,
   summary,
   playlists,
+  playlistDetails,
   currentSongId,
   isPlaying,
   offlineAudio,
@@ -110,13 +112,17 @@ export function CollectionView({
   const meta = resolveCollectionMeta({
     collection,
     playlistState,
+    playlistDetails,
     playlists,
     songs,
     summary,
   })
   const userPlaylist =
-    collection.kind === 'playlist' && playlistState.status === 'authenticated'
-      ? playlistState.playlist
+    collection.kind === 'playlist'
+      ? playlistState.status === 'authenticated'
+        ? playlistState.playlist
+        : (playlistDetails.find((playlist) => playlist.id === collection.id) ??
+          null)
       : null
 
   if (!meta) {
@@ -395,12 +401,14 @@ function looksLikeImportFilename(text: string) {
 function resolveCollectionMeta({
   collection,
   playlistState,
+  playlistDetails,
   playlists,
   songs,
   summary,
 }: {
   collection: CollectionRef
   playlistState: ReturnType<typeof usePlaylist>
+  playlistDetails: ServerPlaylistDetail[]
   playlists: ServerPlaylist[]
   songs: Song[]
   summary: LibrarySummary
@@ -425,21 +433,31 @@ function resolveCollectionMeta({
 
   if (collection.kind === 'playlist') {
     if (playlistState.status === 'authenticated') {
-      const songsById = new Map(songs.map((song) => [song.id, song]))
-
       return {
         coverColor: resolvePlaylistColor(
           playlistState.playlist.color,
           playlistState.playlist.name,
         ),
         kindLabel: 'Playlist',
-        songs: playlistState.playlist.songs.map(
-          (song) => songsById.get(song.id) ?? serverSongToSong(song),
-        ),
+        songs: songsForPlaylistDetail(playlistState.playlist, songs),
         subtitle:
           playlistState.playlist.description ??
           playlistSubtitle(playlistState.playlist),
         title: playlistState.playlist.name,
+      }
+    }
+
+    const cachedDetail = playlistDetails.find(
+      (playlist) => playlist.id === collection.id,
+    )
+
+    if (cachedDetail) {
+      return {
+        coverColor: resolvePlaylistColor(cachedDetail.color, cachedDetail.name),
+        kindLabel: 'Playlist',
+        songs: songsForPlaylistDetail(cachedDetail, songs),
+        subtitle: cachedDetail.description ?? playlistSubtitle(cachedDetail),
+        title: cachedDetail.name,
       }
     }
 
@@ -459,4 +477,13 @@ function resolveCollectionMeta({
   }
 
   return getCollectionMeta(collection)
+}
+
+function songsForPlaylistDetail(
+  playlist: ServerPlaylistDetail,
+  songs: Song[],
+) {
+  const songsById = new Map(songs.map((song) => [song.id, song]))
+
+  return playlist.songs.map((song) => songsById.get(song.id) ?? serverSongToSong(song))
 }

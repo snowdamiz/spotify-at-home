@@ -24,6 +24,7 @@ type CsvImportStatusToastProps = {
   downloads: Download[]
   hidden?: boolean
   onCancelImport?: (download: Download) => void | Promise<void>
+  onDismiss?: () => void
   onMatchCsvImportItem?: (download: Download, item: CsvImportItem) => void
   onOpenImports: () => void
   onRetryCsvImport?: (download: Download) => void | Promise<void>
@@ -34,6 +35,7 @@ export function CsvImportStatusToast({
   downloads,
   hidden = false,
   onCancelImport,
+  onDismiss,
   onMatchCsvImportItem,
   onOpenImports,
   onRetryCsvImport,
@@ -91,6 +93,19 @@ export function CsvImportStatusToast({
           >
             Open
           </Button>
+          {onDismiss && (
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8 shrink-0 rounded-full text-muted-foreground hover:bg-white/10 hover:text-foreground"
+              onClick={onDismiss}
+              aria-label="Dismiss CSV import status"
+              title="Dismiss"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          )}
         </div>
 
         <div className="max-h-[min(56vh,28rem)] overflow-y-auto p-3">

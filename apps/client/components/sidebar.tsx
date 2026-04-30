@@ -47,6 +47,7 @@ type SidebarProps = {
   onCreatePlaylistClick: () => void
   onOpenCollection: (ref: CollectionRef) => void
   onDeletePlaylist: (playlist: ServerPlaylist) => Promise<void> | void
+  onPlaySong: (song: Song) => void
   activeCollectionId: string | null
 }
 
@@ -61,6 +62,7 @@ export function Sidebar({
   onCreatePlaylistClick,
   onOpenCollection,
   onDeletePlaylist,
+  onPlaySong,
   activeCollectionId,
 }: SidebarProps) {
   return (
@@ -131,7 +133,7 @@ export function Sidebar({
           {songs.slice(0, 8).map((song) => (
             <button
               key={song.id}
-              onClick={() => setView('library')}
+              onClick={() => onPlaySong(song)}
               className="group flex w-full items-center gap-3 rounded-lg p-1.5 text-left transition-colors hover:bg-accent/70"
             >
               <CoverArt

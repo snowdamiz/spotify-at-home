@@ -38,6 +38,7 @@ import {
   fetchActiveCsvImportBatches,
   fetchCsvImportBatch,
   fetchExternalImportJob,
+  fetchPlaylist,
   importCsvImportItemDiscovery,
   importYouTubeDiscovery,
   importAudioFiles,
@@ -73,6 +74,11 @@ import {
   getOfflineAudioStates,
   type OfflineAudioStateMap,
 } from '@/lib/offline-audio-cache'
+import {
+  cacheOfflineLibrarySnapshot,
+  getOfflineLibrarySnapshot,
+  type OfflineLibrarySnapshot,
+} from '@/lib/offline-library-cache'
 import {
   type CollectionRef,
   type Song,
@@ -759,6 +765,8 @@ function AuthenticatedMusicApp() {
   const library = useLibrarySummary(revision)
   const importPolicy = useImportPolicy()
   const [offlineServerSongs, setOfflineServerSongs] = useState<ServerSong[]>([])
+  const [offlineLibrarySnapshot, setOfflineLibrarySnapshot] =
+    useState<OfflineLibrarySnapshot | null>(null)
   const [storedNavigation] = useState(readStoredNavigation)
   const [view, setView] = useState<View>(storedNavigation.view)
   const [collection, setCollection] = useState<CollectionRef | null>(
@@ -782,6 +790,9 @@ function AuthenticatedMusicApp() {
   const [downloads, setDownloads] = useState<Download[]>(() =>
     readStoredCsvImportDownloads(user?.id),
   )
+  const [dismissedCsvImportToastIds, setDismissedCsvImportToastIds] = useState<
+    Set<string>
+  >(() => new Set())
   const [deletingSongId, setDeletingSongId] = useState<string | null>(null)
   const [likingSongId, setLikingSongId] = useState<string | null>(null)
   const [likedOverrides, setLikedOverrides] = useState<Record<string, boolean>>(
@@ -808,6 +819,10 @@ function AuthenticatedMusicApp() {
     useState<Song | null>(null)
   const [editingPlaylist, setEditingPlaylist] =
     useState<ServerPlaylistDetail | null>(null)
+  const [revealSongInLibrary, setRevealSongInLibrary] = useState<{
+    songId: string
+    nonce: number
+  } | null>(null)
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const mediaLoadIdRef = useRef(0)
@@ -822,6 +837,7 @@ function AuthenticatedMusicApp() {
     (downloadId: string, item: CsvImportItem) => void
   >(() => undefined)
   const activeSongIdsRef = useRef<Set<string>>(new Set())
+  const offlineServerSongsRef = useRef<ServerSong[]>([])
   const wasOnlineRef = useRef(isOnline)
 
   const reloadOfflineServerSongs = useCallback(async () => {
@@ -832,10 +848,24 @@ function AuthenticatedMusicApp() {
     }
   }, [])
 
+  const reloadOfflineLibrarySnapshot = useCallback(
+    async (availableSongIds: Iterable<string> = []) => {
+      try {
+        setOfflineLibrarySnapshot(
+          await getOfflineLibrarySnapshot(availableSongIds),
+        )
+      } catch {
+        setOfflineLibrarySnapshot(null)
+      }
+    },
+    [],
+  )
+
   const offlineOnlyMode =
     songsState.status !== 'loading' &&
     songsState.status !== 'authenticated' &&
-    offlineServerSongs.length > 0
+    (offlineServerSongs.length > 0 ||
+      (offlineLibrarySnapshot?.summary.playlists.length ?? 0) > 0)
 
   const activeServerSongs = offlineOnlyMode ? offlineServerSongs : songsState.songs
 
@@ -851,21 +881,24 @@ function AuthenticatedMusicApp() {
   const likedAwareSummary = useMemo(() => {
     if (songsState.status === 'authenticated' || offlineOnlyMode) {
       const likedSongs = serverSongs.filter((song) => song.liked)
+      const summary = offlineOnlyMode
+        ? (offlineLibrarySnapshot?.summary ?? library.summary)
+        : library.summary
 
       return {
-        ...library.summary,
+        ...summary,
         counts: {
-          ...library.summary.counts,
+          ...summary.counts,
           likedSongs: likedSongs.length,
-          playlists: offlineOnlyMode ? 0 : library.summary.counts.playlists,
+          playlists: summary.playlists.length,
           songs: serverSongs.length,
         },
-        isEmpty: serverSongs.length === 0,
+        isEmpty: serverSongs.length === 0 && summary.playlists.length === 0,
         likedSongs,
-        playlists: offlineOnlyMode ? [] : library.summary.playlists,
+        playlists: summary.playlists,
         recentSongs: offlineOnlyMode
           ? serverSongs.slice(0, 6)
-          : library.summary.recentSongs,
+          : summary.recentSongs,
       }
     }
 
@@ -880,6 +913,7 @@ function AuthenticatedMusicApp() {
   }, [
     library.summary,
     likedOverrides,
+    offlineLibrarySnapshot,
     offlineOnlyMode,
     serverSongs,
     songsState.status,
@@ -922,6 +956,19 @@ function AuthenticatedMusicApp() {
     setAddOpen(true)
   }, [requireOnlineAction])
 
+  const csvImportToastIds = useMemo(
+    () => downloads.filter(isCsvImportDownload).map((download) => download.id),
+    [downloads],
+  )
+  const isCsvImportToastDismissed =
+    csvImportToastIds.length > 0 &&
+    csvImportToastIds.every((downloadId) =>
+      dismissedCsvImportToastIds.has(downloadId),
+    )
+  const dismissCsvImportToast = useCallback(() => {
+    setDismissedCsvImportToastIds(new Set(csvImportToastIds))
+  }, [csvImportToastIds])
+
   const scheduleCsvImportDismiss = useCallback((downloadId: string) => {
     const existingTimeout = csvImportDismissTimeoutsRef.current.get(downloadId)
 
@@ -956,6 +1003,25 @@ function AuthenticatedMusicApp() {
   useEffect(() => {
     writeStoredCsvImportDownloads(user?.id, downloads)
   }, [downloads, user?.id])
+
+  useEffect(() => {
+    const activeIds = new Set(csvImportToastIds)
+
+    setDismissedCsvImportToastIds((current) => {
+      let changed = false
+      const next = new Set<string>()
+
+      for (const downloadId of current) {
+        if (activeIds.has(downloadId)) {
+          next.add(downloadId)
+        } else {
+          changed = true
+        }
+      }
+
+      return changed ? next : current
+    })
+  }, [csvImportToastIds])
 
   useEffect(() => {
     if (!user?.id || !isOnline) {
@@ -1047,6 +1113,60 @@ function AuthenticatedMusicApp() {
   useEffect(() => {
     activeSongIdsRef.current = new Set(userSongs.map((song) => song.id))
   }, [userSongs])
+
+  useEffect(() => {
+    offlineServerSongsRef.current = offlineServerSongs
+    void reloadOfflineLibrarySnapshot(offlineServerSongs.map((song) => song.id))
+  }, [offlineServerSongs, reloadOfflineLibrarySnapshot])
+
+  useEffect(() => {
+    if (
+      songsState.status !== 'authenticated' ||
+      library.status !== 'authenticated'
+    ) {
+      return
+    }
+
+    let cancelled = false
+
+    async function cacheLibrarySnapshot() {
+      const playlistDetails = (
+        await Promise.all(
+          library.summary.playlists.map(async (playlist) => {
+            try {
+              const result = await fetchPlaylist(playlist.id)
+              return result.status === 'authenticated' ? result.playlist : null
+            } catch {
+              return null
+            }
+          }),
+        )
+      ).filter((playlist): playlist is ServerPlaylistDetail =>
+        Boolean(playlist),
+      )
+
+      if (cancelled) return
+
+      await cacheOfflineLibrarySnapshot(library.summary, playlistDetails)
+
+      if (!cancelled) {
+        await reloadOfflineLibrarySnapshot(
+          offlineServerSongsRef.current.map((song) => song.id),
+        )
+      }
+    }
+
+    void cacheLibrarySnapshot()
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    library.status,
+    library.summary,
+    reloadOfflineLibrarySnapshot,
+    songsState.status,
+  ])
 
   useEffect(() => {
     let cancelled = false
@@ -3108,6 +3228,20 @@ function AuthenticatedMusicApp() {
     setView(nextView)
   }, [])
 
+  const playSongFromSidebar = useCallback(
+    (song: Song) => {
+      playSong(
+        song,
+        [song, ...userSongs.filter((item) => item.id !== song.id)],
+        { kind: 'library' },
+      )
+      setCollection(null)
+      setView('library')
+      setRevealSongInLibrary({ songId: song.id, nonce: Date.now() })
+    },
+    [playSong, userSongs],
+  )
+
   const handleCreatePlaylistSubmit = useCallback(
     async (input: { name: string; description: string | null }) => {
       if (!requireOnlineAction('Reconnect to create playlists.')) return
@@ -3353,6 +3487,7 @@ function AuthenticatedMusicApp() {
           onCreatePlaylistClick={openCreatePlaylist}
           onOpenCollection={openCollection}
           onDeletePlaylist={handleDeletePlaylist}
+          onPlaySong={playSongFromSidebar}
           activeCollectionId={activeCollectionId}
         />
 
@@ -3409,6 +3544,11 @@ function AuthenticatedMusicApp() {
                 songs={userSongs}
                 summary={likedAwareSummary}
                 playlists={playlists}
+                playlistDetails={
+                  offlineOnlyMode
+                    ? (offlineLibrarySnapshot?.playlistDetails ?? [])
+                    : []
+                }
                 currentSongId={currentSongId}
                 isPlaying={isPlaying}
                 offlineAudio={offlineAudio}
@@ -3475,6 +3615,7 @@ function AuthenticatedMusicApp() {
                 likingSongId={likingSongId}
                 onImportClick={openAddMusic}
                 onOpenCollection={openCollection}
+                revealSong={revealSongInLibrary}
               />
             ) : view === 'settings' ? (
               <SettingsView
@@ -3606,8 +3747,9 @@ function AuthenticatedMusicApp() {
       <CsvImportStatusToast
         avoidPlayerBar={Boolean(currentSong)}
         downloads={downloads}
-        hidden={addOpen}
+        hidden={addOpen || isCsvImportToastDismissed}
         onCancelImport={cancelCsvImport}
+        onDismiss={dismissCsvImportToast}
         onMatchCsvImportItem={openCsvManualMatch}
         onOpenImports={() => setAddOpen(true)}
         onRetryCsvImport={retryCsvImport}

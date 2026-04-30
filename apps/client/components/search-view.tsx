@@ -98,6 +98,22 @@ export function SearchView({
     return [...serverMatches, ...localMatches]
   }, [query, search.results.songs, songs])
 
+  const playlistMatches = useMemo(() => {
+    const trimmedQuery = query.trim().toLowerCase()
+    if (!trimmedQuery) return []
+
+    const serverMatches = search.results.playlists
+    const knownIds = new Set(serverMatches.map((playlist) => playlist.id))
+    const localMatches = (playlists ?? []).filter(
+      (playlist) =>
+        !knownIds.has(playlist.id) &&
+        (playlist.name.toLowerCase().includes(trimmedQuery) ||
+          playlist.description?.toLowerCase().includes(trimmedQuery)),
+    )
+
+    return [...serverMatches, ...localMatches]
+  }, [playlists, query, search.results.playlists])
+
   const openBrowseCard = (card: BrowseCard) => {
     if (card.action.kind === 'collection') {
       onOpenCollection(card.action.ref)
@@ -127,19 +143,19 @@ export function SearchView({
 
       {query.trim() ? (
         matches.length === 0 &&
-        search.results.playlists.length === 0 &&
+        playlistMatches.length === 0 &&
         isOffline ? (
           <EmptyState
             variant="section"
-            title={`No saved songs match "${query}".`}
-            description="Search is limited to offline songs until you reconnect."
+            title={`No saved songs or playlists match "${query}".`}
+            description="Search is limited to offline library items until you reconnect."
           />
         ) : matches.length === 0 &&
-        search.results.playlists.length === 0 &&
+        playlistMatches.length === 0 &&
         search.status === 'loading' ? (
           <EmptyState variant="section" title="Searching your library…" />
         ) : matches.length === 0 &&
-          search.results.playlists.length === 0 &&
+          playlistMatches.length === 0 &&
           search.status === 'error' ? (
           <EmptyState
             variant="section"
@@ -147,17 +163,17 @@ export function SearchView({
             description="Check your connection and try again."
           />
         ) : matches.length === 0 &&
-          search.results.playlists.length === 0 &&
+          playlistMatches.length === 0 &&
           search.status === 'anonymous' ? (
           <EmptyState
             variant="section"
             title="Log in to search imported songs and playlists."
           />
-        ) : matches.length > 0 || search.results.playlists.length > 0 ? (
+        ) : matches.length > 0 || playlistMatches.length > 0 ? (
           <section>
             <SectionHeader title="Results" size="sm" className="mb-2" />
             <ul className="space-y-1">
-              {search.results.playlists.map((playlist) => (
+              {playlistMatches.map((playlist) => (
                 <li key={playlist.id}>
                   <button
                     type="button"

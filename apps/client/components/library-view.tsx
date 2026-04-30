@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Heart,
   ListMusic,
@@ -54,6 +54,7 @@ type LibraryViewProps = {
   likingSongId?: string | null
   onImportClick: () => void
   onOpenCollection: (ref: CollectionRef) => void
+  revealSong: { songId: string; nonce: number } | null
 }
 
 type Filter = 'all' | 'playlists' | 'songs'
@@ -78,9 +79,41 @@ export function LibraryView({
   likingSongId,
   onImportClick,
   onOpenCollection,
+  revealSong,
 }: LibraryViewProps) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
+  const [highlightedSongId, setHighlightedSongId] = useState<string | null>(null)
+  const songListRef = useRef<HTMLUListElement | null>(null)
+
+  useEffect(() => {
+    if (!revealSong) return
+    const target = songs.find((s) => s.id === revealSong.songId)
+    if (!target) return
+
+    setQuery('')
+    setFilter((current) => (current === 'playlists' ? 'all' : current))
+    setHighlightedSongId(target.id)
+
+    const scroll = () => {
+      const el = document.getElementById(`library-song-${target.id}`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    }
+
+    const rafId = requestAnimationFrame(() => {
+      requestAnimationFrame(scroll)
+    })
+    const fadeTimer = window.setTimeout(() => {
+      setHighlightedSongId((id) => (id === target.id ? null : id))
+    }, 1800)
+
+    return () => {
+      cancelAnimationFrame(rafId)
+      window.clearTimeout(fadeTimer)
+    }
+  }, [revealSong, songs])
 
   const filteredSongs = songs.filter((s) => {
     if (!query.trim()) return true
@@ -173,8 +206,8 @@ export function LibraryView({
           {libraryStatus === 'offline' && playlists.length === 0 ? (
             <EmptyState
               variant="section"
-              title="Playlists are unavailable offline."
-              description="Saved songs are still available on this device."
+              title="No saved playlists on this device."
+              description="Reconnect once to cache your playlist library."
             />
           ) : filteredPlaylists.length > 0 ? (
             <ul className="space-y-1">
@@ -275,9 +308,17 @@ export function LibraryView({
               title="No matches in your library."
             />
           ) : (
-            <ul className="space-y-1">
+            <ul ref={songListRef} className="space-y-1">
               {filteredSongs.map((song) => (
-                <li key={song.id}>
+                <li
+                  key={song.id}
+                  id={`library-song-${song.id}`}
+                  className={
+                    highlightedSongId === song.id
+                      ? 'rounded-lg ring-2 ring-foreground/40 transition-shadow duration-700'
+                      : 'rounded-lg transition-shadow duration-700'
+                  }
+                >
                   <SongRow
                     song={song}
                     isActive={currentSongId === song.id}
