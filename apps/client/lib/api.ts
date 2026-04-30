@@ -147,6 +147,8 @@ export interface CsvImportBatch {
   failedItems: number
   id: string
   importPolicyMode: ImportPolicyMode
+  recentItemsPerMinute: number | null
+  recentWindowMs: number | null
   startedAt: string | null
   status: 'pending' | 'running' | 'completed' | 'failed'
   totalItems: number

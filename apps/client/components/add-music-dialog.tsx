@@ -1071,8 +1071,16 @@ function ImportsList({
               .length ?? 0
           const resumableCsvCount =
             retryableCount + pendingCsvCount + runningCsvCount
-          const manualMatchItems =
-            d.csvImportItems?.filter((item) => item.userMatchRequired) ?? []
+          const reviewableItems = (
+            d.csvImportItems?.filter((item) => item.status === 'failed') ?? []
+          )
+            .slice()
+            .sort((a, b) => {
+              if (a.userMatchRequired !== b.userMatchRequired) {
+                return a.userMatchRequired ? -1 : 1
+              }
+              return 0
+            })
           const canResumeCsvImport =
             d.status === 'error' && resumableCsvCount > 0
           const csvImportRunning =
@@ -1084,8 +1092,8 @@ function ImportsList({
               false)
           const showCsvActions =
             canResumeCsvImport ||
-            (d.status === 'error' && manualMatchItems.length > 0) ||
-            (csvImportRunning && manualMatchItems.length > 0)
+            (d.status === 'error' && reviewableItems.length > 0) ||
+            (csvImportRunning && reviewableItems.length > 0)
           const timeEstimate =
             d.status === 'downloading'
               ? getCsvImportTimeEstimate(d.csvImportBatches)
@@ -1228,23 +1236,34 @@ function ImportsList({
                             : `Retry ${retryableCount}`}
                         </Button>
                       )}
-                      {manualMatchItems.slice(0, 3).map((item) => (
+                      {reviewableItems.slice(0, 3).map((item) => (
                         <Button
                           key={item.id}
                           type="button"
                           size="sm"
-                          variant="outline"
+                          variant={
+                            item.userMatchRequired ? 'default' : 'outline'
+                          }
                           className="h-8 max-w-full rounded-full px-3 text-xs"
                           onClick={() => onMatchCsvImportItem?.(d, item)}
                         >
                           <Search className="h-3.5 w-3.5" />
-                          <span className="truncate">{item.title}</span>
+                          <span className="truncate">
+                            {item.userMatchRequired ? 'Pick: ' : 'Fix: '}
+                            {item.title}
+                          </span>
                         </Button>
                       ))}
-                      {manualMatchItems.length > 3 && (
-                        <span className="inline-flex h-8 items-center rounded-full px-2 text-xs text-muted-foreground">
-                          +{manualMatchItems.length - 3} more
-                        </span>
+                      {reviewableItems.length > 3 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onMatchCsvImportItem?.(d, reviewableItems[3])
+                          }
+                          className="inline-flex h-8 items-center rounded-full border border-border/60 px-3 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                        >
+                          +{reviewableItems.length - 3} more
+                        </button>
                       )}
                     </div>
                   </div>

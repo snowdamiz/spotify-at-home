@@ -50,7 +50,7 @@ export function CsvImportStatusToast({
     (download) => download.status === 'downloading',
   ).length
   const needsReviewCount = csvDownloads.reduce(
-    (total, download) => total + manualMatchItems(download).length,
+    (total, download) => total + reviewableItems(download).length,
     0,
   )
   const visibleDownloads = csvDownloads.slice(0, 2)
@@ -133,7 +133,7 @@ function CsvImportToastItem({
   onRetryCsvImport?: (download: Download) => void | Promise<void>
 }) {
   const progress = Math.round(Math.min(1, Math.max(0, download.progress)) * 100)
-  const reviewItems = manualMatchItems(download)
+  const reviewItems = reviewableItems(download)
   const retryableCount =
     download.csvImportItems?.filter((item) => item.autoRetryable).length ?? 0
   const pendingCsvCount =
@@ -266,19 +266,26 @@ function CsvImportToastItem({
                   key={item.id}
                   type="button"
                   size="sm"
-                  variant="outline"
+                  variant={item.userMatchRequired ? 'default' : 'outline'}
                   className="h-8 max-w-full rounded-full px-3 text-xs"
                   onClick={() => onMatchCsvImportItem?.(download, item)}
                 >
                   <Search className="h-3.5 w-3.5" />
-                  <span className="max-w-40 truncate">{item.title}</span>
+                  <span className="max-w-40 truncate">
+                    {item.userMatchRequired ? 'Pick: ' : 'Fix: '}
+                    {item.title}
+                  </span>
                 </Button>
               ))}
 
               {reviewItems.length > 2 && (
-                <span className="inline-flex h-8 items-center rounded-full px-2 text-xs text-muted-foreground">
+                <button
+                  type="button"
+                  onClick={() => onMatchCsvImportItem?.(download, reviewItems[2])}
+                  className="inline-flex h-8 items-center rounded-full border border-white/[0.12] px-3 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                >
                   +{reviewItems.length - 2} more
-                </span>
+                </button>
               )}
             </div>
           )}
@@ -299,12 +306,18 @@ function isCsvImportDownload(download: Download) {
   )
 }
 
-function manualMatchItems(download: Download) {
-  return download.csvImportItems?.filter((item) => item.userMatchRequired) ?? []
+function reviewableItems(download: Download) {
+  const items = download.csvImportItems?.filter((item) => item.status === 'failed') ?? []
+  return items.sort((a, b) => {
+    if (a.userMatchRequired !== b.userMatchRequired) {
+      return a.userMatchRequired ? -1 : 1
+    }
+    return 0
+  })
 }
 
 function csvImportPriority(download: Download) {
-  if (manualMatchItems(download).length > 0) return 0
+  if (reviewableItems(download).length > 0) return 0
   if (download.status === 'downloading') return 1
   if (download.status === 'error') return 2
   if (download.status === 'complete') return 3
@@ -318,8 +331,8 @@ function statusSummary(
 ) {
   if (needsReviewCount > 0) {
     return needsReviewCount === 1
-      ? '1 track needs your pick'
-      : `${needsReviewCount} tracks need your picks`
+      ? '1 row needs review'
+      : `${needsReviewCount} rows need review`
   }
 
   if (activeCount > 0) {

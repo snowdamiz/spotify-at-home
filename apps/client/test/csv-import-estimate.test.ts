@@ -42,6 +42,31 @@ describe('CSV import estimates', () => {
     ).toBeNull()
   })
 
+  it('prefers recent running throughput over the lifetime average', () => {
+    const estimate = getCsvImportTimeEstimate(
+      [
+        csvImportBatch({
+          completedItems: 100,
+          failedItems: 0,
+          recentItemsPerMinute: 2,
+          recentWindowMs: 900_000,
+          startedAt: '2026-04-29T12:00:00.000Z',
+          totalItems: 200,
+        }),
+      ],
+      Date.parse('2026-04-29T12:30:00.000Z'),
+    )
+
+    expect(estimate).toMatchObject({
+      elapsedMs: 1_800_000,
+      processedItems: 100,
+      remainingItems: 100,
+      remainingMs: 3_000_000,
+      rowsPerMinute: 2,
+      totalItems: 200,
+    })
+  })
+
   it('formats the estimate for compact status surfaces', () => {
     expect(
       formatCsvImportTimeEstimate({
@@ -64,6 +89,8 @@ function csvImportBatch(input: Partial<CsvImportBatch>): CsvImportBatch {
     failedItems: 0,
     id: 'batch-1',
     importPolicyMode: 'licensed_only',
+    recentItemsPerMinute: null,
+    recentWindowMs: null,
     startedAt: null,
     status: 'running',
     totalItems: 0,

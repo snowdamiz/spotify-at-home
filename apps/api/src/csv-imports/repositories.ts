@@ -206,40 +206,40 @@ export class SQLiteCsvImportRepository {
     batchId: string;
     errorCodes: string[];
   }) {
-    const errorCodes = [...new Set(input.errorCodes.filter(Boolean))];
-
-    if (errorCodes.length === 0) {
-      return this.db
-        .prepare(
-          `
-            SELECT *
-            FROM csv_import_items
-            WHERE user_id = ? AND batch_id = ? AND status = 'running'
-            ORDER BY created_at ASC, id ASC
-          `
-        )
-        .all(input.userId, input.batchId)
-        .map(mapImportItem);
-    }
-
-    const placeholders = errorCodes.map(() => "?").join(", ");
-
     return this.db
       .prepare(
         `
           SELECT *
           FROM csv_import_items
-          WHERE user_id = ?
-            AND batch_id = ?
-            AND (
-              status = 'running'
-              OR (status = 'failed' AND error_code IN (${placeholders}))
-            )
+          WHERE user_id = ? AND batch_id = ? AND status IN ('running', 'failed')
           ORDER BY created_at ASC, id ASC
         `
       )
-      .all(input.userId, input.batchId, ...errorCodes)
+      .all(input.userId, input.batchId)
       .map(mapImportItem);
+  }
+
+  countProcessedImportItemsForBatchSince(input: {
+    userId: string;
+    batchId: string;
+    since: Date;
+  }) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM csv_import_items
+          WHERE user_id = ?
+            AND batch_id = ?
+            AND status IN ('completed', 'skipped', 'failed')
+            AND updated_at >= ?
+        `
+      )
+      .get(input.userId, input.batchId, toSqlDate(input.since)) as
+      | { count?: number | bigint }
+      | undefined;
+
+    return Number(row?.count ?? 0);
   }
 
   listActiveImportBatchesForUser(input: { userId: string; limit?: number }) {

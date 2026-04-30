@@ -85,6 +85,7 @@ const DEFAULT_CSV_YOUTUBE_SEARCH_INTERVAL_MS = 500;
 const DEFAULT_RECOVERABLE_FAILURE_PAUSE_THRESHOLD = 3;
 const DEFAULT_RECOVERABLE_SEARCH_ATTEMPTS = 2;
 const DEFAULT_RECOVERABLE_SEARCH_RETRY_DELAY_MS = 1500;
+const CSV_IMPORT_RECENT_RATE_WINDOW_MS = 15 * 60 * 1000;
 const CSV_UPLOAD_SESSION_MAX_AGE_MS = 60 * 60 * 1000;
 const RECOVERABLE_SEARCH_ERROR_CODES = [
   "youtube_search_parse_failed",
@@ -265,7 +266,13 @@ export function registerCsvImportRoutes(app: FastifyInstance, options: CsvImport
 
     return {
       batches: batches.map((batch) => ({
-        batch: serializeImportBatch(batch),
+        batch: serializeImportBatch(
+          batch,
+          csvImportRecentThroughput(options.csvImportRepository, {
+            batch,
+            userId: user.id
+          })
+        ),
         items: listCsvImportItemsForResponse(options.csvImportRepository, {
           batchId: batch.id,
           itemsMode,
@@ -347,7 +354,13 @@ export function registerCsvImportRoutes(app: FastifyInstance, options: CsvImport
     }
 
     return {
-      batch: serializeImportBatch(batch),
+      batch: serializeImportBatch(
+        batch,
+        csvImportRecentThroughput(options.csvImportRepository, {
+          batch,
+          userId: user.id
+        })
+      ),
       items: listCsvImportItemsForResponse(options.csvImportRepository, {
         batchId,
         itemsMode: csvImportItemsModeFromRequest(request),
@@ -1961,7 +1974,10 @@ function serializeParsedPlaylist(playlist: ParsedCsvPlaylist) {
   };
 }
 
-function serializeImportBatch(batch: CsvImportBatch) {
+function serializeImportBatch(
+  batch: CsvImportBatch,
+  throughput?: CsvImportRecentThroughput | null
+) {
   return {
     completedAt: batch.completedAt?.toISOString() ?? null,
     completedItems: batch.completedItems,
@@ -1969,10 +1985,49 @@ function serializeImportBatch(batch: CsvImportBatch) {
     failedItems: batch.failedItems,
     id: batch.id,
     importPolicyMode: batch.importPolicyMode,
+    recentItemsPerMinute: throughput?.recentItemsPerMinute ?? null,
+    recentWindowMs: throughput?.recentWindowMs ?? null,
     startedAt: batch.startedAt?.toISOString() ?? null,
     status: batch.status,
     totalItems: batch.totalItems,
     userId: batch.userId
+  };
+}
+
+interface CsvImportRecentThroughput {
+  recentItemsPerMinute: number;
+  recentWindowMs: number;
+}
+
+function csvImportRecentThroughput(
+  csvImportRepository: SQLiteCsvImportRepository,
+  input: { batch: CsvImportBatch; now?: Date; userId: string }
+): CsvImportRecentThroughput | null {
+  if (input.batch.status !== "running" || !input.batch.startedAt) {
+    return null;
+  }
+
+  const now = input.now ?? new Date();
+  const elapsedMs = now.getTime() - input.batch.startedAt.getTime();
+  const windowMs = Math.min(CSV_IMPORT_RECENT_RATE_WINDOW_MS, elapsedMs);
+
+  if (windowMs < 60_000) {
+    return null;
+  }
+
+  const recentItems = csvImportRepository.countProcessedImportItemsForBatchSince({
+    batchId: input.batch.id,
+    since: new Date(now.getTime() - windowMs),
+    userId: input.userId
+  });
+
+  if (recentItems <= 0) {
+    return null;
+  }
+
+  return {
+    recentItemsPerMinute: recentItems / (windowMs / 60_000),
+    recentWindowMs: windowMs
   };
 }
 

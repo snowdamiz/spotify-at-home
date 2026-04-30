@@ -58,7 +58,9 @@ export function getCsvImportTimeEstimate(
     return null
   }
 
-  const rowsPerMinute = processedItems / (elapsedMs / 60_000)
+  const recentRowsPerMinute = recentRowsPerMinuteForBatches(validBatches)
+  const rowsPerMinute =
+    recentRowsPerMinute ?? processedItems / (elapsedMs / 60_000)
 
   if (!Number.isFinite(rowsPerMinute) || rowsPerMinute <= 0) {
     return null
@@ -72,6 +74,36 @@ export function getCsvImportTimeEstimate(
     rowsPerMinute,
     totalItems,
   }
+}
+
+function recentRowsPerMinuteForBatches(batches: CsvImportBatch[]) {
+  const runningBatchesWithRemainingItems = batches.filter(
+    (batch) =>
+      batch.status === 'running' &&
+      batch.completedItems + batch.failedItems < batch.totalItems,
+  )
+
+  if (runningBatchesWithRemainingItems.length === 0) {
+    return null
+  }
+
+  let rowsPerMinute = 0
+
+  for (const batch of runningBatchesWithRemainingItems) {
+    const recentItemsPerMinute = batch.recentItemsPerMinute
+
+    if (
+      typeof recentItemsPerMinute !== 'number' ||
+      !Number.isFinite(recentItemsPerMinute) ||
+      recentItemsPerMinute <= 0
+    ) {
+      return null
+    }
+
+    rowsPerMinute += recentItemsPerMinute
+  }
+
+  return rowsPerMinute > 0 ? rowsPerMinute : null
 }
 
 export function formatCsvImportTimeEstimate(

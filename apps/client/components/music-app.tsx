@@ -572,18 +572,35 @@ function summarizeCsvImportStates(states: CsvImportBatchState[]) {
   return {
     ...summary,
     autoRetryableItems: items.filter((item) => item.autoRetryable).length,
+    reviewableItems: items.filter((item) => item.status === 'failed').length,
     userMatchItems: items.filter((item) => item.userMatchRequired).length,
   }
 }
 
 function csvImportStatusText(summary: ReturnType<typeof summarizeCsvImportStates>) {
-  if (summary.isRunning && summary.failedItems > 0) {
-    return summary.failedItems === 1
-      ? `${summary.completedItems} done, 1 row needs attention`
-      : `${summary.completedItems} done, ${summary.failedItems} rows need attention`
+  if (summary.isRunning) {
+    if (summary.userMatchItems > 0) {
+      return summary.userMatchItems === 1
+        ? `${summary.completedItems} done, 1 needs your pick`
+        : `${summary.completedItems} done, ${summary.userMatchItems} need your picks`
+    }
+
+    if (summary.reviewableItems > 0) {
+      return summary.reviewableItems === 1
+        ? `${summary.completedItems} done, 1 row to review`
+        : `${summary.completedItems} done, ${summary.reviewableItems} rows to review`
+    }
+
+    if (summary.failedItems > 0) {
+      return summary.failedItems === 1
+        ? `${summary.completedItems} done, 1 row failed`
+        : `${summary.completedItems} done, ${summary.failedItems} rows failed`
+    }
+
+    return `${summary.completedItems} done`
   }
 
-  if (!summary.isRunning && summary.pendingItems > 0) {
+  if (summary.pendingItems > 0) {
     return `${summary.completedItems} done, ${summary.failedItems} failed, ${summary.pendingItems} paused`
   }
 
@@ -591,13 +608,23 @@ function csvImportStatusText(summary: ReturnType<typeof summarizeCsvImportStates
 }
 
 function csvImportActiveMessage(summary: ReturnType<typeof summarizeCsvImportStates>) {
-  if (!summary.isRunning || summary.userMatchItems === 0) {
+  if (!summary.isRunning) {
     return undefined
   }
 
-  return summary.userMatchItems === 1
-    ? '1 row needs a match; import is still running'
-    : `${summary.userMatchItems} rows need matches; import is still running`
+  if (summary.userMatchItems > 0) {
+    return summary.userMatchItems === 1
+      ? '1 row needs your pick; import is still running'
+      : `${summary.userMatchItems} rows need your picks; import is still running`
+  }
+
+  if (summary.reviewableItems > 0) {
+    return summary.reviewableItems === 1
+      ? 'Tap to review 1 stuck row; import is still running'
+      : `Tap to review ${summary.reviewableItems} stuck rows; import is still running`
+  }
+
+  return undefined
 }
 
 function csvImportFinalMessage(summary: ReturnType<typeof summarizeCsvImportStates>) {
@@ -2820,7 +2847,12 @@ function AuthenticatedMusicApp() {
   )
 
   const clearCsvManualMatch = useCallback(() => {
-    setCsvManualMatchTarget(null)
+    setCsvManualMatchTarget((current) => {
+      if (current) {
+        promptedCsvManualMatchIdsRef.current.delete(current.item.id)
+      }
+      return null
+    })
     setExternalResults([])
   }, [])
 
