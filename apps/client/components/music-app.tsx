@@ -124,6 +124,29 @@ function playlistSummaryFromDetail(
   }
 }
 
+function applyLikedOverrideToServerSong(
+  song: ServerSong,
+  likedOverrides: Record<string, boolean>,
+) {
+  const likedOverride = likedOverrides[song.id]
+
+  return likedOverride === undefined ? song : { ...song, liked: likedOverride }
+}
+
+function applyPlaylistSongRemovals(
+  playlist: ServerPlaylist,
+  removedSongIds: string[] | undefined,
+) {
+  if (!removedSongIds || removedSongIds.length === 0) {
+    return playlist
+  }
+
+  return {
+    ...playlist,
+    songCount: Math.max(0, playlist.songCount - removedSongIds.length),
+  }
+}
+
 type LibraryChangedMessage = {
   reason?: string
   songId?: string
@@ -785,6 +808,12 @@ function AuthenticatedMusicApp() {
   const [playlistDetailOverrides, setPlaylistDetailOverrides] = useState<
     Record<string, ServerPlaylistDetail>
   >({})
+  const [playlistSongRemovals, setPlaylistSongRemovals] = useState<
+    Record<string, string[]>
+  >({})
+  const [locallyDeletedPlaylistIds, setLocallyDeletedPlaylistIds] = useState<
+    Set<string>
+  >(() => new Set())
   const [storedNavigation] = useState(readStoredNavigation)
   const [view, setView] = useState<View>(storedNavigation.view)
   const [collection, setCollection] = useState<CollectionRef | null>(
@@ -856,6 +885,7 @@ function AuthenticatedMusicApp() {
   >(() => undefined)
   const activeSongIdsRef = useRef<Set<string>>(new Set())
   const offlineServerSongsRef = useRef<ServerSong[]>([])
+  const locallyHandledSongRemovalIdsRef = useRef<Set<string>>(new Set())
   const wasOnlineRef = useRef(isOnline)
 
   const reloadOfflineServerSongs = useCallback(async () => {
@@ -890,18 +920,28 @@ function AuthenticatedMusicApp() {
   const serverSongs = useMemo(
     () =>
       activeServerSongs.map((song) =>
-        likedOverrides[song.id] === undefined
-          ? song
-          : { ...song, liked: likedOverrides[song.id] },
+        applyLikedOverrideToServerSong(song, likedOverrides),
       ),
     [activeServerSongs, likedOverrides],
   )
+  const visibleServerSongs = useMemo(
+    () =>
+      serverSongs.filter((song) => !locallyDeletedSongIds.has(song.id)),
+    [locallyDeletedSongIds, serverSongs],
+  )
   const likedAwareSummary = useMemo(() => {
     if (songsState.status === 'authenticated' || offlineOnlyMode) {
-      const likedSongs = serverSongs.filter((song) => song.liked)
+      const likedSongs = visibleServerSongs.filter((song) => song.liked)
       const summary = offlineOnlyMode
         ? (offlineLibrarySnapshot?.summary ?? library.summary)
         : library.summary
+      const recentSongs = offlineOnlyMode
+        ? visibleServerSongs.slice(0, 6)
+        : summary.recentSongs
+            .filter((song) => !locallyDeletedSongIds.has(song.id))
+            .map((song) =>
+              applyLikedOverrideToServerSong(song, likedOverrides),
+            )
 
       return {
         ...summary,
@@ -909,72 +949,104 @@ function AuthenticatedMusicApp() {
           ...summary.counts,
           likedSongs: likedSongs.length,
           playlists: summary.playlists.length,
-          songs: serverSongs.length,
+          songs: visibleServerSongs.length,
         },
-        isEmpty: serverSongs.length === 0 && summary.playlists.length === 0,
+        isEmpty:
+          visibleServerSongs.length === 0 && summary.playlists.length === 0,
         likedSongs,
         playlists: summary.playlists,
-        recentSongs: offlineOnlyMode
-          ? serverSongs.slice(0, 6)
-          : summary.recentSongs,
+        recentSongs,
       }
     }
 
     return {
       ...library.summary,
-      likedSongs: library.summary.likedSongs.map((song) =>
-        likedOverrides[song.id] === undefined
-          ? song
-          : { ...song, liked: likedOverrides[song.id] },
-      ),
+      likedSongs: library.summary.likedSongs
+        .filter((song) => !locallyDeletedSongIds.has(song.id))
+        .map((song) => applyLikedOverrideToServerSong(song, likedOverrides)),
+      recentSongs: library.summary.recentSongs
+        .filter((song) => !locallyDeletedSongIds.has(song.id))
+        .map((song) => applyLikedOverrideToServerSong(song, likedOverrides)),
     }
   }, [
     library.summary,
     likedOverrides,
+    locallyDeletedSongIds,
     offlineLibrarySnapshot,
     offlineOnlyMode,
-    serverSongs,
     songsState.status,
+    visibleServerSongs,
   ])
   const userSongs = useMemo(
     () =>
-      serverSongs
-        .map(serverSongToSong)
-        .filter((song) => !locallyDeletedSongIds.has(song.id)),
-    [locallyDeletedSongIds, serverSongs],
+      visibleServerSongs.map(serverSongToSong),
+    [visibleServerSongs],
   )
   const playlistDetailOverrideList = useMemo(
     () => Object.values(playlistDetailOverrides),
     [playlistDetailOverrides],
   )
   const playlists = useMemo(() => {
-    if (offlineOnlyMode || playlistDetailOverrideList.length === 0) {
-      return likedAwareSummary.playlists
+    const summaryPlaylists = likedAwareSummary.playlists.filter(
+      (playlist) => !locallyDeletedPlaylistIds.has(playlist.id),
+    )
+
+    if (
+      offlineOnlyMode ||
+      (playlistDetailOverrideList.length === 0 &&
+        Object.keys(playlistSongRemovals).length === 0)
+    ) {
+      return summaryPlaylists
     }
 
     const overridesById = new Map(
-      playlistDetailOverrideList.map((playlist) => [playlist.id, playlist]),
+      playlistDetailOverrideList
+        .filter((playlist) => !locallyDeletedPlaylistIds.has(playlist.id))
+        .map((playlist) => [playlist.id, playlist]),
     )
     const existingPlaylistIds = new Set<string>()
-    const nextPlaylists = likedAwareSummary.playlists.map((playlist) => {
+    const nextPlaylists = summaryPlaylists.map((playlist) => {
       existingPlaylistIds.add(playlist.id)
 
       const override = overridesById.get(playlist.id)
+      const nextPlaylist = override
+        ? playlistSummaryFromDetail(override)
+        : playlist
 
-      return override ? playlistSummaryFromDetail(override) : playlist
+      return applyPlaylistSongRemovals(
+        nextPlaylist,
+        playlistSongRemovals[playlist.id],
+      )
     })
 
     for (const playlist of playlistDetailOverrideList) {
+      if (locallyDeletedPlaylistIds.has(playlist.id)) {
+        continue
+      }
+
       if (!existingPlaylistIds.has(playlist.id)) {
-        nextPlaylists.push(playlistSummaryFromDetail(playlist))
+        nextPlaylists.push(
+          applyPlaylistSongRemovals(
+            playlistSummaryFromDetail(playlist),
+            playlistSongRemovals[playlist.id],
+          ),
+        )
       }
     }
 
     return nextPlaylists
-  }, [likedAwareSummary.playlists, offlineOnlyMode, playlistDetailOverrideList])
+  }, [
+    likedAwareSummary.playlists,
+    locallyDeletedPlaylistIds,
+    offlineOnlyMode,
+    playlistDetailOverrideList,
+    playlistSongRemovals,
+  ])
   const playlistDetails = offlineOnlyMode
     ? (offlineLibrarySnapshot?.playlistDetails ?? [])
-    : playlistDetailOverrideList
+    : playlistDetailOverrideList.filter(
+        (playlist) => !locallyDeletedPlaylistIds.has(playlist.id),
+      )
   const libraryStatus =
     offlineOnlyMode || (!isOnline && songsState.status === 'error')
       ? 'offline'
@@ -1578,7 +1650,39 @@ function AuthenticatedMusicApp() {
       ...current,
       [playlist.id]: playlist,
     }))
+    setLocallyDeletedPlaylistIds((current) => {
+      if (!current.has(playlist.id)) return current
+
+      const next = new Set(current)
+      next.delete(playlist.id)
+      return next
+    })
+    setPlaylistSongRemovals((current) => {
+      if (!(playlist.id in current)) return current
+
+      const next = { ...current }
+      delete next[playlist.id]
+      return next
+    })
   }, [])
+
+  const hideSongFromPlaylist = useCallback(
+    (playlistId: string, songId: string) => {
+      setPlaylistSongRemovals((current) => {
+        const removedSongIds = current[playlistId] ?? []
+
+        if (removedSongIds.includes(songId)) {
+          return current
+        }
+
+        return {
+          ...current,
+          [playlistId]: [...removedSongIds, songId],
+        }
+      })
+    },
+    [],
+  )
 
   useEffect(() => {
     const wasOnline = wasOnlineRef.current
@@ -1690,7 +1794,14 @@ function AuthenticatedMusicApp() {
       const message = parseLibraryChangedMessage(event)
 
       if (message?.reason === 'song_removed' && message.songId) {
+        const wasHandledLocally =
+          locallyHandledSongRemovalIdsRef.current.delete(message.songId)
+
         removeSongsFromDeviceState([message.songId])
+
+        if (wasHandledLocally) {
+          return
+        }
       }
 
       if (message?.reason === 'account_tracks_wiped') {
@@ -1793,11 +1904,13 @@ function AuthenticatedMusicApp() {
       }
 
       setDeletingSongId(song.id)
+      locallyHandledSongRemovalIdsRef.current.add(song.id)
 
       try {
         const result = await deleteSong(song.id)
 
         if (result.status === 'anonymous') {
+          locallyHandledSongRemovalIdsRef.current.delete(song.id)
           toast({
             title: 'Sign in again',
             description: 'Your session expired before the song could be removed.',
@@ -1807,7 +1920,9 @@ function AuthenticatedMusicApp() {
         }
 
         removeSongsFromDeviceState([song.id])
-        refreshLibrary()
+        window.setTimeout(() => {
+          locallyHandledSongRemovalIdsRef.current.delete(song.id)
+        }, 5000)
         toast({
           title:
             result.status === 'not-found'
@@ -1822,13 +1937,13 @@ function AuthenticatedMusicApp() {
             error instanceof Error ? error.message : 'Try again in a moment.',
           variant: 'destructive',
         })
+        locallyHandledSongRemovalIdsRef.current.delete(song.id)
       } finally {
         setDeletingSongId(null)
       }
     },
     [
       deletingSongId,
-      refreshLibrary,
       removeSongsFromDeviceState,
       requireOnlineAction,
     ],
@@ -1879,22 +1994,15 @@ function AuthenticatedMusicApp() {
         }
 
         if (result.status === 'not-found') {
-          setLikedOverrides((current) => ({ ...current, [song.id]: wasLiked }))
-          setQueue((current) =>
-            current.map((item) =>
-              item.id === song.id ? applyLikedToSong(item, wasLiked) : item,
-            ),
-          )
+          removeSongsFromDeviceState([song.id])
           toast({
             title: 'Song not found',
             description: 'This song may have already been removed.',
             variant: 'destructive',
           })
-          refreshLibrary()
           return
         }
 
-        refreshLibrary()
         toast({
           title: nextLiked ? 'Added to Liked Songs' : 'Removed from Liked Songs',
           description: `"${song.title}" ${
@@ -1918,7 +2026,7 @@ function AuthenticatedMusicApp() {
         setLikingSongId(null)
       }
     },
-    [likingSongId, refreshLibrary, requireOnlineAction],
+    [likingSongId, removeSongsFromDeviceState, requireOnlineAction],
   )
 
   const toggleSongOffline = useCallback(async (song: Song) => {
@@ -3316,11 +3424,21 @@ function AuthenticatedMusicApp() {
 
         const newPlaylist = result.playlist
         const songToAdd = pendingSongForPlaylist
+        let playlistToCache = newPlaylist
         setPendingSongForPlaylist(null)
 
         if (songToAdd) {
           try {
-            await addSongToPlaylist(newPlaylist.id, songToAdd.id)
+            const addResult = await addSongToPlaylist(
+              newPlaylist.id,
+              songToAdd.id,
+            )
+
+            if (addResult.status !== 'authenticated' || !addResult.playlist) {
+              throw new Error('Song could not be added to the playlist.')
+            }
+
+            playlistToCache = addResult.playlist
             toast({
               title: 'Playlist created',
               description: `Added "${songToAdd.title}" to ${newPlaylist.name}.`,
@@ -3339,7 +3457,7 @@ function AuthenticatedMusicApp() {
           })
         }
 
-        refreshLibrary()
+        cachePlaylistDetail(playlistToCache)
         setCollection({ kind: 'playlist', id: newPlaylist.id })
         setView('library')
       } catch (error) {
@@ -3352,7 +3470,7 @@ function AuthenticatedMusicApp() {
         throw error
       }
     },
-    [pendingSongForPlaylist, refreshLibrary, requireOnlineAction],
+    [cachePlaylistDetail, pendingSongForPlaylist, requireOnlineAction],
   )
 
   const handleAddSongToPlaylist = useCallback(
@@ -3420,11 +3538,20 @@ function AuthenticatedMusicApp() {
           return
         }
 
+        if (result.status === 'not-found') {
+          toast({
+            title: 'Could not remove from playlist',
+            description: 'The playlist was not found.',
+            variant: 'destructive',
+          })
+          return
+        }
+
+        hideSongFromPlaylist(playlistId, song.id)
         toast({
           title: 'Removed from playlist',
           description: `"${song.title}" was removed.`,
         })
-        refreshLibrary()
       } catch (error) {
         toast({
           title: 'Could not remove from playlist',
@@ -3434,7 +3561,7 @@ function AuthenticatedMusicApp() {
         })
       }
     },
-    [refreshLibrary, requireOnlineAction],
+    [hideSongFromPlaylist, requireOnlineAction],
   )
 
   const handleEditPlaylistSubmit = useCallback(
@@ -3465,7 +3592,6 @@ function AuthenticatedMusicApp() {
         if (result.playlist) {
           cachePlaylistDetail(result.playlist)
         }
-        refreshLibrary()
       } catch (error) {
         toast({
           title: 'Could not save changes',
@@ -3476,7 +3602,7 @@ function AuthenticatedMusicApp() {
         throw error
       }
     },
-    [cachePlaylistDetail, editingPlaylist, refreshLibrary, requireOnlineAction],
+    [cachePlaylistDetail, editingPlaylist, requireOnlineAction],
   )
 
   const handleDeletePlaylist = useCallback(
@@ -3499,7 +3625,19 @@ function AuthenticatedMusicApp() {
           title: 'Playlist deleted',
           description: `${playlist.name} was removed.`,
         })
+        setLocallyDeletedPlaylistIds((current) => {
+          const next = new Set(current)
+          next.add(playlist.id)
+          return next
+        })
         setPlaylistDetailOverrides((current) => {
+          if (!(playlist.id in current)) return current
+
+          const next = { ...current }
+          delete next[playlist.id]
+          return next
+        })
+        setPlaylistSongRemovals((current) => {
           if (!(playlist.id in current)) return current
 
           const next = { ...current }
@@ -3511,7 +3649,6 @@ function AuthenticatedMusicApp() {
             ? null
             : current,
         )
-        refreshLibrary()
       } catch (error) {
         toast({
           title: 'Could not delete playlist',
@@ -3521,7 +3658,7 @@ function AuthenticatedMusicApp() {
         })
       }
     },
-    [refreshLibrary, requireOnlineAction],
+    [requireOnlineAction],
   )
 
   const openCreatePlaylist = useCallback(() => {
@@ -3614,6 +3751,8 @@ function AuthenticatedMusicApp() {
                 summary={likedAwareSummary}
                 playlists={playlists}
                 playlistDetails={playlistDetails}
+                playlistSongRemovals={playlistSongRemovals}
+                hiddenSongIds={locallyDeletedSongIds}
                 currentSongId={currentSongId}
                 isPlaying={isPlaying}
                 offlineAudio={offlineAudio}

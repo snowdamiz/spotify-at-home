@@ -60,6 +60,8 @@ type CollectionViewProps = {
   summary: LibrarySummary
   playlists: ServerPlaylist[]
   playlistDetails: ServerPlaylistDetail[]
+  playlistSongRemovals: Record<string, string[]>
+  hiddenSongIds: ReadonlySet<string>
   currentSongId: string | null
   isPlaying: boolean
   offlineAudio: OfflineAudioStateMap
@@ -86,6 +88,8 @@ export function CollectionView({
   summary,
   playlists,
   playlistDetails,
+  playlistSongRemovals,
+  hiddenSongIds,
   currentSongId,
   isPlaying,
   offlineAudio,
@@ -113,6 +117,8 @@ export function CollectionView({
     collection,
     playlistState,
     playlistDetails,
+    playlistSongRemovals,
+    hiddenSongIds,
     playlists,
     songs,
     summary,
@@ -402,6 +408,8 @@ function resolveCollectionMeta({
   collection,
   playlistState,
   playlistDetails,
+  playlistSongRemovals,
+  hiddenSongIds,
   playlists,
   songs,
   summary,
@@ -409,6 +417,8 @@ function resolveCollectionMeta({
   collection: CollectionRef
   playlistState: ReturnType<typeof usePlaylist>
   playlistDetails: ServerPlaylistDetail[]
+  playlistSongRemovals: Record<string, string[]>
+  hiddenSongIds: ReadonlySet<string>
   playlists: ServerPlaylist[]
   songs: Song[]
   summary: LibrarySummary
@@ -432,31 +442,56 @@ function resolveCollectionMeta({
   }
 
   if (collection.kind === 'playlist') {
+    const omittedSongIds = omittedSongIdsForPlaylist(
+      collection.id,
+      hiddenSongIds,
+      playlistSongRemovals,
+    )
     const cachedDetail = playlistDetails.find(
       (playlist) => playlist.id === collection.id,
     )
 
     if (cachedDetail) {
+      const playlistSongs = songsForPlaylistDetail(
+        cachedDetail,
+        songs,
+        omittedSongIds,
+      )
+
       return {
         coverColor: resolvePlaylistColor(cachedDetail.color, cachedDetail.name),
         kindLabel: 'Playlist',
-        songs: songsForPlaylistDetail(cachedDetail, songs),
-        subtitle: cachedDetail.description ?? playlistSubtitle(cachedDetail),
+        songs: playlistSongs,
+        subtitle:
+          cachedDetail.description ??
+          playlistSubtitle({
+            ...cachedDetail,
+            songCount: playlistSongs.length,
+          }),
         title: cachedDetail.name,
       }
     }
 
     if (playlistState.status === 'authenticated') {
+      const playlistSongs = songsForPlaylistDetail(
+        playlistState.playlist,
+        songs,
+        omittedSongIds,
+      )
+
       return {
         coverColor: resolvePlaylistColor(
           playlistState.playlist.color,
           playlistState.playlist.name,
         ),
         kindLabel: 'Playlist',
-        songs: songsForPlaylistDetail(playlistState.playlist, songs),
+        songs: playlistSongs,
         subtitle:
           playlistState.playlist.description ??
-          playlistSubtitle(playlistState.playlist),
+          playlistSubtitle({
+            ...playlistState.playlist,
+            songCount: playlistSongs.length,
+          }),
         title: playlistState.playlist.name,
       }
     }
@@ -482,8 +517,31 @@ function resolveCollectionMeta({
 function songsForPlaylistDetail(
   playlist: ServerPlaylistDetail,
   songs: Song[],
+  omittedSongIds: ReadonlySet<string>,
 ) {
   const songsById = new Map(songs.map((song) => [song.id, song]))
 
-  return playlist.songs.map((song) => songsById.get(song.id) ?? serverSongToSong(song))
+  return playlist.songs
+    .filter((song) => !omittedSongIds.has(song.id))
+    .map((song) => songsById.get(song.id) ?? serverSongToSong(song))
+}
+
+function omittedSongIdsForPlaylist(
+  playlistId: string,
+  hiddenSongIds: ReadonlySet<string>,
+  playlistSongRemovals: Record<string, string[]>,
+) {
+  const removedSongIds = playlistSongRemovals[playlistId] ?? []
+
+  if (hiddenSongIds.size === 0 && removedSongIds.length === 0) {
+    return hiddenSongIds
+  }
+
+  const omittedSongIds = new Set(hiddenSongIds)
+
+  for (const songId of removedSongIds) {
+    omittedSongIds.add(songId)
+  }
+
+  return omittedSongIds
 }
