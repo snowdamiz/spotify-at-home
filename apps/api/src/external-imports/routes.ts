@@ -191,6 +191,39 @@ export function registerExternalImportRoutes(
       audioStorage.resolveSharedOriginalPath?.({ provider: "youtube", sourceId: discovery.sourceId }) ??
       audioStorage.resolveOriginalPath?.({ userId: user.id, songId }) ??
       "";
+    const storedAudio = await statStoredAudioIfExists(audioStorage, expectedStoragePath);
+
+    if (storedAudio) {
+      const linked = createSongFromStoredExternalAudio({
+        discovery,
+        importPolicyMode: importPolicy.mode,
+        sizeBytes: storedAudio.sizeBytes,
+        songId,
+        songRepository: options.songRepository,
+        storagePath: expectedStoragePath,
+        user
+      });
+
+      app.log.info({
+        event: "external_import_shared_object_reused",
+        jobId: linked.job.id,
+        policyMode: importPolicy.mode,
+        provider: "youtube",
+        sourceId: discovery.sourceId,
+        userId: user.id
+      });
+      options.libraryEvents?.emitLibraryChanged(user.id, {
+        reason: "external_import_completed",
+        songId: linked.song.id
+      });
+
+      return reply.code(201).send({
+        alreadyInLibrary: false,
+        job: serializeExternalImportJob(linked.job),
+        song: serializeSong(linked.song)
+      });
+    }
+
     let resolved: ResolvedExternalAudio | null = null;
     let song: Song | null = null;
     let job: ImportJob | null = null;
@@ -580,12 +613,85 @@ async function createSongFromReusableExternalAudio(input: {
   };
 }
 
+function createSongFromStoredExternalAudio(input: {
+  discovery: ExternalDiscoveryResult;
+  importPolicyMode: ExternalDiscoveryResult["importPolicyMode"];
+  sizeBytes: number;
+  songId: string;
+  songRepository: SQLiteSongRepository;
+  storagePath: string;
+  user: PublicUser;
+}) {
+  const song = input.songRepository.createSong({
+    id: input.songId,
+    userId: input.user.id,
+    title: input.discovery.title,
+    artist: input.discovery.creator,
+    durationMs: input.discovery.durationMs,
+    mimeType: "audio/mpeg",
+    sizeBytes: input.sizeBytes,
+    checksum: "",
+    storagePath: input.storagePath,
+    importStatus: "ready"
+  });
+  const source = input.songRepository.createExternalSource({
+    userId: input.user.id,
+    songId: song.id,
+    provider: "youtube",
+    sourceId: input.discovery.sourceId,
+    canonicalUrl: input.discovery.canonicalUrl,
+    originalTitle: input.discovery.title,
+    originalUploader: input.discovery.creator,
+    thumbnailUrl: input.discovery.thumbnailUrl,
+    importPolicyMode: input.importPolicyMode,
+    provenance: {
+      attributionText: input.discovery.attributionText ?? null,
+      canonicalUrl: input.discovery.canonicalUrl,
+      importPolicyMode: input.importPolicyMode,
+      licenseType: input.discovery.licenseType ?? null,
+      licenseUrl: input.discovery.licenseUrl ?? null,
+      selectedImportPath: "shared_object_reuse",
+      watchUrl: input.discovery.canonicalUrl
+    }
+  });
+  const job = input.songRepository.createImportJob({
+    userId: input.user.id,
+    songId: song.id,
+    sourceId: source.id,
+    status: "ready",
+    importPolicyMode: input.importPolicyMode,
+    provenance: {
+      adapter: "shared_object_reuse",
+      canonicalUrl: input.discovery.canonicalUrl,
+      provider: "youtube",
+      sourceId: input.discovery.sourceId
+    }
+  });
+
+  return {
+    job,
+    song: input.songRepository.findSongForUser(input.user.id, song.id) ?? song
+  };
+}
+
 async function statStoredAudio(audioStorage: AudioStorage, storagePath: string) {
   if (audioStorage.statOriginal) {
     return audioStorage.statOriginal(storagePath);
   }
 
   return { sizeBytes: (await stat(storagePath)).size };
+}
+
+async function statStoredAudioIfExists(audioStorage: AudioStorage, storagePath: string) {
+  if (!storagePath) {
+    return null;
+  }
+
+  try {
+    return await statStoredAudio(audioStorage, storagePath);
+  } catch {
+    return null;
+  }
 }
 
 async function deleteStoredAudioIfUnreferenced(

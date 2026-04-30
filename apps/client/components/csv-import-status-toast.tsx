@@ -13,6 +13,10 @@ import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import type { Download } from '@/components/add-music-dialog'
 import type { CsvImportItem } from '@/lib/api'
+import {
+  formatCsvImportTimeEstimate,
+  getCsvImportTimeEstimate,
+} from '@/lib/csv-import-estimate'
 import { cn } from '@/lib/utils'
 
 type CsvImportStatusToastProps = {
@@ -143,6 +147,13 @@ function CsvImportToastItem({
     download.status === 'error' && resumableCsvCount > 0
   const canCancel =
     download.status === 'downloading' && download.cancelable && onCancelImport
+  const timeEstimate =
+    download.status === 'downloading'
+      ? getCsvImportTimeEstimate(download.csvImportBatches)
+      : null
+  const timeEstimateText = timeEstimate
+    ? formatCsvImportTimeEstimate(timeEstimate)
+    : null
 
   return (
     <li className="rounded-lg border border-white/[0.08] bg-white/[0.025] p-3 shadow-inner shadow-white/[0.015]">
@@ -205,6 +216,12 @@ function CsvImportToastItem({
               {progress}%
             </span>
           </div>
+
+          {timeEstimateText && (
+            <div className="mt-1 text-[11px] text-muted-foreground">
+              {timeEstimateText}
+            </div>
+          )}
 
           {download.message && (
             <div

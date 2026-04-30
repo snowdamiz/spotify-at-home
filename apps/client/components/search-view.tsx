@@ -308,7 +308,6 @@ function BrowseCardTile({
   card: BrowseCard
   onClick: () => void
 }) {
-  const initials = browseInitials(card.label)
   const isLiked = card.id === 'liked-songs'
 
   return (
@@ -335,9 +334,10 @@ function BrowseCardTile({
             fill="currentColor"
           />
         ) : (
-          <span className="text-xl font-extrabold tracking-tight text-white/95 drop-shadow">
-            {initials}
-          </span>
+          <Music2
+            className="h-7 w-7 text-white/85 drop-shadow"
+            strokeWidth={1.75}
+          />
         )}
       </span>
 
@@ -357,13 +357,6 @@ function BrowseCardTile({
       <span className="absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/10" />
     </button>
   )
-}
-
-function browseInitials(label: string) {
-  const parts = label.trim().split(/\s+/).filter(Boolean)
-  if (parts.length === 0) return '♪'
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
-  return (parts[0][0] + parts[1][0]).toUpperCase()
 }
 
 function buildBrowseCards(songs: Song[]): BrowseCard[] {

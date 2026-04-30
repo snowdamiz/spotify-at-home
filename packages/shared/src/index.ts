@@ -60,6 +60,19 @@ export interface ImportEligibility {
   message: string;
 }
 
+export type ExternalAudioReuseState =
+  | "already_in_library"
+  | "stored_audio_available";
+
+export type ExternalAudioStorageLocation = "local" | "r2";
+
+export interface ExternalAudioReuse {
+  state: ExternalAudioReuseState;
+  storageLocation: ExternalAudioStorageLocation;
+  songId: string | null;
+  sizeBytes: number | null;
+}
+
 export const IMPORT_POLICY_MODE_COPY: Record<ImportPolicyMode, ImportPolicyModeCopy> = {
   licensed_only: {
     badge: "Licensed only",
@@ -146,6 +159,7 @@ export interface ExternalDiscoveryResult {
   attributionText?: string | null;
   licenseType?: string | null;
   licenseUrl?: string | null;
+  reusableAudio?: ExternalAudioReuse | null;
 }
 
 export interface ExternalDiscoveryResponse {

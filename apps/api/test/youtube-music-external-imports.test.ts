@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -288,6 +296,112 @@ describe("YouTube Music external import flow", () => {
       }
     });
     expect(third.json().song.storagePath).toBe(storagePath);
+  });
+
+  it("marks discovery results that can link an existing shared storage object", async () => {
+    const storedAudio = Buffer.from("ID3 shared object already in storage");
+    const adapter: YouTubeImportAdapter = {
+      resolve: vi.fn(async () => {
+        throw new Error("should not download existing shared audio");
+      })
+    };
+    const youtubeProvider = {
+      normalizeUrl: vi.fn(),
+      search: vi.fn(async () => ({
+        nextPageToken: null,
+        results: [
+          {
+            provider: "youtube" as const,
+            sourceId: "abc123XYZ09",
+            canonicalUrl: "https://www.youtube.com/watch?v=abc123XYZ09",
+            title: "Tiny Desk Song",
+            creator: "Ada Channel",
+            thumbnailUrl: "https://i.ytimg.com/vi/abc123XYZ09/hqdefault.jpg",
+            durationMs: 225000,
+            description: "A live session",
+            importPolicyMode: "open_test" as const
+          }
+        ]
+      }))
+    };
+    const { app, storageRoot } = createTestApp({
+      externalDiscovery: {
+        youtubeProvider
+      },
+      externalImports: {
+        youtubeImportAdapter: adapter
+      },
+      importPolicy: {
+        environment: "test",
+        mode: "open_test",
+        openTestAllowedEnvironments: ["test"],
+        openTestAllowedUserEmails: ["ada@example.com"]
+      }
+    });
+    const sharedDirectory = join(
+      storageRoot,
+      "external",
+      "youtube",
+      createHash("sha256").update("abc123XYZ09").digest("hex")
+    );
+
+    mkdirSync(sharedDirectory, { recursive: true });
+    writeFileSync(join(sharedDirectory, "original"), storedAudio);
+
+    const token = await signIn(app);
+    const discovery = await app.inject({
+      method: "POST",
+      url: "/api/external-discovery/youtube",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        query: "tiny desk"
+      }
+    });
+
+    expect(discovery.statusCode).toBe(200);
+    expect(discovery.json()).toMatchObject({
+      discovery: {
+        results: [
+          {
+            reusableAudio: {
+              sizeBytes: storedAudio.byteLength,
+              state: "stored_audio_available",
+              storageLocation: "local"
+            },
+            sourceId: "abc123XYZ09"
+          }
+        ]
+      }
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/external-imports/youtube",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        discovery: discovery.json().discovery.results[0]
+      }
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(adapter.resolve).not.toHaveBeenCalled();
+    expect(readFileSync(response.json().song.storagePath)).toEqual(storedAudio);
+    expect(response.json()).toMatchObject({
+      alreadyInLibrary: false,
+      job: {
+        status: "ready"
+      },
+      song: {
+        externalSource: {
+          provenance: {
+            selectedImportPath: "shared_object_reuse"
+          },
+          sourceId: "abc123XYZ09"
+        },
+        importStatus: "ready",
+        sizeBytes: storedAudio.byteLength
+      }
+    });
   });
 
   it("allows YouTube imports even when no allow policy matches", async () => {

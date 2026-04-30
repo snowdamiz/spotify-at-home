@@ -1,6 +1,6 @@
 'use client'
 
-import { Music, Play, Plus, WifiOff } from 'lucide-react'
+import { Heart, Music, Play, Plus, WifiOff } from 'lucide-react'
 import { CoverArt } from '@/components/cover-art'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -104,6 +104,12 @@ export function HomeView({
               title="Liked Songs"
               size="full"
               rounded="md"
+              icon={
+                <Heart
+                  className="h-[36%] w-[36%] text-foreground"
+                  fill="currentColor"
+                />
+              }
             />
             <div className="mt-3 truncate text-sm font-semibold tracking-tight">
               Liked Songs

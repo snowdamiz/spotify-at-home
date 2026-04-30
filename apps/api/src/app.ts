@@ -91,6 +91,10 @@ export function createApiApp(options: CreateApiAppOptions = {}) {
     authService,
     importPolicyConfig,
     songRepository,
+    storageRoot:
+      options.externalImports?.storageRoot ??
+      options.csvImports?.storageRoot ??
+      options.songs?.storageRoot,
     ...options.externalDiscovery
   });
   registerExternalImportRoutes(app, {

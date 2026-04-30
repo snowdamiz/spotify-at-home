@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { Music } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 type CoverArtProps = {
@@ -10,6 +11,9 @@ type CoverArtProps = {
   size?: 'sm' | 'md' | 'lg' | 'xl' | 'full'
   rounded?: 'md' | 'lg' | 'xl' | '2xl'
   className?: string
+  // When set (and there is no imageUrl), render this node instead of the
+  // 2-letter initials fallback. Used for symbolic covers like Liked Songs.
+  icon?: ReactNode
 }
 
 const sizeMap = {
@@ -34,6 +38,7 @@ export function CoverArt({
   size = 'md',
   rounded = 'md',
   className,
+  icon,
 }: CoverArtProps) {
   const [imageFailed, setImageFailed] = useState(false)
   const showImage = Boolean(imageUrl && !imageFailed)
@@ -42,12 +47,9 @@ export function CoverArt({
     setImageFailed(false)
   }, [imageUrl])
 
-  const initials = title
-    .split(' ')
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((w) => w[0]?.toUpperCase())
-    .join('')
+  // We deliberately don't render two-letter initials anymore — every cover
+  // either shows artwork, an explicitly-passed icon (e.g. Heart for Liked
+  // Songs), or a music-note glyph for visual consistency.
 
   return (
     <div
@@ -59,6 +61,7 @@ export function CoverArt({
         className,
       )}
       aria-hidden="true"
+      title={title}
     >
       {showImage ? (
         <img
@@ -71,8 +74,10 @@ export function CoverArt({
           onError={() => setImageFailed(true)}
         />
       ) : (
-        <span className="font-bold tracking-tight text-foreground/95 drop-shadow-sm">
-          {initials || '♪'}
+        <span className="flex h-full w-full items-center justify-center text-foreground/95 drop-shadow-sm">
+          {icon ?? (
+            <Music className="h-[38%] w-[38%]" strokeWidth={1.75} />
+          )}
         </span>
       )}
     </div>

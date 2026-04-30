@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   Download,
+  Heart,
   Loader2,
   Music,
   MoreHorizontal,
@@ -13,6 +14,7 @@ import {
   Shuffle,
   Trash2,
 } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { CoverArt } from '@/components/cover-art'
 import { SongRow } from '@/components/song-row'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -184,8 +186,13 @@ export function CollectionView({
           <CoverArt
             colorClass={meta.coverColor}
             title={meta.title}
-            className="h-44 w-44 shrink-0 text-5xl shadow-2xl shadow-black/50 sm:h-48 sm:w-48 sm:text-6xl md:h-56 md:w-56 md:text-7xl"
+            className="h-44 w-44 shrink-0 shadow-2xl shadow-black/50 sm:h-48 sm:w-48 md:h-56 md:w-56"
             rounded="lg"
+            icon={
+              'icon' in meta && meta.icon
+                ? meta.icon
+                : undefined
+            }
           />
           <div className="min-w-0 flex-1">
             <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-foreground/80">
@@ -399,8 +406,15 @@ function resolveCollectionMeta({
   summary: LibrarySummary
 }) {
   if (collection.kind === 'system') {
+    const icon: ReactNode = (
+      <Heart
+        className="h-[36%] w-[36%] text-foreground"
+        fill="currentColor"
+      />
+    )
     return {
       coverColor: 'from-fuchsia-600 to-zinc-950',
+      icon,
       kindLabel: 'Playlist',
       songs: summary.likedSongs.map(serverSongToSong),
       subtitle: 'Favorites backed by your private likes.',

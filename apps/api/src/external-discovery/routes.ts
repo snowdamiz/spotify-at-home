@@ -1,4 +1,8 @@
-import type { ExternalDiscoveryResponse, ImportPolicyMode } from "@broadside/shared";
+import type {
+  ExternalAudioReuse,
+  ExternalDiscoveryResponse,
+  ImportPolicyMode
+} from "@broadside/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { readAccessToken } from "../auth/routes.js";
 import { AuthError, type AuthService, type PublicUser } from "../auth/service.js";
@@ -9,6 +13,7 @@ import {
   type ImportPolicyRuntimeConfig
 } from "../import-policy/policy.js";
 import type { SQLiteSongRepository } from "../db/repositories.js";
+import { createAudioStorageFromEnv, type AudioStorage } from "../songs/storage.js";
 import {
   YouTubeDiscoveryError,
   YouTubeDiscoveryProvider,
@@ -23,8 +28,10 @@ const defaultDiscoveryRateLimit = {
 
 export interface ExternalDiscoveryRoutesOptions {
   authService: AuthService;
+  audioStorage?: AudioStorage;
   importPolicyConfig?: ImportPolicyRuntimeConfig;
   songRepository?: SQLiteSongRepository;
+  storageRoot?: string;
   youtubeProvider?: YouTubeDiscoveryClient;
   rateLimit?: {
     maxRequests?: number;
@@ -43,6 +50,9 @@ export function registerExternalDiscoveryRoutes(
 ) {
   const importPolicyConfig = options.importPolicyConfig ?? readImportPolicyRuntimeConfig();
   const youtubeProvider = options.youtubeProvider ?? new YouTubeDiscoveryProvider();
+  const audioStorage =
+    options.audioStorage ??
+    createAudioStorageFromEnv({ storageRoot: options.storageRoot });
   const rateLimiter = createDiscoveryRateLimiter(options.rateLimit);
 
   app.post("/api/external-discovery/youtube", async (request, reply) => {
@@ -81,6 +91,8 @@ export function registerExternalDiscoveryRoutes(
       const discovery = await resolveYouTubeDiscovery({
         importPolicyMode: importPolicy.mode,
         provider: youtubeProvider,
+        audioStorage,
+        songRepository: options.songRepository,
         sourcePolicies: options.songRepository?.listEnabledSourcePolicies("youtube"),
         user,
         importPolicyConfig,
@@ -142,6 +154,8 @@ export function registerExternalDiscoveryRoutes(
       const discovery = await resolveYouTubeDiscovery({
         importPolicyMode: importPolicy.mode,
         provider: youtubeProvider,
+        audioStorage,
+        songRepository: options.songRepository,
         sourcePolicies: options.songRepository?.listEnabledSourcePolicies("youtube"),
         user,
         importPolicyConfig,
@@ -170,6 +184,8 @@ export function registerExternalDiscoveryRoutes(
 
 async function resolveYouTubeDiscovery(input: {
   provider: YouTubeDiscoveryClient;
+  audioStorage: AudioStorage;
+  songRepository?: SQLiteSongRepository;
   query: unknown;
   url: unknown;
   limit: unknown;
@@ -188,9 +204,11 @@ async function resolveYouTubeDiscovery(input: {
     return {
       nextPageToken: null,
       results: [
-        withPolicyMetadata({
+        await withDiscoveryMetadata({
+          audioStorage: input.audioStorage,
           discovery: result,
           importPolicyConfig: input.importPolicyConfig,
+          songRepository: input.songRepository,
           sourcePolicies: input.sourcePolicies,
           user: input.user
         })
@@ -212,13 +230,17 @@ async function resolveYouTubeDiscovery(input: {
 
     return {
       nextPageToken: discovery.nextPageToken,
-      results: discovery.results.map((result) =>
-        withPolicyMetadata({
-          discovery: result,
-          importPolicyConfig: input.importPolicyConfig,
-          sourcePolicies: input.sourcePolicies,
-          user: input.user
-        })
+      results: await Promise.all(
+        discovery.results.map((result) =>
+          withDiscoveryMetadata({
+            audioStorage: input.audioStorage,
+            discovery: result,
+            importPolicyConfig: input.importPolicyConfig,
+            songRepository: input.songRepository,
+            sourcePolicies: input.sourcePolicies,
+            user: input.user
+          })
+        )
       )
     };
   }
@@ -229,6 +251,118 @@ async function resolveYouTubeDiscovery(input: {
     400,
     false
   );
+}
+
+async function withDiscoveryMetadata(input: {
+  audioStorage: AudioStorage;
+  discovery: ExternalDiscoveryResponse["results"][number];
+  importPolicyConfig: ImportPolicyRuntimeConfig;
+  songRepository?: SQLiteSongRepository;
+  sourcePolicies?: ReturnType<SQLiteSongRepository["listEnabledSourcePolicies"]>;
+  user: PublicUser;
+}) {
+  const discovery = withPolicyMetadata({
+    discovery: input.discovery,
+    importPolicyConfig: input.importPolicyConfig,
+    sourcePolicies: input.sourcePolicies,
+    user: input.user
+  });
+  const reusableAudio = await findReusableAudio({
+    audioStorage: input.audioStorage,
+    discovery,
+    songRepository: input.songRepository,
+    user: input.user
+  });
+
+  return {
+    ...discovery,
+    reusableAudio
+  };
+}
+
+async function findReusableAudio(input: {
+  audioStorage: AudioStorage;
+  discovery: ExternalDiscoveryResponse["results"][number];
+  songRepository?: SQLiteSongRepository;
+  user: PublicUser;
+}): Promise<ExternalAudioReuse | null> {
+  const currentUserMatch = input.songRepository?.findReadySongByExternalSourceForUser({
+    provider: input.discovery.provider,
+    sourceId: input.discovery.sourceId,
+    userId: input.user.id
+  });
+
+  if (currentUserMatch) {
+    return {
+      state: "already_in_library" as const,
+      storageLocation: storageLocationForPath(currentUserMatch.song.storagePath),
+      songId: currentUserMatch.song.id,
+      sizeBytes: currentUserMatch.song.sizeBytes
+    };
+  }
+
+  const reusableLibraryMatch = input.songRepository?.findReadySongByExternalSource({
+    provider: input.discovery.provider,
+    sourceId: input.discovery.sourceId
+  });
+
+  if (reusableLibraryMatch) {
+    const storedAudio = await statStoredAudioIfExists(
+      input.audioStorage,
+      reusableLibraryMatch.song.storagePath
+    );
+
+    if (storedAudio) {
+      return {
+        state: "stored_audio_available" as const,
+        storageLocation: storageLocationForPath(reusableLibraryMatch.song.storagePath),
+        songId: null,
+        sizeBytes: storedAudio.sizeBytes
+      };
+    }
+  }
+
+  const expectedStoragePath = input.audioStorage.resolveSharedOriginalPath?.({
+    provider: input.discovery.provider,
+    sourceId: input.discovery.sourceId
+  });
+
+  if (!expectedStoragePath) {
+    return null;
+  }
+
+  const storedAudio = await statStoredAudioIfExists(input.audioStorage, expectedStoragePath);
+
+  if (!storedAudio) {
+    return null;
+  }
+
+  return {
+    state: "stored_audio_available" as const,
+    storageLocation: storageLocationForPath(expectedStoragePath),
+    songId: null,
+    sizeBytes: storedAudio.sizeBytes
+  };
+}
+
+async function statStoredAudioIfExists(audioStorage: AudioStorage, storagePath: string) {
+  if (!storagePath) {
+    return null;
+  }
+
+  try {
+    if (audioStorage.statOriginal) {
+      return await audioStorage.statOriginal(storagePath);
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function storageLocationForPath(storagePath: string): "r2" | "local" {
+  return storagePath.startsWith("r2://") ? "r2" : "local";
 }
 
 function withPolicyMetadata(input: {

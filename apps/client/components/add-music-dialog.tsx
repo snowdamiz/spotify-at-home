@@ -5,6 +5,7 @@ import {
   AlertCircle,
   ArrowRight,
   CheckCircle2,
+  Cloud,
   ExternalLink,
   FileAudio,
   ListMusic,
@@ -33,6 +34,10 @@ import {
   isSupportedCsvFile,
   isSupportedAudioFile,
 } from '@/lib/api'
+import {
+  formatCsvImportTimeEstimate,
+  getCsvImportTimeEstimate,
+} from '@/lib/csv-import-estimate'
 import type { detectPlatform } from '@/lib/url-import'
 
 export type Download = {
@@ -398,6 +403,20 @@ function SearchPanel({
   canImportExternal,
   onClearManualMatch,
 }: SearchPanelProps) {
+  const quickAddResults = externalResults.filter(isQuickAddResult)
+  const alreadyInLibraryResults = externalResults.filter(
+    isAlreadyInLibraryResult,
+  )
+  const topResults = externalResults.filter(
+    (result) =>
+      !isQuickAddResult(result) && !isAlreadyInLibraryResult(result),
+  )
+  const quickAddStorageLabel = quickAddResults.every(
+    (result) => result.reusableAudio?.storageLocation === 'r2',
+  )
+    ? 'R2'
+    : 'storage'
+
   return (
     <section className="mt-10">
       <div className="mx-auto max-w-2xl text-center">
@@ -503,27 +522,28 @@ function SearchPanel({
         )}
 
         {showResults && (
-          <div>
-            <div className="mb-4 flex items-baseline justify-between">
-              <h2 className="text-sm font-semibold text-foreground">
-                Top results
-              </h2>
-              <span className="text-xs text-muted-foreground">
-                {externalResults.length}{' '}
-                {externalResults.length === 1 ? 'match' : 'matches'}
-              </span>
-            </div>
-            <ul className="space-y-2">
-              {externalResults.map((result) => (
-                <ResultRow
-                  key={result.sourceId}
-                  result={result}
-                  isPending={pendingResultIds.has(result.sourceId)}
-                  canImport={canImportExternal(result)}
-                  onImport={onImport}
-                />
-              ))}
-            </ul>
+          <div className="space-y-8">
+            <ResultGroup
+              title={`Quick add from ${quickAddStorageLabel}`}
+              results={quickAddResults}
+              pendingResultIds={pendingResultIds}
+              canImportExternal={canImportExternal}
+              onImport={onImport}
+            />
+            <ResultGroup
+              title="Already in your library"
+              results={alreadyInLibraryResults}
+              pendingResultIds={pendingResultIds}
+              canImportExternal={canImportExternal}
+              onImport={onImport}
+            />
+            <ResultGroup
+              title="Top results"
+              results={topResults}
+              pendingResultIds={pendingResultIds}
+              canImportExternal={canImportExternal}
+              onImport={onImport}
+            />
           </div>
         )}
 
@@ -549,6 +569,44 @@ function SearchPanel({
 /* Result row                                                         */
 /* ------------------------------------------------------------------ */
 
+function ResultGroup({
+  title,
+  results,
+  pendingResultIds,
+  canImportExternal,
+  onImport,
+}: {
+  title: string
+  results: ExternalDiscoveryResult[]
+  pendingResultIds: Set<string>
+  canImportExternal: (result: ExternalDiscoveryResult) => boolean
+  onImport: (r: ExternalDiscoveryResult) => void | Promise<void>
+}) {
+  if (results.length === 0) return null
+
+  return (
+    <div>
+      <div className="mb-4 flex items-baseline justify-between">
+        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+        <span className="text-xs text-muted-foreground">
+          {results.length} {results.length === 1 ? 'match' : 'matches'}
+        </span>
+      </div>
+      <ul className="space-y-2">
+        {results.map((result) => (
+          <ResultRow
+            key={result.sourceId}
+            result={result}
+            isPending={pendingResultIds.has(result.sourceId)}
+            canImport={canImportExternal(result)}
+            onImport={onImport}
+          />
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 function ResultRow({
   result,
   isPending,
@@ -563,6 +621,10 @@ function ResultRow({
   const duration = formatDuration(result.durationMs)
   const blocked = result.eligibility?.state === 'blocked'
   const blockedMessage = blocked ? result.eligibility?.message : null
+  const quickAdd = isQuickAddResult(result)
+  const alreadyInLibrary = isAlreadyInLibraryResult(result)
+  const storageLabel =
+    result.reusableAudio?.storageLocation === 'r2' ? 'R2' : 'Storage'
 
   return (
     <li className="group relative overflow-hidden rounded-xl border border-border/50 bg-card/50 transition-all hover:border-border hover:bg-card">
@@ -610,6 +672,16 @@ function ResultRow({
                 <span className="hidden h-1 w-1 rounded-full bg-muted-foreground/60 sm:inline-block" />
                 <span className="hidden truncate sm:inline">YouTube</span>
               </div>
+              {(quickAdd || alreadyInLibrary) && (
+                <div className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                  {quickAdd ? (
+                    <Cloud className="h-3 w-3" />
+                  ) : (
+                    <CheckCircle2 className="h-3 w-3" />
+                  )}
+                  {quickAdd ? `${storageLabel} ready` : 'In library'}
+                </div>
+              )}
               {blockedMessage && (
                 <div className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-destructive/10 px-2 py-0.5 text-[11px] font-medium text-destructive">
                   <AlertCircle className="h-3 w-3" />
@@ -648,8 +720,12 @@ function ResultRow({
               </>
             ) : (
               <>
-                <CheckCircle2 className="h-4 w-4" />
-                Add
+                {quickAdd ? (
+                  <Cloud className="h-4 w-4" />
+                ) : (
+                  <CheckCircle2 className="h-4 w-4" />
+                )}
+                {quickAdd ? 'Link' : alreadyInLibrary ? 'Use' : 'Add'}
               </>
             )}
           </Button>
@@ -657,6 +733,14 @@ function ResultRow({
       </div>
     </li>
   )
+}
+
+function isQuickAddResult(result: ExternalDiscoveryResult) {
+  return result.reusableAudio?.state === 'stored_audio_available'
+}
+
+function isAlreadyInLibraryResult(result: ExternalDiscoveryResult) {
+  return result.reusableAudio?.state === 'already_in_library'
 }
 
 /* ------------------------------------------------------------------ */
@@ -1000,6 +1084,13 @@ function ImportsList({
             canResumeCsvImport ||
             (d.status === 'error' && manualMatchItems.length > 0) ||
             (csvImportRunning && manualMatchItems.length > 0)
+          const timeEstimate =
+            d.status === 'downloading'
+              ? getCsvImportTimeEstimate(d.csvImportBatches)
+              : null
+          const timeEstimateText = timeEstimate
+            ? formatCsvImportTimeEstimate(timeEstimate)
+            : null
 
           return (
             <li
@@ -1056,6 +1147,11 @@ function ImportsList({
                       <span className="w-9 text-right text-[11px] tabular-nums text-muted-foreground">
                         {Math.round(d.progress * 100)}%
                       </span>
+                    </div>
+                  )}
+                  {timeEstimateText && (
+                    <div className="mt-1 text-[11px] text-muted-foreground">
+                      {timeEstimateText}
                     </div>
                   )}
                   {d.status === 'downloading' && d.message && (
