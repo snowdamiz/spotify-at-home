@@ -939,6 +939,10 @@ export async function addSongToPlaylist(playlistId: string, songId: string) {
     return { playlist: null, status: 'not-found' as const }
   }
 
+  if (response.status === 409) {
+    return { playlist: null, status: 'duplicate' as const }
+  }
+
   if (!response.ok) {
     throw new Error(
       `Add song to playlist failed with status ${response.status}`,

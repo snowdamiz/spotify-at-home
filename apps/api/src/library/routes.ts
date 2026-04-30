@@ -182,10 +182,21 @@ export function registerLibraryRoutes(app: FastifyInstance, options: LibraryRout
       return sendLibraryError(reply, "invalid_playlist_song", "Song id is required.", 400);
     }
 
+    const playlistId = playlistIdFromParams(request.params);
+
+    if (options.playlistRepository.hasSong({ userId: user.id, playlistId, songId })) {
+      return sendLibraryError(
+        reply,
+        "playlist_song_already_exists",
+        "This song is already in the playlist.",
+        409
+      );
+    }
+
     try {
       options.playlistRepository.addSong({
         userId: user.id,
-        playlistId: playlistIdFromParams(request.params),
+        playlistId,
         songId,
         position: typeof body.position === "number" && Number.isFinite(body.position)
           ? Math.max(0, Math.floor(body.position))
@@ -195,7 +206,7 @@ export function registerLibraryRoutes(app: FastifyInstance, options: LibraryRout
       return sendLibraryError(reply, "playlist_or_song_not_found", "Playlist or song not found.", 404);
     }
 
-    return sendPlaylistDetail(reply, options, user.id, playlistIdFromParams(request.params));
+    return sendPlaylistDetail(reply, options, user.id, playlistId);
   });
 
   app.delete("/api/playlists/:id/songs/:songId", async (request, reply) => {

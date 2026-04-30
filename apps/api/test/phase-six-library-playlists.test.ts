@@ -222,6 +222,55 @@ describe("Phase 6 library, search, and playlist features", () => {
     ]);
   });
 
+  it("warns when a song is added to the same playlist twice", async () => {
+    const { app, signIn } = createTestApp();
+    const token = await signIn({ sub: "google-subject-1", email: "ada@example.com" });
+    const song = await importSong(app, token, { fileName: "repeat.mp3", title: "Repeat" });
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/playlists",
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      payload: {
+        name: "Road Mix"
+      }
+    });
+    const playlistId = created.json().playlist.id;
+
+    const firstAdd = await app.inject({
+      method: "POST",
+      url: `/api/playlists/${playlistId}/songs`,
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      payload: {
+        songId: song.id
+      }
+    });
+    expect(firstAdd.statusCode).toBe(200);
+
+    const duplicateAdd = await app.inject({
+      method: "POST",
+      url: `/api/playlists/${playlistId}/songs`,
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      payload: {
+        songId: song.id
+      }
+    });
+
+    expect(duplicateAdd.statusCode).toBe(409);
+    expect(duplicateAdd.json()).toMatchObject({
+      error: {
+        code: "playlist_song_already_exists",
+        message: "This song is already in the playlist."
+      }
+    });
+    expect((await getPlaylist(app, token, playlistId)).playlist.songs).toHaveLength(1);
+  });
+
   it("deletes playlists without deleting the songs in the library", async () => {
     const { app, signIn } = createTestApp();
     const token = await signIn({ sub: "google-subject-1", email: "ada@example.com" });

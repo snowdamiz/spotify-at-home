@@ -3502,6 +3502,14 @@ function AuthenticatedMusicApp() {
           return
         }
 
+        if (result.status === 'duplicate') {
+          toast({
+            title: 'Already in playlist',
+            description: `"${song.title}" is already in ${playlistName}.`,
+          })
+          return
+        }
+
         if (result.playlist) {
           cachePlaylistDetail(result.playlist)
         }
