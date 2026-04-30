@@ -119,10 +119,10 @@ export function CollectionView({
   })
   const userPlaylist =
     collection.kind === 'playlist'
-      ? playlistState.status === 'authenticated'
-        ? playlistState.playlist
-        : (playlistDetails.find((playlist) => playlist.id === collection.id) ??
-          null)
+      ? (playlistDetails.find((playlist) => playlist.id === collection.id) ??
+        (playlistState.status === 'authenticated'
+          ? playlistState.playlist
+          : null))
       : null
 
   if (!meta) {
@@ -432,6 +432,20 @@ function resolveCollectionMeta({
   }
 
   if (collection.kind === 'playlist') {
+    const cachedDetail = playlistDetails.find(
+      (playlist) => playlist.id === collection.id,
+    )
+
+    if (cachedDetail) {
+      return {
+        coverColor: resolvePlaylistColor(cachedDetail.color, cachedDetail.name),
+        kindLabel: 'Playlist',
+        songs: songsForPlaylistDetail(cachedDetail, songs),
+        subtitle: cachedDetail.description ?? playlistSubtitle(cachedDetail),
+        title: cachedDetail.name,
+      }
+    }
+
     if (playlistState.status === 'authenticated') {
       return {
         coverColor: resolvePlaylistColor(
@@ -444,20 +458,6 @@ function resolveCollectionMeta({
           playlistState.playlist.description ??
           playlistSubtitle(playlistState.playlist),
         title: playlistState.playlist.name,
-      }
-    }
-
-    const cachedDetail = playlistDetails.find(
-      (playlist) => playlist.id === collection.id,
-    )
-
-    if (cachedDetail) {
-      return {
-        coverColor: resolvePlaylistColor(cachedDetail.color, cachedDetail.name),
-        kindLabel: 'Playlist',
-        songs: songsForPlaylistDetail(cachedDetail, songs),
-        subtitle: cachedDetail.description ?? playlistSubtitle(cachedDetail),
-        title: cachedDetail.name,
       }
     }
 
