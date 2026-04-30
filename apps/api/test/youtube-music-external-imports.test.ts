@@ -57,7 +57,7 @@ describe("YouTube Music external import flow", () => {
     });
     const token = await signIn(app);
 
-    const response = await app.inject({
+    const started = await app.inject({
       method: "POST",
       url: "/api/external-imports/youtube",
       headers: { authorization: `Bearer ${token}` },
@@ -65,10 +65,25 @@ describe("YouTube Music external import flow", () => {
         url: "https://youtu.be/abc123XYZ09"
       }
     });
-
-    expect(response.statusCode).toBe(201);
-    expect(response.json()).toMatchObject({
+    expect(started.statusCode).toBe(202);
+    expect(started.json()).toMatchObject({
       alreadyInLibrary: false,
+      job: {
+        importPolicyMode: "open_test",
+        status: "pending"
+      },
+      song: {
+        importStatus: "pending"
+      }
+    });
+
+    const response = await waitForExternalImportJob(
+      app,
+      token,
+      started.json().job.id,
+      "ready"
+    );
+    expect(response).toMatchObject({
       job: {
         importPolicyMode: "open_test",
         status: "ready"
@@ -77,15 +92,15 @@ describe("YouTube Music external import flow", () => {
         externalSource: {
           provider: "youtube",
           sourceId: "abc123XYZ09",
-          thumbnailUrl: "https://i.ytimg.com/vi/abc123XYZ09/hqdefault.jpg"
+          thumbnailUrl: "https://i.ytimg.com/vi/abc123XYZ09/hq720.jpg"
         },
         importStatus: "ready",
         mimeType: "audio/mpeg",
         title: expect.stringContaining("abc123XYZ09")
       }
     });
-    expect(statSync(response.json().song.storagePath).size).toBeGreaterThan(44);
-    expect(response.json().song.storagePath.startsWith(storageRoot)).toBe(true);
+    expect(statSync(response.song.storagePath).size).toBeGreaterThan(44);
+    expect(response.song.storagePath.startsWith(storageRoot)).toBe(true);
 
     const songs = await app.inject({
       method: "GET",
@@ -96,7 +111,7 @@ describe("YouTube Music external import flow", () => {
     expect(songs.json().songs).toHaveLength(1);
     expect(songs.json().songs[0]).toMatchObject({
       externalSource: {
-        thumbnailUrl: "https://i.ytimg.com/vi/abc123XYZ09/hqdefault.jpg"
+        thumbnailUrl: "https://i.ytimg.com/vi/abc123XYZ09/hq720.jpg"
       }
     });
   });
@@ -143,7 +158,7 @@ describe("YouTube Music external import flow", () => {
     });
     const token = await signIn(app);
 
-    const response = await app.inject({
+    const started = await app.inject({
       method: "POST",
       url: "/api/external-imports/youtube",
       headers: { authorization: `Bearer ${token}` },
@@ -152,7 +167,13 @@ describe("YouTube Music external import flow", () => {
       }
     });
 
-    expect(response.statusCode).toBe(201);
+    expect(started.statusCode).toBe(202);
+    const response = await waitForExternalImportJob(
+      app,
+      token,
+      started.json().job.id,
+      "ready"
+    );
     expect(audioProcessor.process).toHaveBeenCalledWith(
       expect.objectContaining({
         content: resolvedAudio,
@@ -160,8 +181,8 @@ describe("YouTube Music external import flow", () => {
         mimeType: "audio/wav"
       })
     );
-    expect(readFileSync(response.json().song.storagePath)).toEqual(normalizedAudio);
-    expect(response.json()).toMatchObject({
+    expect(readFileSync(response.song.storagePath)).toEqual(normalizedAudio);
+    expect(response).toMatchObject({
       song: {
         checksum: `sha256:${createHash("sha256").update(normalizedAudio).digest("hex")}`,
         externalSource: {
@@ -211,7 +232,7 @@ describe("YouTube Music external import flow", () => {
       sub: "google-subject-grace"
     });
 
-    const first = await app.inject({
+    const firstStarted = await app.inject({
       method: "POST",
       url: "/api/external-imports/youtube",
       headers: { authorization: `Bearer ${adaToken}` },
@@ -219,6 +240,12 @@ describe("YouTube Music external import flow", () => {
         url: "https://youtu.be/abc123XYZ09"
       }
     });
+    const first = await waitForExternalImportJob(
+      app,
+      adaToken,
+      firstStarted.json().job.id,
+      "ready"
+    );
     const second = await app.inject({
       method: "POST",
       url: "/api/external-imports/youtube",
@@ -228,7 +255,7 @@ describe("YouTube Music external import flow", () => {
       }
     });
 
-    expect(first.statusCode).toBe(201);
+    expect(firstStarted.statusCode).toBe(202);
     expect(second.statusCode).toBe(201);
     expect(adapter.resolve).toHaveBeenCalledTimes(1);
     expect(second.json()).toMatchObject({
@@ -246,14 +273,14 @@ describe("YouTube Music external import flow", () => {
         importStatus: "ready"
       }
     });
-    expect(second.json().song.storagePath).toBe(first.json().song.storagePath);
+    expect(second.json().song.storagePath).toBe(first.song.storagePath);
 
-    const storagePath = first.json().song.storagePath;
+    const storagePath = first.song.storagePath;
     expect(statSync(storagePath).size).toBe(resolvedAudio.byteLength);
 
     const deleteFirst = await app.inject({
       method: "DELETE",
-      url: `/api/songs/${first.json().song.id}`,
+      url: `/api/songs/${first.song.id}`,
       headers: { authorization: `Bearer ${adaToken}` }
     });
 
@@ -413,7 +440,7 @@ describe("YouTube Music external import flow", () => {
     });
     const token = await signIn(app);
 
-    const response = await app.inject({
+    const started = await app.inject({
       method: "POST",
       url: "/api/external-imports/youtube",
       headers: { authorization: `Bearer ${token}` },
@@ -422,9 +449,14 @@ describe("YouTube Music external import flow", () => {
       }
     });
 
-    expect(response.statusCode).toBe(201);
-    expect(response.json()).toMatchObject({
-      alreadyInLibrary: false,
+    expect(started.statusCode).toBe(202);
+    const response = await waitForExternalImportJob(
+      app,
+      token,
+      started.json().job.id,
+      "ready"
+    );
+    expect(response).toMatchObject({
       job: {
         importPolicyMode: "licensed_only",
         status: "ready"
@@ -487,7 +519,7 @@ describe("YouTube Music external import flow", () => {
       }
     });
 
-    const response = await app.inject({
+    const started = await app.inject({
       method: "POST",
       url: "/api/external-imports/youtube",
       headers: { authorization: `Bearer ${token}` },
@@ -496,8 +528,14 @@ describe("YouTube Music external import flow", () => {
       }
     });
 
-    expect(response.statusCode).toBe(201);
-    expect(response.json()).toMatchObject({
+    expect(started.statusCode).toBe(202);
+    const response = await waitForExternalImportJob(
+      app,
+      token,
+      started.json().job.id,
+      "ready"
+    );
+    expect(response).toMatchObject({
       song: {
         externalSource: {
           importPolicyMode: "licensed_only",
@@ -506,6 +544,80 @@ describe("YouTube Music external import flow", () => {
             licenseType: "approved_test_license"
           }
         },
+        importStatus: "ready"
+      }
+    });
+  });
+
+  it("returns the existing pending job when the same source is imported again", async () => {
+    let finishDownload: (() => void) | null = null;
+    const downloadReady = new Promise<void>((resolve) => {
+      finishDownload = resolve;
+    });
+    const adapter: YouTubeImportAdapter = {
+      resolve: vi.fn(async ({ discovery }) => {
+        await downloadReady;
+
+        return {
+          adapter: "test_youtube_adapter",
+          content: Buffer.concat([Buffer.from("ID3"), Buffer.alloc(128, 1)]),
+          durationMs: discovery.durationMs ?? 180000,
+          fileName: `${discovery.sourceId}.mp3`,
+          mimeType: "audio/mpeg",
+          provenance: {
+            adapter: "test_youtube_adapter"
+          }
+        };
+      })
+    };
+    const { app } = createTestApp({
+      externalImports: {
+        youtubeImportAdapter: adapter
+      },
+      importPolicy: {
+        environment: "test",
+        mode: "open_test",
+        openTestAllowedEnvironments: ["test"],
+        openTestAllowedUserEmails: ["ada@example.com"]
+      }
+    });
+    const token = await signIn(app);
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/external-imports/youtube",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        url: "https://youtu.be/abc123XYZ09"
+      }
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/external-imports/youtube",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        url: "https://www.youtube.com/watch?v=abc123XYZ09"
+      }
+    });
+
+    expect(first.statusCode).toBe(202);
+    expect(second.statusCode).toBe(202);
+    expect(second.json().job.id).toBe(first.json().job.id);
+    expect(adapter.resolve).toHaveBeenCalledTimes(1);
+
+    finishDownload?.();
+    const completed = await waitForExternalImportJob(
+      app,
+      token,
+      first.json().job.id,
+      "ready"
+    );
+
+    expect(completed).toMatchObject({
+      job: {
+        status: "ready"
+      },
+      song: {
         importStatus: "ready"
       }
     });
@@ -531,7 +643,7 @@ describe("YouTube Music external import flow", () => {
     });
     const token = await signIn(app);
 
-    const response = await app.inject({
+    const started = await app.inject({
       method: "POST",
       url: "/api/external-imports/youtube",
       headers: { authorization: `Bearer ${token}` },
@@ -540,7 +652,8 @@ describe("YouTube Music external import flow", () => {
       }
     });
 
-    expect(response.statusCode).toBe(500);
+    expect(started.statusCode).toBe(202);
+    await waitForExternalImportJob(app, token, started.json().job.id, "failed");
 
     const failed = await app.inject({
       method: "GET",
@@ -659,4 +772,31 @@ async function signIn(app: ReturnType<typeof createApiApp>) {
   });
 
   return String(session.json().accessToken);
+}
+
+async function waitForExternalImportJob(
+  app: ReturnType<typeof createApiApp>,
+  token: string,
+  jobId: string,
+  expectedStatus: "failed" | "ready"
+) {
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/external-import-jobs/${jobId}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const payload = response.json();
+
+    if (payload.job.status === expectedStatus) {
+      return payload;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  throw new Error(`Timed out waiting for external import job ${jobId} to finish.`);
 }

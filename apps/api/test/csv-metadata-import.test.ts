@@ -1149,6 +1149,83 @@ describe("CSV metadata imports", () => {
     });
   });
 
+  it("can return only actionable CSV items while polling active imports", async () => {
+    const youtubeProvider: YouTubeDiscoveryClient = {
+      normalizeUrl: vi.fn(),
+      search: vi.fn(async (query, importPolicyMode) => {
+        const isRoad = query.toLowerCase().includes("road");
+
+        return {
+          nextPageToken: null,
+          results: [
+            isRoad
+              ? youtubeResult({
+                  creator: "Grace Channel",
+                  durationMs: 210000,
+                  importPolicyMode,
+                  sourceId: "youtubeRoad01",
+                  title: "Road Song Official Audio"
+                })
+              : youtubeResult({
+                  creator: "Long Talk Channel",
+                  durationMs: 3600000,
+                  importPolicyMode,
+                  sourceId: "wrongLongTalk01",
+                  title: "Completely Different Longform Episode"
+                })
+          ]
+        };
+      })
+    };
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app } = createTestApp({
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const files = [
+      csvFile("road_mix.csv", [
+        ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"],
+        ["spotify:track:road", "Road Song", "spotify:artist:grace", "Grace", "spotify:album:drive", "Drive", "spotify:artist:grace", "Grace", "2026-01-01", "https://i.scdn.co/image/road", "1", "2", "210000", "", "false", "40", "USROAD000001", "", "2026-01-03T00:00:00Z"]
+      ])
+    ];
+
+    const batch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(batch.statusCode).toBe(202);
+    expect(batch.json().batch).toMatchObject({
+      completedItems: 1,
+      failedItems: 1,
+      status: "failed",
+      totalItems: 2
+    });
+
+    const attention = await app.inject({
+      method: "GET",
+      url: `/api/csv-imports/batches/${batch.json().batch.id}?items=attention`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    const full = await app.inject({
+      method: "GET",
+      url: `/api/csv-imports/batches/${batch.json().batch.id}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(attention.statusCode).toBe(200);
+    expect(attention.json().items).toHaveLength(1);
+    expect(attention.json().items[0]).toMatchObject({
+      errorCode: "youtube_match_low_confidence",
+      title: "Moon Song",
+      userMatchRequired: true
+    });
+    expect(full.json().items).toHaveLength(2);
+  });
+
   it("retries recoverable failed CSV import items", async () => {
     const youtubeProvider: YouTubeDiscoveryClient = {
       normalizeUrl: vi.fn(),

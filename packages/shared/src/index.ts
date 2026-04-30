@@ -103,6 +103,8 @@ export const SUPPORTED_AUDIO_MIME_TYPES = [
   "audio/mp4",
   "audio/mpeg",
   "audio/ogg",
+  "audio/opus",
+  "audio/webm",
   "audio/wav",
   "audio/x-flac",
   "audio/x-m4a",
@@ -116,6 +118,8 @@ export const SUPPORTED_AUDIO_EXTENSIONS = [
   ".mp3",
   ".oga",
   ".ogg",
+  ".opus",
+  ".webm",
   ".wav"
 ] as const;
 
@@ -165,6 +169,82 @@ export interface ExternalDiscoveryResult {
 export interface ExternalDiscoveryResponse {
   results: ExternalDiscoveryResult[];
   nextPageToken: string | null;
+}
+
+const YOUTUBE_VIDEO_ID_PATTERN = /^[A-Za-z0-9_-]{6,64}$/;
+const LOW_QUALITY_YOUTUBE_THUMBNAIL_NAMES = new Set([
+  "default.jpg",
+  "default.webp",
+  "mqdefault.jpg",
+  "mqdefault.webp",
+  "hqdefault.jpg",
+  "hqdefault.webp",
+  "sddefault.jpg",
+  "sddefault.webp"
+]);
+
+export function preferredYouTubeThumbnailUrl(sourceId: string | null | undefined) {
+  if (!sourceId || !YOUTUBE_VIDEO_ID_PATTERN.test(sourceId)) {
+    return null;
+  }
+
+  return `https://i.ytimg.com/vi/${encodeURIComponent(sourceId)}/hq720.jpg`;
+}
+
+export function upgradeYouTubeThumbnailUrl(
+  thumbnailUrl: string | null | undefined,
+  sourceId?: string | null
+) {
+  const trimmed = typeof thumbnailUrl === "string" ? thumbnailUrl.trim() : "";
+  const parsed = parseYouTubeThumbnailUrl(trimmed);
+  const videoId = sourceId && YOUTUBE_VIDEO_ID_PATTERN.test(sourceId)
+    ? sourceId
+    : parsed?.videoId;
+  const preferred = preferredYouTubeThumbnailUrl(videoId);
+
+  if (!trimmed) {
+    return preferred;
+  }
+
+  if (!parsed || !preferred) {
+    return trimmed;
+  }
+
+  return LOW_QUALITY_YOUTUBE_THUMBNAIL_NAMES.has(parsed.fileName)
+    ? preferred
+    : trimmed;
+}
+
+function parseYouTubeThumbnailUrl(value: string) {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+
+    if (hostname !== "i.ytimg.com" && hostname !== "img.youtube.com") {
+      return null;
+    }
+
+    const parts = url.pathname.split("/").filter(Boolean);
+    const namespace = parts[0];
+    const videoId = parts[1];
+    const fileName = parts.at(-1)?.toLowerCase();
+
+    if (
+      (namespace !== "vi" && namespace !== "vi_webp") ||
+      !YOUTUBE_VIDEO_ID_PATTERN.test(videoId ?? "") ||
+      !fileName
+    ) {
+      return null;
+    }
+
+    return { fileName, videoId: videoId ?? "" };
+  } catch {
+    return null;
+  }
 }
 
 export type SerializedImportStatus = "pending" | "ready" | "failed";

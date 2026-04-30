@@ -21,7 +21,7 @@ export interface YouTubeImportAdapter {
 
 type YtDlpRunner = (url: string, flags?: Flags, options?: SpawnOptions) => Promise<unknown>;
 const defaultYtDlpRunner = youtubeDl as unknown as YtDlpRunner;
-const defaultAudioQuality = 5;
+const requestedAudioFormat = "bestaudio[ext=m4a]/bestaudio/best";
 
 export class YouTubeImportAdapterError extends Error {
   constructor(
@@ -34,21 +34,17 @@ export class YouTubeImportAdapterError extends Error {
 }
 
 export interface YtDlpYouTubeImportAdapterOptions {
-  audioQuality?: number | string;
   runner?: YtDlpRunner;
   tempRoot?: string;
   timeoutMs?: number;
 }
 
 export class YtDlpYouTubeImportAdapter implements YouTubeImportAdapter {
-  private readonly audioQuality: number | string;
   private readonly runner: YtDlpRunner;
   private readonly tempRoot: string;
   private readonly timeoutMs: number;
 
   constructor(options: YtDlpYouTubeImportAdapterOptions = {}) {
-    this.audioQuality =
-      options.audioQuality ?? audioQualityFromEnv(process.env.BROADSIDE_YTDLP_AUDIO_QUALITY);
     this.runner = options.runner ?? defaultYtDlpRunner;
     this.tempRoot = options.tempRoot ?? tmpdir();
     this.timeoutMs = options.timeoutMs ?? 180_000;
@@ -60,9 +56,7 @@ export class YtDlpYouTubeImportAdapter implements YouTubeImportAdapter {
     try {
       const outputTemplate = join(tempDir, "%(id)s.%(ext)s");
       const flags = {
-        audioFormat: "mp3",
-        audioQuality: this.audioQuality,
-        extractAudio: true,
+        format: requestedAudioFormat,
         noPlaylist: true,
         noProgress: true,
         noWarnings: true,
@@ -98,7 +92,7 @@ export class YtDlpYouTubeImportAdapter implements YouTubeImportAdapter {
           adapter: "yt_dlp_audio",
           contentSha256: createHash("sha256").update(content).digest("hex"),
           downloader: "yt-dlp",
-          audioQuality: this.audioQuality,
+          requestedFormat: requestedAudioFormat,
           downloadedBytes: fileStats.size
         }
       };
@@ -118,17 +112,6 @@ export class YtDlpYouTubeImportAdapter implements YouTubeImportAdapter {
       await rm(tempDir, { force: true, recursive: true });
     }
   }
-}
-
-function audioQualityFromEnv(value: string | undefined) {
-  if (!value || value.trim() === "") {
-    return defaultAudioQuality;
-  }
-
-  const trimmed = value.trim();
-  const numericQuality = Number(trimmed);
-
-  return Number.isFinite(numericQuality) ? numericQuality : trimmed;
 }
 
 export class SyntheticYouTubeOpenTestAdapter implements YouTubeImportAdapter {
@@ -258,6 +241,8 @@ const supportedDownloadedAudioExtensions = new Set([
   ".mp3",
   ".oga",
   ".ogg",
+  ".opus",
+  ".webm",
   ".wav"
 ]);
 
@@ -274,6 +259,10 @@ function mimeTypeForDownloadedAudio(filePath: string) {
     case ".oga":
     case ".ogg":
       return "audio/ogg";
+    case ".opus":
+      return "audio/opus";
+    case ".webm":
+      return "audio/webm";
     case ".wav":
       return "audio/wav";
     default:

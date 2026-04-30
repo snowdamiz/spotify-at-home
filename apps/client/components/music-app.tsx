@@ -37,6 +37,7 @@ import {
   discoverYouTubeUrl,
   fetchActiveCsvImportBatches,
   fetchCsvImportBatch,
+  fetchExternalImportJob,
   importCsvImportItemDiscovery,
   importYouTubeDiscovery,
   importAudioFiles,
@@ -162,6 +163,7 @@ async function runWithConcurrency<T>(
 
 const CSV_IMPORT_STATUS_REFRESH_FAILURE_LIMIT = 4
 const CSV_IMPORT_CANCEL_DISMISS_DELAY_MS = 5000
+const EXTERNAL_IMPORT_STATUS_REFRESH_FAILURE_LIMIT = 4
 const OFFLINE_DOWNLOAD_CONCURRENCY = 3
 const DEFAULT_VOLUME = 0.8
 const PLAYER_VOLUME_STORAGE_KEY = 'onvibe:player-volume:v1'
@@ -654,6 +656,27 @@ function csvImportItemsForBatch(
     ...(existingItems?.filter((item) => item.batchId !== batchId) ?? []),
     ...nextItems,
   ]
+}
+
+function externalImportFailureMessage(errorCode: string | null) {
+  switch (errorCode) {
+    case 'unsupported_audio_type':
+      return 'The resolved audio type is not supported.'
+    case 'audio_file_too_large':
+      return 'The resolved audio file is too large.'
+    case 'missing_audio_metadata':
+      return 'The resolved audio metadata is incomplete.'
+    case 'external_audio_download_empty':
+      return 'The downloaded audio file was empty.'
+    case 'external_audio_download_missing':
+      return 'The downloader did not produce an audio file.'
+    case 'external_audio_download_failed':
+      return 'Could not download audio from YouTube.'
+    case 'audio_processing_failed':
+      return 'The downloaded audio could not be normalized.'
+    default:
+      return 'External import failed.'
+  }
 }
 
 function nextCsvManualMatchItem(
@@ -1999,7 +2022,9 @@ function AuthenticatedMusicApp() {
             }
 
             try {
-              const next = await fetchCsvImportBatch(state.batch.id)
+              const next = await fetchCsvImportBatch(state.batch.id, {
+                items: 'attention',
+              })
 
               if (next.status !== 'authenticated' || !next.batch) {
                 return { failed: true, state }
@@ -2080,10 +2105,6 @@ function AuthenticatedMusicApp() {
 
       states = await Promise.all(
         states.map(async (state) => {
-          if (state.items.length > 0) {
-            return state
-          }
-
           const next = await fetchCsvImportBatch(state.batch.id)
 
           if (next.status !== 'authenticated' || !next.batch) {
@@ -2193,6 +2214,114 @@ function AuthenticatedMusicApp() {
       })
     }
   }, [downloads, monitorCsvImportBatches])
+
+  const monitorExternalImport = useCallback(
+    async (downloadId: string, jobId: string, sourceId: string) => {
+      let progress = 0.35
+      let consecutiveRefreshFailures = 0
+
+      while (true) {
+        await wait(2000)
+
+        try {
+          const result = await fetchExternalImportJob(jobId)
+
+          if (result.status === 'anonymous') {
+            setDownloads((prev) =>
+              prev.map((download) =>
+                download.id === downloadId
+                  ? {
+                      ...download,
+                      message: 'Sign in again to import from links.',
+                      progress: 1,
+                      status: 'error',
+                    }
+                  : download,
+              ),
+            )
+            return
+          }
+
+          if (result.status === 'not-found' || !result.job) {
+            throw new Error('Import status could not be found.')
+          }
+
+          consecutiveRefreshFailures = 0
+
+          if (result.job.status === 'pending') {
+            progress = Math.min(0.92, progress + 0.08)
+            setDownloads((prev) =>
+              prev.map((download) =>
+                download.id === downloadId
+                  ? {
+                      ...download,
+                      externalImportJobId: jobId,
+                      message: 'Importing audio...',
+                      progress,
+                      status: 'downloading',
+                    }
+                  : download,
+              ),
+            )
+            continue
+          }
+
+          if (result.job.status === 'failed') {
+            setDownloads((prev) =>
+              prev.map((download) =>
+                download.id === downloadId
+                  ? {
+                      ...download,
+                      message: externalImportFailureMessage(result.job.errorCode),
+                      progress: 1,
+                      status: 'error',
+                    }
+                  : download,
+              ),
+            )
+            return
+          }
+
+          setDownloads((prev) =>
+            prev.map((download) =>
+              download.id === downloadId
+                ? {
+                    ...download,
+                    message: 'Added to your library',
+                    progress: 1,
+                    status: 'complete',
+                  }
+                : download,
+            ),
+          )
+          setExternalResults((prev) =>
+            prev.filter((discovery) => discovery.sourceId !== sourceId),
+          )
+          refreshLibrary()
+          setCollection(null)
+          setView('library')
+          window.setTimeout(() => {
+            setDownloads((prev) =>
+              prev.filter((download) => download.id !== downloadId),
+            )
+          }, 4000)
+          return
+        } catch (error) {
+          consecutiveRefreshFailures += 1
+
+          if (
+            consecutiveRefreshFailures <
+            EXTERNAL_IMPORT_STATUS_REFRESH_FAILURE_LIMIT
+          ) {
+            continue
+          }
+
+          throw error
+        }
+      }
+    },
+    [refreshLibrary],
+  )
 
   const onCsvFilesSelected = useCallback(
     async (files: File[]) => {
@@ -2815,20 +2944,26 @@ function AuthenticatedMusicApp() {
         return
       }
 
-      const id = `link-import-${result.sourceId}-${Date.now()}`
+      const id = `link-import-${result.sourceId}`
+      const initialDownload = {
+        artist: result.creator ?? 'YouTube',
+        externalSourceId: result.sourceId,
+        id,
+        message: 'Starting import...',
+        platform: 'youtube' as const,
+        progress: 0.15,
+        status: 'downloading' as const,
+        thumbnailUrl: result.thumbnailUrl,
+        title: result.title,
+        url: result.canonicalUrl,
+      }
 
       setDownloads((prev) => [
-        {
-          artist: result.creator ?? 'YouTube',
-          id,
-          platform: 'youtube',
-          progress: 0.65,
-          status: 'downloading',
-          thumbnailUrl: result.thumbnailUrl,
-          title: result.title,
-          url: result.canonicalUrl,
-        },
-        ...prev,
+        initialDownload,
+        ...prev.filter(
+          (download) =>
+            download.id !== id && download.externalSourceId !== result.sourceId,
+        ),
       ])
 
       try {
@@ -2841,6 +2976,44 @@ function AuthenticatedMusicApp() {
                 ? {
                     ...download,
                     message: 'Sign in again to import from links.',
+                    progress: 1,
+                    status: 'error',
+                  }
+                : download,
+            ),
+          )
+          return
+        }
+
+        const importedJob = imported.job
+
+        if (importedJob?.status === 'pending') {
+          setDownloads((prev) =>
+            prev.map((download) =>
+              download.id === id
+                ? {
+                    ...download,
+                    externalImportJobId: importedJob.id,
+                    message: 'Importing audio...',
+                    progress: 0.3,
+                    status: 'downloading',
+                  }
+              : download,
+            ),
+          )
+          await monitorExternalImport(id, importedJob.id, result.sourceId)
+          return
+        }
+
+        if (importedJob?.status === 'failed') {
+          setDownloads((prev) =>
+            prev.map((download) =>
+              download.id === id
+                ? {
+                    ...download,
+                    message: externalImportFailureMessage(
+                      importedJob.errorCode,
+                    ),
                     progress: 1,
                     status: 'error',
                   }
@@ -2891,7 +3064,7 @@ function AuthenticatedMusicApp() {
         )
       }
     },
-    [refreshLibrary, requireOnlineAction],
+    [monitorExternalImport, refreshLibrary, requireOnlineAction],
   )
 
   const openCollection = useCallback((ref: CollectionRef) => {

@@ -51,6 +51,8 @@ export type Download = {
   canceling?: boolean
   csvImportBatches?: CsvImportBatch[]
   csvImportItems?: CsvImportItem[]
+  externalImportJobId?: string
+  externalSourceId?: string
   thumbnailUrl?: string | null
   progress: number // 0..1
   retrying?: boolean

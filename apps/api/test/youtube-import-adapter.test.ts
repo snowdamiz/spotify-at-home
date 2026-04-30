@@ -16,13 +16,13 @@ describe("YtDlpYouTubeImportAdapter", () => {
     vi.restoreAllMocks();
   });
 
-  it("uses compact yt-dlp audio quality by default", async () => {
+  it("downloads the best audio stream without preconverting to MP3", async () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "broadside-ytdlp-adapter-"));
     dirs.push(tempRoot);
     const runner = vi.fn(async (_url: string, flags?: unknown) => {
       const output = (flags as { output?: string } | undefined)?.output;
-      const filePath = join(dirname(String(output)), "abc123.mp3");
-      await writeFile(filePath, Buffer.from("ID3 compact audio"));
+      const filePath = join(dirname(String(output)), "abc123.webm");
+      await writeFile(filePath, Buffer.from("webm audio"));
 
       return filePath;
     });
@@ -47,15 +47,26 @@ describe("YtDlpYouTubeImportAdapter", () => {
 
     expect(runner).toHaveBeenCalledWith(
       "https://youtu.be/abc123",
-      expect.objectContaining({
-        audioFormat: "mp3",
-        audioQuality: 5
+      expect.not.objectContaining({
+        audioFormat: expect.anything(),
+        extractAudio: expect.anything()
       }),
       expect.any(Object)
     );
+    expect(runner).toHaveBeenCalledWith(
+      "https://youtu.be/abc123",
+      expect.objectContaining({
+        format: "bestaudio[ext=m4a]/bestaudio/best"
+      }),
+      expect.any(Object)
+    );
+    expect(result).toMatchObject({
+      fileName: "abc123.webm",
+      mimeType: "audio/webm"
+    });
     expect(result.provenance).toMatchObject({
-      audioQuality: 5,
-      downloadedBytes: Buffer.byteLength("ID3 compact audio")
+      downloadedBytes: Buffer.byteLength("webm audio"),
+      requestedFormat: "bestaudio[ext=m4a]/bestaudio/best"
     });
   });
 });

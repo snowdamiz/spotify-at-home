@@ -1,7 +1,8 @@
-import type {
-  ExternalAudioReuse,
-  ExternalDiscoveryResponse,
-  ImportPolicyMode
+import {
+  upgradeYouTubeThumbnailUrl,
+  type ExternalAudioReuse,
+  type ExternalDiscoveryResponse,
+  type ImportPolicyMode
 } from "@broadside/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { readAccessToken } from "../auth/routes.js";
@@ -276,6 +277,10 @@ async function withDiscoveryMetadata(input: {
 
   return {
     ...discovery,
+    thumbnailUrl:
+      discovery.provider === "youtube"
+        ? upgradeYouTubeThumbnailUrl(discovery.thumbnailUrl, discovery.sourceId)
+        : discovery.thumbnailUrl,
     reusableAudio
   };
 }

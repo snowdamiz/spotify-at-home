@@ -100,6 +100,10 @@ const AUTO_RETRYABLE_CSV_IMPORT_ERROR_CODES = [
   "youtube_search_unavailable"
 ] as const;
 const USER_MATCH_CSV_IMPORT_ERROR_CODES = ["youtube_match_low_confidence"] as const;
+const ATTENTION_CSV_IMPORT_ERROR_CODES = [
+  ...AUTO_RETRYABLE_CSV_IMPORT_ERROR_CODES,
+  ...USER_MATCH_CSV_IMPORT_ERROR_CODES
+];
 
 type CsvImportStageTimings = Record<string, number>;
 
@@ -254,6 +258,7 @@ export function registerCsvImportRoutes(app: FastifyInstance, options: CsvImport
       return;
     }
 
+    const itemsMode = csvImportItemsModeFromRequest(request);
     const batches = options.csvImportRepository.listActiveImportBatchesForUser({
       userId: user.id
     });
@@ -261,9 +266,11 @@ export function registerCsvImportRoutes(app: FastifyInstance, options: CsvImport
     return {
       batches: batches.map((batch) => ({
         batch: serializeImportBatch(batch),
-        items: options.csvImportRepository
-          .listImportItemsForBatch({ batchId: batch.id, userId: user.id })
-          .map(serializeImportItem)
+        items: listCsvImportItemsForResponse(options.csvImportRepository, {
+          batchId: batch.id,
+          itemsMode,
+          userId: user.id
+        })
       }))
     };
   });
@@ -341,9 +348,11 @@ export function registerCsvImportRoutes(app: FastifyInstance, options: CsvImport
 
     return {
       batch: serializeImportBatch(batch),
-      items: options.csvImportRepository
-        .listImportItemsForBatch({ batchId, userId: user.id })
-        .map(serializeImportItem)
+      items: listCsvImportItemsForResponse(options.csvImportRepository, {
+        batchId,
+        itemsMode: csvImportItemsModeFromRequest(request),
+        userId: user.id
+      })
     };
   });
 
@@ -1991,6 +2000,31 @@ function serializeImportItem(item: CsvImportItem) {
     userMatchRequired: isUserMatchRequiredCsvImportItem(item),
     youtubeSourceId: item.youtubeSourceId
   };
+}
+
+type CsvImportItemsMode = "all" | "attention";
+
+function csvImportItemsModeFromRequest(request: FastifyRequest): CsvImportItemsMode {
+  return asRecord(request.query).items === "attention" ? "attention" : "all";
+}
+
+function listCsvImportItemsForResponse(
+  csvImportRepository: SQLiteCsvImportRepository,
+  input: { batchId: string; itemsMode: CsvImportItemsMode; userId: string }
+) {
+  const items =
+    input.itemsMode === "attention"
+      ? csvImportRepository.listAttentionImportItemsForBatch({
+          batchId: input.batchId,
+          errorCodes: ATTENTION_CSV_IMPORT_ERROR_CODES,
+          userId: input.userId
+        })
+      : csvImportRepository.listImportItemsForBatch({
+          batchId: input.batchId,
+          userId: input.userId
+        });
+
+  return items.map(serializeImportItem);
 }
 
 function isAutoRetryableCsvImportItem(item: CsvImportItem) {

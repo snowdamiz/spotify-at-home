@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import {
   serializeExternalImportJob,
   serializeExternalSource,
+  upgradeYouTubeThumbnailUrl,
   validateAudioImportMetadata,
   type ExternalDiscoveryResult
 } from "@broadside/shared";
@@ -12,9 +13,11 @@ import { readAccessToken } from "../auth/routes.js";
 import { randomToken } from "../auth/crypto.js";
 import {
   ExternalSourceAlreadyInLibraryError,
+  type ExternalSource,
   type ImportJob,
   type SQLiteSongRepository,
-  type Song
+  type Song,
+  type SourcePolicy
 } from "../db/repositories.js";
 import {
   assertExternalImportAllowed,
@@ -35,7 +38,6 @@ import { createAudioStorageFromEnv, type AudioStorage } from "../songs/storage.j
 import {
   YouTubeImportAdapterError,
   YtDlpYouTubeImportAdapter,
-  type ResolvedExternalAudio,
   type YouTubeImportAdapter
 } from "./youtubeAdapter.js";
 
@@ -224,211 +226,80 @@ export function registerExternalImportRoutes(
       });
     }
 
-    let resolved: ResolvedExternalAudio | null = null;
-    let song: Song | null = null;
-    let job: ImportJob | null = null;
-    let storedPath: string | null = null;
+    const activeImport = options.songRepository.findPendingImportByExternalSourceForUser({
+      provider: "youtube",
+      sourceId: discovery.sourceId,
+      userId: user.id
+    });
+
+    if (activeImport) {
+      return reply.code(202).send({
+        alreadyInLibrary: false,
+        job: serializeExternalImportJob(activeImport.job),
+        song: serializeSong(activeImport.song)
+      });
+    }
+
+    let pending: {
+      job: ImportJob;
+      song: Song;
+      source: ExternalSource;
+    };
 
     try {
-      assertExternalImportAllowed({
-        config: importPolicyConfig,
+      pending = createPendingExternalImport({
         discovery,
-        sourcePolicies: policies,
-          user
-        });
-
-      song = options.songRepository.createSong({
-        id: songId,
-        userId: user.id,
-        title: discovery.title,
-        artist: discovery.creator,
-        durationMs: discovery.durationMs,
-        mimeType: "audio/wav",
-        sizeBytes: 0,
-        checksum: "",
-        storagePath: expectedStoragePath,
-        importStatus: "pending"
-      });
-      const source = options.songRepository.createExternalSource({
-        userId: user.id,
-        songId: song.id,
-        provider: "youtube",
-        sourceId: discovery.sourceId,
-        canonicalUrl: discovery.canonicalUrl,
-        originalTitle: discovery.title,
-        originalUploader: discovery.creator,
-        thumbnailUrl: discovery.thumbnailUrl,
+        expectedStoragePath,
         importPolicyMode: importPolicy.mode,
-        provenance: {
-          attributionText: discovery.attributionText ?? null,
-          canonicalUrl: discovery.canonicalUrl,
-          importPolicyMode: importPolicy.mode,
-          licenseType: discovery.licenseType ?? null,
-          licenseUrl: discovery.licenseUrl ?? null,
-          selectedImportPath: "pending_adapter_resolution",
-          watchUrl: discovery.canonicalUrl,
-        }
-      });
-      job = options.songRepository.createImportJob({
-        userId: user.id,
-        songId: song.id,
-        sourceId: source.id,
-        status: "pending",
-        importPolicyMode: importPolicy.mode,
-        provenance: {
-          adapter: "pending_adapter_resolution",
-          canonicalUrl: discovery.canonicalUrl,
-          provider: "youtube",
-          sourceId: discovery.sourceId
-        }
-      });
-
-      resolved = await youtubeImportAdapter.resolve({ discovery });
-      const validationError = validateAudioImportMetadata({
-        fileName: resolved.fileName,
-        mimeType: resolved.mimeType,
-        sizeBytes: resolved.content.byteLength
-      });
-
-      if (validationError) {
-        throw new ExternalImportWorkerError(validationError);
-      }
-
-      let processedAudio: ProcessedAudioImport;
-
-      try {
-        processedAudio = await audioProcessor.process({
-          content: resolved.content,
-          durationMs: resolved.durationMs,
-          fileName: resolved.fileName,
-          mimeType: resolved.mimeType
-        });
-      } catch {
-        throw new ExternalImportWorkerError("audio_processing_failed");
-      }
-
-      const processedValidationError = validateAudioImportMetadata({
-        fileName: processedAudio.fileName,
-        mimeType: processedAudio.mimeType,
-        sizeBytes: processedAudio.content.byteLength
-      });
-
-      if (processedValidationError) {
-        throw new ExternalImportWorkerError(processedValidationError);
-      }
-
-      const provenance = {
-        attributionText: discovery.attributionText ?? null,
-        canonicalUrl: discovery.canonicalUrl,
-        importPolicyMode: importPolicy.mode,
-        licenseType: discovery.licenseType ?? null,
-        licenseUrl: discovery.licenseUrl ?? null,
-        selectedImportPath: resolved.adapter,
-        watchUrl: discovery.canonicalUrl,
-        ...resolved.provenance,
-        ...processedAudio.provenance
-      };
-
-      options.songRepository.updateExternalSourceProvenance({
-        userId: user.id,
-        sourceId: source.id,
-        provenance
-      });
-      options.songRepository.updateImportJobProvenance({
-        userId: user.id,
-        jobId: job.id,
-        provenance: {
-          adapter: resolved.adapter,
-          canonicalUrl: discovery.canonicalUrl,
-          provider: "youtube",
-          sourceId: discovery.sourceId,
-          ...resolved.provenance,
-          ...processedAudio.provenance
-        }
-      });
-
-      storedPath = audioStorage.writeSharedOriginal
-        ? await audioStorage.writeSharedOriginal({
-            provider: "youtube",
-            sourceId: discovery.sourceId,
-            content: processedAudio.content
-          })
-        : await audioStorage.writeOriginal({
-            userId: user.id,
-            songId: song.id,
-            content: processedAudio.content
-          });
-      const checksum = `sha256:${createHash("sha256").update(processedAudio.content).digest("hex")}`;
-      options.songRepository.markSongReady({
-        userId: user.id,
-        songId: song.id,
-        checksum,
-        durationMs: processedAudio.durationMs,
-        mimeType: processedAudio.mimeType,
-        sizeBytes: processedAudio.content.byteLength,
-        storagePath: storedPath
-      });
-
-      const readySong = options.songRepository.findSongForUser(user.id, song.id) ?? song;
-      const readyJob = options.songRepository.findImportJobForUser(user.id, job.id) ?? job;
-
-      app.log.info({
-        event: "external_import_ready",
-        jobId: readyJob.id,
-        policyMode: importPolicy.mode,
-        provider: "youtube",
-        sourceId: discovery.sourceId,
-        userId: user.id
-      });
-      options.libraryEvents?.emitLibraryChanged(user.id, {
-        reason: "external_import_completed",
-        songId: readySong.id
-      });
-
-      return reply.code(201).send({
-        alreadyInLibrary: false,
-        job: serializeExternalImportJob(readyJob),
-        song: serializeSong(readySong)
+        policies,
+        songId,
+        songRepository: options.songRepository,
+        user,
+        importPolicyConfig
       });
     } catch (error) {
-      if (storedPath) {
-        await deleteStoredAudioIfUnreferenced(
-          options.songRepository,
-          audioStorage,
-          storedPath,
-          song?.id
-        );
-      }
-
-      const errorCode =
-        error instanceof ExternalSourceAlreadyInLibraryError
-          ? "external_source_already_in_library"
-          : error instanceof YouTubeImportAdapterError
-            ? error.code
-          : error instanceof ExternalImportWorkerError
-            ? error.code
-            : "external_import_failed";
-
-      if (song) {
-        options.songRepository.markSongImportFailed({
-          userId: user.id,
-          songId: song.id,
-          errorCode
+      if (error instanceof ExternalSourceAlreadyInLibraryError) {
+        return reply.code(200).send({
+          alreadyInLibrary: true,
+          job: null,
+          song: serializeSong(error.song)
         });
       }
 
-      app.log.info({
-        event: "external_import_failed",
-        errorCode,
-        jobId: job?.id ?? null,
-        policyMode: importPolicy.mode,
+      throw error;
+    }
+
+    void runExternalImportWorker({
+      app,
+      audioProcessor,
+      audioStorage,
+      discovery,
+      importPolicyMode: importPolicy.mode,
+      job: pending.job,
+      libraryEvents: options.libraryEvents,
+      policies,
+      song: pending.song,
+      songRepository: options.songRepository,
+      source: pending.source,
+      user,
+      importPolicyConfig,
+      youtubeImportAdapter
+    }).catch((error) => {
+      app.log.error({
+        error,
+        event: "external_import_worker_crashed",
+        jobId: pending.job.id,
         provider: "youtube",
         sourceId: discovery.sourceId,
         userId: user.id
       });
+    });
 
-      return sendExternalImportError(reply, errorCode, messageForExternalImportError(errorCode), 500);
-    }
+    return reply.code(202).send({
+      alreadyInLibrary: false,
+      job: serializeExternalImportJob(pending.job),
+      song: serializeSong(pending.song)
+    });
   });
 
   app.get("/api/external-import-jobs/:id", async (request, reply) => {
@@ -534,7 +405,10 @@ async function discoveryFromPayload(input: {
       canonicalUrl: discovery.canonicalUrl,
       title: discovery.title,
       creator: nullableText(discovery.creator),
-      thumbnailUrl: nullableText(discovery.thumbnailUrl),
+      thumbnailUrl: upgradeYouTubeThumbnailUrl(
+        nullableText(discovery.thumbnailUrl),
+        discovery.sourceId
+      ),
       durationMs: typeof discovery.durationMs === "number" ? discovery.durationMs : null,
       description: nullableText(discovery.description),
       importPolicyMode: input.importPolicyMode,
@@ -545,6 +419,242 @@ async function discoveryFromPayload(input: {
   }
 
   throw new YouTubeDiscoveryError("youtube_url_required", "A YouTube URL is required.", 400, false);
+}
+
+function createPendingExternalImport(input: {
+  discovery: ExternalDiscoveryResult;
+  expectedStoragePath: string;
+  importPolicyConfig: ImportPolicyRuntimeConfig;
+  importPolicyMode: ExternalDiscoveryResult["importPolicyMode"];
+  policies: readonly SourcePolicy[];
+  songId: string;
+  songRepository: SQLiteSongRepository;
+  user: PublicUser;
+}) {
+  assertExternalImportAllowed({
+    config: input.importPolicyConfig,
+    discovery: input.discovery,
+    sourcePolicies: input.policies,
+    user: input.user
+  });
+
+  const song = input.songRepository.createSong({
+    id: input.songId,
+    userId: input.user.id,
+    title: input.discovery.title,
+    artist: input.discovery.creator,
+    durationMs: input.discovery.durationMs,
+    mimeType: "audio/wav",
+    sizeBytes: 0,
+    checksum: "",
+    storagePath: input.expectedStoragePath,
+    importStatus: "pending"
+  });
+  const source = input.songRepository.createExternalSource({
+    userId: input.user.id,
+    songId: song.id,
+    provider: "youtube",
+    sourceId: input.discovery.sourceId,
+    canonicalUrl: input.discovery.canonicalUrl,
+    originalTitle: input.discovery.title,
+    originalUploader: input.discovery.creator,
+    thumbnailUrl: input.discovery.thumbnailUrl,
+    importPolicyMode: input.importPolicyMode,
+    provenance: {
+      attributionText: input.discovery.attributionText ?? null,
+      canonicalUrl: input.discovery.canonicalUrl,
+      importPolicyMode: input.importPolicyMode,
+      licenseType: input.discovery.licenseType ?? null,
+      licenseUrl: input.discovery.licenseUrl ?? null,
+      selectedImportPath: "pending_adapter_resolution",
+      watchUrl: input.discovery.canonicalUrl
+    }
+  });
+  const job = input.songRepository.createImportJob({
+    userId: input.user.id,
+    songId: song.id,
+    sourceId: source.id,
+    status: "pending",
+    importPolicyMode: input.importPolicyMode,
+    provenance: {
+      adapter: "pending_adapter_resolution",
+      canonicalUrl: input.discovery.canonicalUrl,
+      provider: "youtube",
+      sourceId: input.discovery.sourceId
+    }
+  });
+
+  return { job, song, source };
+}
+
+async function runExternalImportWorker(input: {
+  app: FastifyInstance;
+  audioProcessor: AudioImportProcessor;
+  audioStorage: AudioStorage;
+  discovery: ExternalDiscoveryResult;
+  importPolicyConfig: ImportPolicyRuntimeConfig;
+  importPolicyMode: ExternalDiscoveryResult["importPolicyMode"];
+  job: ImportJob;
+  libraryEvents?: LibraryEventSink;
+  policies: readonly SourcePolicy[];
+  song: Song;
+  songRepository: SQLiteSongRepository;
+  source: ExternalSource;
+  user: PublicUser;
+  youtubeImportAdapter: YouTubeImportAdapter;
+}) {
+  let storedPath: string | null = null;
+
+  try {
+    assertExternalImportAllowed({
+      config: input.importPolicyConfig,
+      discovery: input.discovery,
+      sourcePolicies: input.policies,
+      user: input.user
+    });
+
+    const resolved = await input.youtubeImportAdapter.resolve({
+      discovery: input.discovery
+    });
+    const validationError = validateAudioImportMetadata({
+      fileName: resolved.fileName,
+      mimeType: resolved.mimeType,
+      sizeBytes: resolved.content.byteLength
+    });
+
+    if (validationError) {
+      throw new ExternalImportWorkerError(validationError);
+    }
+
+    let processedAudio: ProcessedAudioImport;
+
+    try {
+      processedAudio = await input.audioProcessor.process({
+        content: resolved.content,
+        durationMs: resolved.durationMs,
+        fileName: resolved.fileName,
+        mimeType: resolved.mimeType
+      });
+    } catch {
+      throw new ExternalImportWorkerError("audio_processing_failed");
+    }
+
+    const processedValidationError = validateAudioImportMetadata({
+      fileName: processedAudio.fileName,
+      mimeType: processedAudio.mimeType,
+      sizeBytes: processedAudio.content.byteLength
+    });
+
+    if (processedValidationError) {
+      throw new ExternalImportWorkerError(processedValidationError);
+    }
+
+    const provenance = {
+      attributionText: input.discovery.attributionText ?? null,
+      canonicalUrl: input.discovery.canonicalUrl,
+      importPolicyMode: input.importPolicyMode,
+      licenseType: input.discovery.licenseType ?? null,
+      licenseUrl: input.discovery.licenseUrl ?? null,
+      selectedImportPath: resolved.adapter,
+      watchUrl: input.discovery.canonicalUrl,
+      ...resolved.provenance,
+      ...processedAudio.provenance
+    };
+
+    input.songRepository.updateExternalSourceProvenance({
+      userId: input.user.id,
+      sourceId: input.source.id,
+      provenance
+    });
+    input.songRepository.updateImportJobProvenance({
+      userId: input.user.id,
+      jobId: input.job.id,
+      provenance: {
+        adapter: resolved.adapter,
+        canonicalUrl: input.discovery.canonicalUrl,
+        provider: "youtube",
+        sourceId: input.discovery.sourceId,
+        ...resolved.provenance,
+        ...processedAudio.provenance
+      }
+    });
+
+    storedPath = input.audioStorage.writeSharedOriginal
+      ? await input.audioStorage.writeSharedOriginal({
+          provider: "youtube",
+          sourceId: input.discovery.sourceId,
+          content: processedAudio.content
+        })
+      : await input.audioStorage.writeOriginal({
+          userId: input.user.id,
+          songId: input.song.id,
+          content: processedAudio.content
+        });
+    const checksum = `sha256:${createHash("sha256").update(processedAudio.content).digest("hex")}`;
+    input.songRepository.markSongReady({
+      userId: input.user.id,
+      songId: input.song.id,
+      checksum,
+      durationMs: processedAudio.durationMs,
+      mimeType: processedAudio.mimeType,
+      sizeBytes: processedAudio.content.byteLength,
+      storagePath: storedPath
+    });
+
+    const readySong =
+      input.songRepository.findSongForUser(input.user.id, input.song.id) ??
+      input.song;
+    const readyJob =
+      input.songRepository.findImportJobForUser(input.user.id, input.job.id) ??
+      input.job;
+
+    input.app.log.info({
+      event: "external_import_ready",
+      jobId: readyJob.id,
+      policyMode: input.importPolicyMode,
+      provider: "youtube",
+      sourceId: input.discovery.sourceId,
+      userId: input.user.id
+    });
+    input.libraryEvents?.emitLibraryChanged(input.user.id, {
+      reason: "external_import_completed",
+      songId: readySong.id
+    });
+  } catch (error) {
+    if (storedPath) {
+      await deleteStoredAudioIfUnreferenced(
+        input.songRepository,
+        input.audioStorage,
+        storedPath,
+        input.song.id
+      );
+    }
+
+    const errorCode =
+      error instanceof ExternalSourceAlreadyInLibraryError
+        ? "external_source_already_in_library"
+        : error instanceof YouTubeImportAdapterError
+          ? error.code
+          : error instanceof ExternalImportWorkerError
+            ? error.code
+            : "external_import_failed";
+
+    input.songRepository.markSongImportFailed({
+      userId: input.user.id,
+      songId: input.song.id,
+      errorCode
+    });
+
+    input.app.log.info({
+      event: "external_import_failed",
+      errorCode,
+      jobId: input.job.id,
+      policyMode: input.importPolicyMode,
+      provider: "youtube",
+      sourceId: input.discovery.sourceId,
+      userId: input.user.id
+    });
+  }
 }
 
 async function createSongFromReusableExternalAudio(input: {
@@ -779,29 +889,6 @@ function serializeSong(song: Song) {
     createdAt: song.createdAt.toISOString(),
     updatedAt: song.updatedAt.toISOString()
   };
-}
-
-function messageForExternalImportError(code: string) {
-  switch (code) {
-    case "external_source_already_in_library":
-      return "This source is already in your library.";
-    case "unsupported_audio_type":
-      return "The resolved audio type is not supported.";
-    case "audio_file_too_large":
-      return "The resolved audio file is too large.";
-    case "missing_audio_metadata":
-      return "The resolved audio metadata is incomplete.";
-    case "external_audio_download_empty":
-      return "The downloaded audio file was empty.";
-    case "external_audio_download_missing":
-      return "The downloader did not produce an audio file.";
-    case "external_audio_download_failed":
-      return "Could not download audio from YouTube. Check that yt-dlp and ffmpeg are available in the API runtime.";
-    case "audio_processing_failed":
-      return "The downloaded audio could not be normalized.";
-    default:
-      return "External import failed.";
-  }
 }
 
 function sendExternalImportError(

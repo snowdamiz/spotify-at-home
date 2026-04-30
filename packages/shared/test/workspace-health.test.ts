@@ -3,7 +3,9 @@ import {
   APP_NAME,
   getImportPolicyModeCopy,
   isImportPolicyMode,
-  parseImportPolicyMode
+  parseImportPolicyMode,
+  preferredYouTubeThumbnailUrl,
+  upgradeYouTubeThumbnailUrl
 } from "@broadside/shared";
 
 describe("workspace health", () => {
@@ -21,5 +23,23 @@ describe("workspace health", () => {
     expect(getImportPolicyModeCopy("open_test")).toMatchObject({
       badge: "Open test mode"
     });
+  });
+
+  it("upgrades low-resolution YouTube thumbnails for large library artwork", () => {
+    expect(preferredYouTubeThumbnailUrl("abc123XYZ09")).toBe(
+      "https://i.ytimg.com/vi/abc123XYZ09/hq720.jpg"
+    );
+    expect(
+      upgradeYouTubeThumbnailUrl(
+        "https://i.ytimg.com/vi/abc123XYZ09/hqdefault.jpg",
+        "abc123XYZ09"
+      )
+    ).toBe("https://i.ytimg.com/vi/abc123XYZ09/hq720.jpg");
+    expect(
+      upgradeYouTubeThumbnailUrl(
+        "https://i.ytimg.com/vi/abc123XYZ09/maxresdefault.jpg",
+        "abc123XYZ09"
+      )
+    ).toBe("https://i.ytimg.com/vi/abc123XYZ09/maxresdefault.jpg");
   });
 });

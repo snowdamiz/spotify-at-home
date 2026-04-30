@@ -1,7 +1,9 @@
-import type {
-  ExternalDiscoveryResult,
-  ExternalDiscoveryResponse,
-  ImportPolicyMode
+import {
+  preferredYouTubeThumbnailUrl,
+  type ExternalDiscoveryResult,
+  type ExternalDiscoveryResponse,
+  type ImportPolicyMode,
+  upgradeYouTubeThumbnailUrl
 } from "@broadside/shared";
 
 const youtubeOEmbedUrl = "https://www.youtube.com/oembed";
@@ -87,7 +89,10 @@ export class YouTubeDiscoveryProvider implements YouTubeDiscoveryClient {
       canonicalUrl: parsed.canonicalUrl,
       title: metadata.title ?? `YouTube video ${parsed.videoId}`,
       creator: metadata.creator,
-      thumbnailUrl: metadata.thumbnailUrl ?? defaultThumbnailUrl(parsed.videoId),
+      thumbnailUrl: upgradeYouTubeThumbnailUrl(
+        metadata.thumbnailUrl,
+        parsed.videoId
+      ) ?? defaultThumbnailUrl(parsed.videoId),
       durationMs: null,
       description: null,
       importPolicyMode
@@ -454,7 +459,10 @@ function canonicalWatchUrl(videoId: string) {
 }
 
 function defaultThumbnailUrl(videoId: string) {
-  return `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg`;
+  return (
+    preferredYouTubeThumbnailUrl(videoId) ??
+    `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg`
+  );
 }
 
 function readBalancedJsonObject(text: string, objectStart: number) {
@@ -509,7 +517,9 @@ function videoResultFromRenderer(
     title: firstText(renderer.title) ?? `YouTube video ${videoId}`,
     creator:
       firstText(renderer.ownerText, renderer.shortBylineText, renderer.longBylineText) ?? null,
-    thumbnailUrl: thumbnailUrlFrom(renderer.thumbnail) ?? defaultThumbnailUrl(videoId),
+    thumbnailUrl:
+      upgradeYouTubeThumbnailUrl(thumbnailUrlFrom(renderer.thumbnail), videoId) ??
+      defaultThumbnailUrl(videoId),
     durationMs: durationMsFromText(firstText(renderer.lengthText)),
     description:
       firstText(renderer.descriptionSnippet, detailedMetadataSnippetText(renderer)) ?? null,
@@ -540,7 +550,11 @@ function videoResultFromLockup(
     canonicalUrl: canonicalWatchUrl(videoId),
     title: title ?? `YouTube video ${videoId}`,
     creator: firstText(lockupMetadata?.metadata, lockupMetadata?.subtitle) ?? null,
-    thumbnailUrl: thumbnailUrlFrom(image?.collectionThumbnailViewModel) ?? defaultThumbnailUrl(videoId),
+    thumbnailUrl:
+      upgradeYouTubeThumbnailUrl(
+        thumbnailUrlFrom(image?.collectionThumbnailViewModel),
+        videoId
+      ) ?? defaultThumbnailUrl(videoId),
     durationMs: durationMsFromText(firstText(lockupMetadata?.duration, lockup.duration)),
     description: firstText(lockupMetadata?.description) ?? null,
     importPolicyMode

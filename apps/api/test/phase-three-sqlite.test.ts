@@ -53,6 +53,12 @@ describe("Phase 3 SQLite schema and repositories", () => {
     expect(
       db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()
     ).toMatchObject({ count: migrations.length });
+    expect(indexNames(db)).toEqual(
+      expect.arrayContaining([
+        "idx_csv_import_items_user_batch_created",
+        "idx_csv_import_items_user_batch_status_created"
+      ])
+    );
   });
 
   it("keeps song reads scoped to the requesting user", () => {
@@ -242,6 +248,20 @@ function tableNames(db: SqliteDatabase) {
         SELECT name
         FROM sqlite_master
         WHERE type = 'table'
+        ORDER BY name
+      `
+    )
+    .all()
+    .map((row) => row.name);
+}
+
+function indexNames(db: SqliteDatabase) {
+  return db
+    .prepare(
+      `
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'index'
         ORDER BY name
       `
     )

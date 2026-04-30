@@ -1,6 +1,7 @@
 import {
   getImportPolicyModeCopy,
   SUPPORTED_AUDIO_MIME_TYPES,
+  upgradeYouTubeThumbnailUrl,
   type ExternalDiscoveryResponse,
   type ExternalDiscoveryResult,
   type ImportPolicyMode,
@@ -73,7 +74,7 @@ export interface ServerSong {
   mimeType: string
   sizeBytes: number
   checksum: string
-  importStatus: 'ready'
+  importStatus: 'failed' | 'pending' | 'ready'
   externalSource?: SerializedExternalSource | null
   liked: boolean
   createdAt: string
@@ -592,9 +593,23 @@ export async function createCsvImportBatches(files: File[]) {
   return { batches, status: 'accepted' as const }
 }
 
-export async function fetchCsvImportBatch(batchId: string) {
+export async function fetchCsvImportBatch(
+  batchId: string,
+  options: { items?: 'all' | 'attention' } = {},
+) {
+  const params = new URLSearchParams()
+
+  if (options.items === 'attention') {
+    params.set('items', 'attention')
+  }
+
+  const query = params.toString()
   const response = await apiFetch(
-    apiUrl(`/api/csv-imports/batches/${encodeURIComponent(batchId)}`),
+    apiUrl(
+      `/api/csv-imports/batches/${encodeURIComponent(batchId)}${
+        query ? `?${query}` : ''
+      }`,
+    ),
     {
       credentials: 'include',
     },
@@ -1255,7 +1270,7 @@ export async function importYouTubeDiscovery(discovery: ExternalDiscoveryResult)
   const payload = (await response.json()) as {
     alreadyInLibrary: boolean
     job: SerializedExternalImportJob | null
-    song: ServerSong
+    song: ServerSong | null
   }
 
   return {
@@ -1297,12 +1312,16 @@ export async function fetchExternalImportJob(jobId: string) {
 export function serverSongToSong(song: ServerSong): Song {
   const artist = song.artist ?? song.album ?? 'Imported song'
   const external = song.externalSource
+  const coverImageUrl =
+    external?.provider === 'youtube'
+      ? upgradeYouTubeThumbnailUrl(external.thumbnailUrl, external.sourceId)
+      : external?.thumbnailUrl
 
   return {
     album: song.album ?? undefined,
     artist,
     coverColor: pickCoverColor(song.title + artist),
-    coverImageUrl: external?.thumbnailUrl ?? undefined,
+    coverImageUrl: coverImageUrl ?? undefined,
     dateAdded: Date.parse(song.createdAt),
     duration: song.durationMs ? Math.round(song.durationMs / 1000) : 0,
     id: song.id,

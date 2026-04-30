@@ -201,6 +201,47 @@ export class SQLiteCsvImportRepository {
       .map(mapImportItem);
   }
 
+  listAttentionImportItemsForBatch(input: {
+    userId: string;
+    batchId: string;
+    errorCodes: string[];
+  }) {
+    const errorCodes = [...new Set(input.errorCodes.filter(Boolean))];
+
+    if (errorCodes.length === 0) {
+      return this.db
+        .prepare(
+          `
+            SELECT *
+            FROM csv_import_items
+            WHERE user_id = ? AND batch_id = ? AND status = 'running'
+            ORDER BY created_at ASC, id ASC
+          `
+        )
+        .all(input.userId, input.batchId)
+        .map(mapImportItem);
+    }
+
+    const placeholders = errorCodes.map(() => "?").join(", ");
+
+    return this.db
+      .prepare(
+        `
+          SELECT *
+          FROM csv_import_items
+          WHERE user_id = ?
+            AND batch_id = ?
+            AND (
+              status = 'running'
+              OR (status = 'failed' AND error_code IN (${placeholders}))
+            )
+          ORDER BY created_at ASC, id ASC
+        `
+      )
+      .all(input.userId, input.batchId, ...errorCodes)
+      .map(mapImportItem);
+  }
+
   listActiveImportBatchesForUser(input: { userId: string; limit?: number }) {
     return this.db
       .prepare(

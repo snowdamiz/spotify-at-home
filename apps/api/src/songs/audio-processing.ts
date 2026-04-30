@@ -406,6 +406,10 @@ function extensionForInput(input: AudioImportProcessingInput) {
       return ".m4a";
     case "audio/ogg":
       return ".ogg";
+    case "audio/opus":
+      return ".opus";
+    case "audio/webm":
+      return ".webm";
     case "audio/wav":
     case "audio/x-wav":
       return ".wav";

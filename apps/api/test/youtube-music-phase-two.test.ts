@@ -75,7 +75,7 @@ describe("YouTube Music Phase 2 direct link discovery", () => {
       canonicalUrl: "https://www.youtube.com/watch?v=abc123XYZ09",
       title: "Tiny Desk Song",
       creator: "Ada Channel",
-      thumbnailUrl: "https://i.ytimg.com/vi/abc123XYZ09/hqdefault.jpg",
+      thumbnailUrl: "https://i.ytimg.com/vi/abc123XYZ09/hq720.jpg",
       durationMs: null,
       description: null,
       importPolicyMode: "open_test"
@@ -95,7 +95,7 @@ describe("YouTube Music Phase 2 direct link discovery", () => {
       canonicalUrl: "https://www.youtube.com/watch?v=abc123XYZ09",
       title: "YouTube video abc123XYZ09",
       creator: null,
-      thumbnailUrl: "https://i.ytimg.com/vi/abc123XYZ09/hqdefault.jpg",
+      thumbnailUrl: "https://i.ytimg.com/vi/abc123XYZ09/hq720.jpg",
       durationMs: null,
       description: null,
       importPolicyMode: "review_required"

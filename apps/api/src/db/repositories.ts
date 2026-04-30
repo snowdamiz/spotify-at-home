@@ -945,6 +945,58 @@ export class SQLiteSongRepository {
     return row ? mapImportJob(row) : null;
   }
 
+  findPendingImportByExternalSourceForUser(input: {
+    userId: string;
+    provider: ExternalSourceProvider;
+    sourceId: string;
+  }) {
+    const row = this.db
+      .prepare(
+        `
+          SELECT
+            ${songSelectColumns("s")},
+            ij.id AS import_job_id,
+            ij.user_id AS import_job_user_id,
+            ij.song_id AS import_job_song_id,
+            ij.source_id AS import_job_source_id,
+            ij.status AS import_job_status,
+            ij.error_code AS import_job_error_code,
+            ij.import_policy_mode AS import_job_import_policy_mode,
+            ij.retry_count AS import_job_retry_count,
+            ij.provenance_json AS import_job_provenance_json,
+            ij.created_at AS import_job_created_at,
+            ij.updated_at AS import_job_updated_at
+          FROM external_sources es
+          INNER JOIN songs s ON s.id = es.song_id AND s.user_id = es.user_id
+          INNER JOIN import_jobs ij ON ij.source_id = es.id AND ij.song_id = s.id
+          WHERE es.user_id = ?
+            AND es.provider = ?
+            AND es.source_id = ?
+            AND s.user_id = ?
+            AND s.import_status = 'pending'
+            AND s.deleted_at IS NULL
+            AND ij.status = 'pending'
+          ORDER BY ij.updated_at DESC, ij.id ASC
+          LIMIT 1
+        `
+      )
+      .get(input.userId, input.provider, input.sourceId, input.userId);
+
+    if (!row) {
+      return null;
+    }
+
+    const song = mapSong(row);
+
+    return song.externalSource
+      ? {
+          job: mapImportJobWithPrefix(row, "import_job"),
+          song,
+          source: song.externalSource
+        }
+      : null;
+  }
+
   updateImportJobProvenance(input: {
     userId: string;
     jobId: string;
@@ -1792,6 +1844,24 @@ function mapImportJob(row: Record<string, unknown>): ImportJob {
     provenance: parseJsonObject(row.provenance_json),
     createdAt: fromSqlDate(row.created_at),
     updatedAt: fromSqlDate(row.updated_at)
+  };
+}
+
+function mapImportJobWithPrefix(row: Record<string, unknown>, prefix: string): ImportJob {
+  const read = (key: string) => row[`${prefix}_${key}`];
+
+  return {
+    id: String(read("id")),
+    userId: String(read("user_id")),
+    songId: String(read("song_id")),
+    sourceId: nullableString(read("source_id")),
+    status: read("status") as ImportStatus,
+    errorCode: nullableString(read("error_code")),
+    importPolicyMode: read("import_policy_mode") as ImportPolicyMode,
+    retryCount: Number(read("retry_count") ?? 0),
+    provenance: parseJsonObject(read("provenance_json")),
+    createdAt: fromSqlDate(read("created_at")),
+    updatedAt: fromSqlDate(read("updated_at"))
   };
 }
 

@@ -323,6 +323,16 @@ export const migrations: Migration[] = [
       CREATE INDEX idx_csv_import_items_user_source
         ON csv_import_items(user_id, source_key);
     `
+  },
+  {
+    version: 8,
+    name: "csv_import_batch_query_indexes",
+    up: `
+      CREATE INDEX idx_csv_import_items_user_batch_created
+        ON csv_import_items(user_id, batch_id, created_at ASC, id ASC);
+      CREATE INDEX idx_csv_import_items_user_batch_status_created
+        ON csv_import_items(user_id, batch_id, status, created_at ASC, id ASC);
+    `
   }
 ];
 
