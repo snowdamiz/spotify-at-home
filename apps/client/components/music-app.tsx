@@ -1566,8 +1566,16 @@ function AuthenticatedMusicApp() {
   }, [reloadOfflineServerSongs, songsState.status, userSongs])
 
   useEffect(() => {
-    cacheTrackThumbnails(userSongs.map((song) => song.coverImageUrl))
-  }, [userSongs])
+    // Offline-saved songs first: their artwork must survive going offline.
+    // Playlist details cover the cached snapshot's songs as well.
+    cacheTrackThumbnails([
+      ...offlineServerSongs.map((song) => serverSongToSong(song).coverImageUrl),
+      ...userSongs.map((song) => song.coverImageUrl),
+      ...playlistDetails.flatMap((playlist) =>
+        playlist.songs.map((song) => serverSongToSong(song).coverImageUrl),
+      ),
+    ])
+  }, [offlineServerSongs, playlistDetails, userSongs])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -1770,16 +1778,12 @@ function AuthenticatedMusicApp() {
               : states,
           )
 
-          const cacheIntent = await requestSongCacheIntent(songToLoad.id)
-          const streamUrl =
-            cacheIntent.status === 'accepted' && cacheIntent.cacheIntent
-              ? cacheIntent.cacheIntent.streamUrl
-              : songStreamUrl(songToLoad.id)
-
-          if (disposed || mediaLoadIdRef.current !== loadId) return
-
+          // Start streaming immediately — the server cache intent is
+          // advisory (parity with the synchronous auto-advance path) and
+          // must not cost a network round trip before playback begins.
+          requestSongCacheIntent(songToLoad.id).catch(() => undefined)
           audio.crossOrigin = 'use-credentials'
-          audio.src = streamUrl
+          audio.src = songStreamUrl(songToLoad.id)
         }
         audio.load()
 

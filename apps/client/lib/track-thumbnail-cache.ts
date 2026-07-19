@@ -3,7 +3,9 @@
 const THUMBNAIL_CACHE_NAME = 'onvibe-track-thumbnails-v3'
 const CACHE_MESSAGE_TYPE = 'CACHE_TRACK_THUMBNAILS'
 const THUMBNAIL_CACHE_CONCURRENCY = 6
-const MAX_THUMBNAIL_PREFETCHES = 120
+// High enough to cover a full library; thumbnails are ~10-50KB each and
+// callers put the most important artwork first in the list.
+const MAX_THUMBNAIL_PREFETCHES = 400
 
 export function cacheTrackThumbnails(urls: Array<string | null | undefined>) {
   if (typeof window === 'undefined') return

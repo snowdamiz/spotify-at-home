@@ -1,5 +1,6 @@
 'use client'
 
+import { memo } from 'react'
 import {
   AlertCircle,
   CheckCircle2,
@@ -59,7 +60,34 @@ type SongRowProps = {
   onRemoveFromPlaylist?: () => void
 }
 
-export function SongRow({
+// Rows only re-render when their data props change. Handler props are
+// per-row inline closures whose identity changes on every parent render, so
+// they are deliberately excluded from the comparison — anything a handler's
+// behavior depends on must therefore also arrive as a data prop (song,
+// playlists, flags), which is true for all current call sites.
+function songRowPropsEqual(prev: SongRowProps, next: SongRowProps) {
+  const keys = Object.keys(next) as Array<keyof SongRowProps>
+
+  if (keys.length !== Object.keys(prev).length) {
+    return false
+  }
+
+  return keys.every((key) => {
+    const previousValue = prev[key]
+    const nextValue = next[key]
+
+    if (
+      typeof previousValue === 'function' &&
+      typeof nextValue === 'function'
+    ) {
+      return true
+    }
+
+    return Object.is(previousValue, nextValue)
+  })
+}
+
+export const SongRow = memo(function SongRow({
   song,
   index,
   isActive,
@@ -379,7 +407,7 @@ export function SongRow({
       )}
     </div>
   )
-}
+}, songRowPropsEqual)
 
 function DeleteSongDialog({
   songTitle,

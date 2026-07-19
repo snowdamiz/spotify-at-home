@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, type CSSProperties, type PointerEvent } from 'react'
+import { useRef, useState, type CSSProperties, type PointerEvent } from 'react'
 import {
   ChevronDown,
   Heart,
@@ -45,6 +45,7 @@ type SongSwipeState = {
 
 const SONG_SWIPE_DISTANCE_PX = 72
 const SONG_SWIPE_AXIS_RATIO = 1.35
+const SONG_SWIPE_EXIT_MS = 170
 
 type NowPlayingProps = {
   open: boolean
@@ -129,6 +130,12 @@ export function NowPlaying(props: NowPlayingProps) {
   } = props
 
   const songSwipeRef = useRef<SongSwipeState | null>(null)
+  // Imperative transforms on this wrapper make the artwork follow the finger
+  // without re-rendering the overlay on every pointer move.
+  const artDragRef = useRef<HTMLDivElement | null>(null)
+  const [artEnterFrom, setArtEnterFrom] = useState<'left' | 'right' | null>(
+    null,
+  )
 
   if (!song) return null
 
@@ -163,12 +170,38 @@ export function NowPlaying(props: NowPlayingProps) {
     }
   }
 
+  const settleArtBack = () => {
+    const art = artDragRef.current
+    if (!art) return
+
+    art.style.transition = 'transform 220ms cubic-bezier(0.2, 0.9, 0.3, 1.15), opacity 220ms ease'
+    art.style.transform = 'translateX(0px) rotate(0deg)'
+    art.style.opacity = '1'
+  }
+
   const handleSongSwipeMove = (event: PointerEvent<HTMLDivElement>) => {
     const swipe = songSwipeRef.current
     if (!swipe || swipe.pointerId !== event.pointerId) return
 
     swipe.latestX = event.clientX
     swipe.latestY = event.clientY
+
+    const art = artDragRef.current
+    if (!art) return
+
+    const deltaX = event.clientX - swipe.startX
+    const deltaY = event.clientY - swipe.startY
+
+    // Only track horizontally-dominant gestures so vertical scrolling and
+    // taps leave the artwork alone.
+    if (Math.abs(deltaX) <= Math.abs(deltaY) * SONG_SWIPE_AXIS_RATIO) {
+      settleArtBack()
+      return
+    }
+
+    art.style.transition = 'none'
+    art.style.transform = `translateX(${deltaX}px) rotate(${deltaX * 0.018}deg)`
+    art.style.opacity = String(Math.max(0.4, 1 - Math.abs(deltaX) / 640))
   }
 
   const handleSongSwipeEnd = (event: PointerEvent<HTMLDivElement>) => {
@@ -184,18 +217,45 @@ export function NowPlaying(props: NowPlayingProps) {
       Math.abs(deltaX) >= SONG_SWIPE_DISTANCE_PX &&
       Math.abs(deltaX) > Math.abs(deltaY) * SONG_SWIPE_AXIS_RATIO
     ) {
-      if (deltaX < 0) {
-        onNext()
-      } else {
-        onPrev()
+      const direction = deltaX < 0 ? 'left' : 'right'
+      const art = artDragRef.current
+
+      if (art) {
+        // Finish the throw off-screen, then swap tracks and let the new
+        // artwork slide in from the other side.
+        art.style.transition = `transform ${SONG_SWIPE_EXIT_MS}ms ease-out, opacity ${SONG_SWIPE_EXIT_MS}ms ease-out`
+        art.style.transform = `translateX(${direction === 'left' ? '-110%' : '110%'}) rotate(${direction === 'left' ? '-6' : '6'}deg)`
+        art.style.opacity = '0'
       }
+
+      window.setTimeout(() => {
+        const settled = artDragRef.current
+
+        if (settled) {
+          settled.style.transition = 'none'
+          settled.style.transform = 'translateX(0px) rotate(0deg)'
+          settled.style.opacity = '1'
+        }
+
+        setArtEnterFrom(direction === 'left' ? 'right' : 'left')
+
+        if (direction === 'left') {
+          onNext()
+        } else {
+          onPrev()
+        }
+      }, SONG_SWIPE_EXIT_MS)
+      return
     }
+
+    settleArtBack()
   }
 
   const handleSongSwipeCancel = (event: PointerEvent<HTMLDivElement>) => {
     const swipe = songSwipeRef.current
     if (swipe?.pointerId === event.pointerId) {
       songSwipeRef.current = null
+      settleArtBack()
     }
   }
 
@@ -286,14 +346,25 @@ export function NowPlaying(props: NowPlayingProps) {
               className="ov-art-scale w-full max-w-sm"
               data-paused={!isPlaying}
             >
-              <CoverArt
-                colorClass={song.coverColor}
-                imageUrl={song.coverImageUrl}
-                title={song.title}
-                size="full"
-                rounded="2xl"
-                className="max-h-[60vh] w-full shadow-2xl shadow-black/50"
-              />
+              <div ref={artDragRef} className="will-change-transform">
+                <div
+                  key={song.id}
+                  className={cn(
+                    artEnterFrom === 'right' && 'ov-swipe-in-right',
+                    artEnterFrom === 'left' && 'ov-swipe-in-left',
+                  )}
+                  onAnimationEnd={() => setArtEnterFrom(null)}
+                >
+                  <CoverArt
+                    colorClass={song.coverColor}
+                    imageUrl={song.coverImageUrl}
+                    title={song.title}
+                    size="full"
+                    rounded="2xl"
+                    className="max-h-[60vh] w-full shadow-2xl shadow-black/50"
+                  />
+                </div>
+              </div>
             </div>
           </div>
 
@@ -370,7 +441,10 @@ export function NowPlaying(props: NowPlayingProps) {
               </button>
               <button
                 type="button"
-                onClick={onPrev}
+                onClick={() => {
+                  setArtEnterFrom('left')
+                  onPrev()
+                }}
                 className="ov-press text-foreground"
                 aria-label="Previous"
               >
@@ -390,7 +464,10 @@ export function NowPlaying(props: NowPlayingProps) {
               </button>
               <button
                 type="button"
-                onClick={onNext}
+                onClick={() => {
+                  setArtEnterFrom('right')
+                  onNext()
+                }}
                 className="ov-press text-foreground"
                 aria-label="Next"
               >

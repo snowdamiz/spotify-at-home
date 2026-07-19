@@ -6,6 +6,7 @@ import {
   type ServerSong,
 } from '@/lib/api'
 import type { Song } from '@/lib/music-types'
+import { cacheTrackThumbnails } from '@/lib/track-thumbnail-cache'
 
 const DB_NAME = 'onvibe-offline-audio'
 const DB_VERSION = 1
@@ -189,6 +190,9 @@ export async function downloadOfflineAudio(
   }
 
   await writeRecord(record)
+
+  // A song saved for offline listening should keep its artwork offline too.
+  cacheTrackThumbnails([song.coverImageUrl])
 
   return {
     sizeBytes: record.sizeBytes,

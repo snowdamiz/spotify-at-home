@@ -358,6 +358,14 @@
     animation: ov-pop 360ms var(--ease-out-quart);
   }
 
+  /* Incoming artwork after a track swipe or skip (keyed by song id) */
+  .ov-swipe-in-right {
+    animation: ov-swipe-in-right 280ms var(--ease-out-quart) both;
+  }
+  .ov-swipe-in-left {
+    animation: ov-swipe-in-left 280ms var(--ease-out-quart) both;
+  }
+
   /* Staggered reveal for small card grids */
   .ov-stagger > * {
     animation: ov-fade-up 420ms var(--ease-out-quart) both;
@@ -417,10 +425,34 @@
   }
 }
 
+@keyframes ov-swipe-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(55%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes ov-swipe-in-left {
+  from {
+    opacity: 0;
+    transform: translateX(-55%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ov-view-enter,
   .ov-track-in,
   .ov-icon-pop,
+  .ov-swipe-in-right,
+  .ov-swipe-in-left,
   .ov-stagger > *,
   [data-np-open='true'] .ov-np-item {
     animation: none !important;
