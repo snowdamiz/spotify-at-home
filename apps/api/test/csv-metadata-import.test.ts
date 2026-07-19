@@ -1681,17 +1681,39 @@ describe("CSV metadata imports", () => {
       payload: { discovery: selected }
     });
 
-    expect(imported.statusCode).toBe(200);
+    // The download happens in the background so the response cannot hit
+    // proxy timeouts; the item is running and the batch is watchable again.
+    expect(imported.statusCode).toBe(202);
     expect(imported.json()).toMatchObject({
-      batch: {
-        completedItems: 1,
-        failedItems: 0,
-        status: "completed"
-      },
-      item: {
-        status: "completed",
-        youtubeSourceId: "selectedMoon01"
+      batch: { status: "running" },
+      item: { status: "running" }
+    });
+
+    let finished: { completedItems: number; failedItems: number; status: string } | null = null;
+
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const status = await app.inject({
+        method: "GET",
+        url: `/api/csv-imports/batches/${batch.json().batch.id}`,
+        headers: { authorization: `Bearer ${token}` }
+      });
+
+      if (["completed", "failed"].includes(status.json().batch?.status)) {
+        finished = status.json().batch;
+        expect(status.json().items[0]).toMatchObject({
+          status: "completed",
+          youtubeSourceId: "selectedMoon01"
+        });
+        break;
       }
+
+      await wait(10);
+    }
+
+    expect(finished).toMatchObject({
+      completedItems: 1,
+      failedItems: 0,
+      status: "completed"
     });
 
     const playlists = await app.inject({

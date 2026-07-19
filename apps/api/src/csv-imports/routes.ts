@@ -511,79 +511,87 @@ export function registerCsvImportRoutes(app: FastifyInstance, options: CsvImport
     }
 
     options.csvImportRepository.markItemRunning({ itemId: item.id, userId: user.id });
+    // Recomputing counts with the item running flips a finished batch back
+    // to `running`, so client pollers resume watching it.
+    const runningBatch = options.csvImportRepository.refreshBatchCounts({
+      batchId,
+      userId: user.id
+    });
 
-    try {
-      const result = await importYouTubeDiscoveryForCsvItem({
-        audioProcessor,
-        audioStorage,
-        discovery,
-        importPolicyMode: batch.importPolicyMode,
-        item,
-        songRepository: options.songRepository,
-        user,
-        youtubeImportAdapter
-      });
+    // Downloading and normalizing the chosen video can outlive proxy
+    // timeouts (the Next.js rewrite proxy allows 30s by default), so answer
+    // right away and finish in the background; batch polling and library
+    // events deliver the outcome.
+    void (async () => {
+      try {
+        const result = await importYouTubeDiscoveryForCsvItem({
+          audioProcessor,
+          audioStorage,
+          discovery,
+          importPolicyMode: batch.importPolicyMode,
+          item,
+          songRepository: options.songRepository,
+          user,
+          youtubeImportAdapter
+        });
 
-      if (item.likeAfterImport) {
-        options.songRepository.likeSong({ songId: result.song.id, userId: user.id });
-      }
+        if (item.likeAfterImport) {
+          options.songRepository.likeSong({ songId: result.song.id, userId: user.id });
+        }
 
-      for (const target of item.playlistTargets) {
-        options.playlistRepository.addSong({
-          playlistId: target.playlistId,
-          position: target.position,
+        for (const target of item.playlistTargets) {
+          options.playlistRepository.addSong({
+            playlistId: target.playlistId,
+            position: target.position,
+            songId: result.song.id,
+            userId: user.id
+          });
+        }
+
+        options.csvImportRepository.markItemCompleted({
+          itemId: item.id,
           songId: result.song.id,
+          userId: user.id,
+          youtubeSourceId: result.youtubeSourceId
+        });
+        options.csvImportRepository.refreshBatchCounts({ batchId, userId: user.id });
+        options.libraryEvents?.emitLibraryChanged(user.id, {
+          csvImportBatchId: batchId,
+          csvImportItemId: item.id,
+          reason: "csv_import_item_completed",
+          songId: result.song.id
+        });
+      } catch (error) {
+        options.csvImportRepository.markItemFailed({
+          errorCode: errorCodeForCsvImport(error),
+          errorMessage: messageForError(error),
+          itemId: item.id,
+          userId: user.id
+        });
+        options.csvImportRepository.refreshBatchCounts({ batchId, userId: user.id });
+        emitCsvImportLog("warn", {
+          csvImportBatchId: batchId,
+          csvImportItemId: item.id,
+          errorCode: errorCodeForCsvImport(error),
+          event: "csv_import_manual_match_failed",
           userId: user.id
         });
       }
+    })();
 
-      options.csvImportRepository.markItemCompleted({
-        itemId: item.id,
-        songId: result.song.id,
-        userId: user.id,
-        youtubeSourceId: result.youtubeSourceId
-      });
-
-      const refreshedBatch = options.csvImportRepository.refreshBatchCounts({
-        batchId,
-        userId: user.id
-      });
-      options.libraryEvents?.emitLibraryChanged(user.id, {
-        csvImportBatchId: batchId,
-        csvImportItemId: item.id,
-        reason: "csv_import_item_completed",
-        songId: result.song.id
-      });
-
-      return {
-        batch: serializeImportBatch(refreshedBatch ?? batch),
-        item: serializeImportItem(
-          options.csvImportRepository.findImportItemForUser({
-            batchId,
-            itemId: item.id,
-            userId: user.id
-          }) ?? item
-        ),
-        items: options.csvImportRepository
-          .listImportItemsForBatch({ batchId, userId: user.id })
-          .map(serializeImportItem)
-      };
-    } catch (error) {
-      options.csvImportRepository.markItemFailed({
-        errorCode: errorCodeForCsvImport(error),
-        errorMessage: messageForError(error),
-        itemId: item.id,
-        userId: user.id
-      });
-      options.csvImportRepository.refreshBatchCounts({ batchId, userId: user.id });
-
-      return sendCsvImportError(
-        reply,
-        errorCodeForCsvImport(error),
-        messageForError(error),
-        error instanceof ImportPolicyError ? error.statusCode : 500
-      );
-    }
+    return reply.code(202).send({
+      batch: serializeImportBatch(runningBatch ?? batch),
+      item: serializeImportItem(
+        options.csvImportRepository.findImportItemForUser({
+          batchId,
+          itemId: item.id,
+          userId: user.id
+        }) ?? item
+      ),
+      items: options.csvImportRepository
+        .listImportItemsForBatch({ batchId, userId: user.id })
+        .map(serializeImportItem)
+    });
   });
 }
 

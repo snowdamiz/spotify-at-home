@@ -3848,6 +3848,16 @@ function AuthenticatedMusicApp() {
           items: items.filter((csvItem) => csvItem.batchId === batch.id),
         })),
       )
+      const existingDownload = downloads.find(
+        (download) => download.id === target.downloadId,
+      )
+
+      if (existingDownload && existingDownload.status !== 'downloading') {
+        // The batch had finished, so its monitor loop exited. The manual
+        // import put the batch back into `running`; clearing the resume
+        // marker lets the monitor effect pick it up again.
+        resumedCsvImportIdsRef.current.delete(existingDownload.id)
+      }
 
       setDownloads((prev) =>
         prev.map((download) =>
@@ -3882,6 +3892,20 @@ function AuthenticatedMusicApp() {
         )
         setCsvManualMatchTarget(null)
       }
+
+      // The server downloads the chosen video in the background and answers
+      // right away; batch polling delivers the finished import.
+      if (
+        matched.item?.status === 'running' ||
+        matched.item?.status === 'pending'
+      ) {
+        toast({
+          title: 'Importing your pick',
+          description: `"${item.title}" is downloading and will be added shortly.`,
+        })
+        return
+      }
+
       refreshLibrary()
       setCollection(null)
       setView('library')

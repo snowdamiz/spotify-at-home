@@ -40,6 +40,6 @@ primary_region = "ord"
   processes = ["app"]
 
 [[vm]]
-  cpu_kind = "shared"
-  cpus = 4
+  cpu_kind = "performance"
+  cpus = 2
   memory = "4gb"

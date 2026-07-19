@@ -9,6 +9,11 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  experimental: {
+    // The /api rewrite proxies to the API server, whose import endpoints
+    // (audio upload + normalization) can far exceed the 30s default.
+    proxyTimeout: 300_000,
+  },
   async headers() {
     return [
       {
