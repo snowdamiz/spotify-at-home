@@ -13,6 +13,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      "@/": fileURLToPath(new URL("./apps/client/", import.meta.url)),
       "@broadside/shared": fileURLToPath(new URL("./packages/shared/src/index.ts", import.meta.url)),
       "@broadside/shared/": fileURLToPath(new URL("./packages/shared/src/", import.meta.url)),
       "@broadside/app/": fileURLToPath(new URL("./apps/app/src/", import.meta.url)),

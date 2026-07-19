@@ -80,10 +80,33 @@ import {
   type OfflineLibrarySnapshot,
 } from '@/lib/offline-library-cache'
 import {
+  createLocalPlaylistId,
+  enqueueMutation,
+  flushPendingMutations,
+  isLocalPlaylistId,
+  isOfflineSyncError,
+  pendingLibraryState,
+  readPendingMutations,
+  remapPlaylistId,
+  writePendingMutations,
+  type PendingMutation,
+  type QueuedMutation,
+} from '@/lib/offline-mutation-queue'
+import {
   type CollectionRef,
   type Song,
   type View,
 } from '@/lib/music-types'
+import { selectNextTrack, selectPrevTrack } from '@/lib/playback/queue'
+import {
+  applyMediaSessionMetadata,
+  getNavigatorMediaSession,
+  registerMediaSessionHandlers,
+  updateMediaSessionPlaybackState,
+  updateMediaSessionPositionState,
+} from '@/lib/playback/media-session'
+import { TrackSourceCache } from '@/lib/playback/track-sources'
+import { playbackProgressStore } from '@/lib/playback/progress-store'
 
 function shuffleArray<T>(arr: T[]): T[] {
   const a = [...arr]
@@ -209,6 +232,7 @@ const CSV_IMPORT_STATUS_REFRESH_FAILURE_LIMIT = 4
 const CSV_IMPORT_CANCEL_DISMISS_DELAY_MS = 5000
 const EXTERNAL_IMPORT_STATUS_REFRESH_FAILURE_LIMIT = 4
 const OFFLINE_DOWNLOAD_CONCURRENCY = 3
+const OFFLINE_SYNC_RETRY_INTERVAL_MS = 30_000
 const DEFAULT_VOLUME = 0.8
 const PLAYER_VOLUME_STORAGE_KEY = 'onvibe:player-volume:v1'
 const PLAYER_NAVIGATION_STORAGE_KEY = 'onvibe:navigation:v1'
@@ -805,15 +829,25 @@ function AuthenticatedMusicApp() {
   const [offlineServerSongs, setOfflineServerSongs] = useState<ServerSong[]>([])
   const [offlineLibrarySnapshot, setOfflineLibrarySnapshot] =
     useState<OfflineLibrarySnapshot | null>(null)
+  const [offlineSnapshotHydrated, setOfflineSnapshotHydrated] = useState(false)
+  // Library changes made while offline wait here until the server is
+  // reachable again; they also seed the optimistic UI state below so the
+  // changes survive an offline reload.
+  const [pendingMutations, setPendingMutations] = useState<QueuedMutation[]>(
+    () => readPendingMutations(user?.id),
+  )
+  const [seededPendingState] = useState(() =>
+    pendingLibraryState(readPendingMutations(user?.id)),
+  )
   const [playlistDetailOverrides, setPlaylistDetailOverrides] = useState<
     Record<string, ServerPlaylistDetail>
   >({})
   const [playlistSongRemovals, setPlaylistSongRemovals] = useState<
     Record<string, string[]>
-  >({})
+  >(() => seededPendingState.playlistSongRemovals)
   const [locallyDeletedPlaylistIds, setLocallyDeletedPlaylistIds] = useState<
     Set<string>
-  >(() => new Set())
+  >(() => new Set(seededPendingState.deletedPlaylistIds))
   const [storedNavigation] = useState(readStoredNavigation)
   const [view, setView] = useState<View>(storedNavigation.view)
   const [collection, setCollection] = useState<CollectionRef | null>(
@@ -822,8 +856,6 @@ function AuthenticatedMusicApp() {
   const [queue, setQueue] = useState<Song[]>([])
   const [currentSongId, setCurrentSongId] = useState<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
-  const [progress, setProgress] = useState(0)
-  const [duration, setDuration] = useState(0)
   const [volume, setVolume] = useState(readStoredVolume)
   const [muted, setMuted] = useState(false)
   const [shuffleEnabled, setShuffleEnabled] = useState(readStoredShuffle)
@@ -843,10 +875,10 @@ function AuthenticatedMusicApp() {
   const [deletingSongId, setDeletingSongId] = useState<string | null>(null)
   const [likingSongId, setLikingSongId] = useState<string | null>(null)
   const [likedOverrides, setLikedOverrides] = useState<Record<string, boolean>>(
-    {},
+    () => seededPendingState.likedOverrides,
   )
   const [locallyDeletedSongIds, setLocallyDeletedSongIds] = useState<Set<string>>(
-    () => new Set(),
+    () => new Set(seededPendingState.deletedSongIds),
   )
   const [offlineAudio, setOfflineAudio] = useState<OfflineAudioStateMap>({})
   const [librarySync, setLibrarySync] = useState<LibraryDeviceSyncState>({
@@ -874,7 +906,25 @@ function AuthenticatedMusicApp() {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const mediaLoadIdRef = useRef(0)
   const playNextRef = useRef<() => void>(() => undefined)
+  const playPrevRef = useRef<() => void>(() => undefined)
+  const handleTrackEndedRef = useRef<() => void>(() => undefined)
+  const recoverFromAudioErrorRef = useRef<() => void>(() => undefined)
   const repeatModeRef = useRef<RepeatMode>(repeatMode)
+  const isPlayingRef = useRef(false)
+  // Song id whose source was swapped onto the audio element synchronously
+  // by the ended-handler; tells the load effect to leave the element alone.
+  const syncLoadedSongIdRef = useRef<string | null>(null)
+  const audioErrorRecoverySongIdRef = useRef<string | null>(null)
+  const trackSourceCacheRef = useRef<TrackSourceCache<Song> | null>(null)
+  if (!trackSourceCacheRef.current) {
+    trackSourceCacheRef.current = new TrackSourceCache<Song>({
+      createObjectUrl: (blob) => URL.createObjectURL(blob),
+      getOfflineBlob: (song) => getOfflineAudioBlob(song),
+      revokeObjectUrl: (url) => URL.revokeObjectURL(url),
+      streamUrl: (songId) => songStreamUrl(songId),
+    })
+  }
+  const trackSourceCache = trackSourceCacheRef.current
   const canceledCsvImportIdsRef = useRef<Set<string>>(new Set())
   const csvImportDismissTimeoutsRef = useRef<Map<string, number>>(new Map())
   const promptedCsvManualMatchIdsRef = useRef<Set<string>>(new Set())
@@ -887,6 +937,10 @@ function AuthenticatedMusicApp() {
   const offlineServerSongsRef = useRef<ServerSong[]>([])
   const locallyHandledSongRemovalIdsRef = useRef<Set<string>>(new Set())
   const wasOnlineRef = useRef(isOnline)
+  const pendingMutationsRef = useRef<QueuedMutation[]>(pendingMutations)
+  const flushingPendingMutationsRef = useRef(false)
+  const syncAuthNoticeShownRef = useRef(false)
+  const seededPlaylistOverridesRef = useRef(false)
 
   const reloadOfflineServerSongs = useCallback(async () => {
     try {
@@ -904,6 +958,8 @@ function AuthenticatedMusicApp() {
         )
       } catch {
         setOfflineLibrarySnapshot(null)
+      } finally {
+        setOfflineSnapshotHydrated(true)
       }
     },
     [],
@@ -992,9 +1048,8 @@ function AuthenticatedMusicApp() {
     )
 
     if (
-      offlineOnlyMode ||
-      (playlistDetailOverrideList.length === 0 &&
-        Object.keys(playlistSongRemovals).length === 0)
+      playlistDetailOverrideList.length === 0 &&
+      Object.keys(playlistSongRemovals).length === 0
     ) {
       return summaryPlaylists
     }
@@ -1038,15 +1093,36 @@ function AuthenticatedMusicApp() {
   }, [
     likedAwareSummary.playlists,
     locallyDeletedPlaylistIds,
-    offlineOnlyMode,
     playlistDetailOverrideList,
     playlistSongRemovals,
   ])
-  const playlistDetails = offlineOnlyMode
-    ? (offlineLibrarySnapshot?.playlistDetails ?? [])
-    : playlistDetailOverrideList.filter(
-        (playlist) => !locallyDeletedPlaylistIds.has(playlist.id),
-      )
+  // Overrides win over the offline snapshot so playlist changes made on this
+  // device (including while offline) survive until they sync.
+  const playlistDetails = useMemo(() => {
+    const overrides = playlistDetailOverrideList.filter(
+      (playlist) => !locallyDeletedPlaylistIds.has(playlist.id),
+    )
+
+    if (!offlineOnlyMode) {
+      return overrides
+    }
+
+    const overrideIds = new Set(overrides.map((playlist) => playlist.id))
+
+    return [
+      ...overrides,
+      ...(offlineLibrarySnapshot?.playlistDetails ?? []).filter(
+        (playlist) =>
+          !overrideIds.has(playlist.id) &&
+          !locallyDeletedPlaylistIds.has(playlist.id),
+      ),
+    ]
+  }, [
+    locallyDeletedPlaylistIds,
+    offlineLibrarySnapshot,
+    offlineOnlyMode,
+    playlistDetailOverrideList,
+  ])
   const libraryStatus =
     offlineOnlyMode || (!isOnline && songsState.status === 'error')
       ? 'offline'
@@ -1071,6 +1147,45 @@ function AuthenticatedMusicApp() {
       return false
     },
     [isOnline],
+  )
+
+  useEffect(() => {
+    pendingMutationsRef.current = pendingMutations
+    writePendingMutations(user?.id, pendingMutations)
+  }, [pendingMutations, user?.id])
+
+  const enqueuePendingMutation = useCallback((mutation: PendingMutation) => {
+    setPendingMutations((current) => enqueueMutation(current, mutation))
+  }, [])
+
+  const syncPlaybackState = useCallback(
+    (input: {
+      songId: string | null
+      positionMs: number
+      shuffleEnabled: boolean
+      repeatMode: RepeatMode
+    }) => {
+      if (!isOnline) {
+        enqueuePendingMutation({ kind: 'playback-state', ...input })
+        return
+      }
+
+      updatePlaybackState(input).catch((error) => {
+        if (isOfflineSyncError(error)) {
+          enqueuePendingMutation({ kind: 'playback-state', ...input })
+        }
+      })
+    },
+    [enqueuePendingMutation, isOnline],
+  )
+
+  // Playback-state updates sync silently; only library changes are worth
+  // surfacing as "waiting to sync".
+  const pendingSyncCount = useMemo(
+    () =>
+      pendingMutations.filter((mutation) => mutation.kind !== 'playback-state')
+        .length,
+    [pendingMutations],
   )
   const openAddMusic = useCallback(() => {
     if (!requireOnlineAction('Reconnect to add or import music.')) return
@@ -1240,6 +1355,132 @@ function AuthenticatedMusicApp() {
     void reloadOfflineLibrarySnapshot(offlineServerSongs.map((song) => song.id))
   }, [offlineServerSongs, reloadOfflineLibrarySnapshot])
 
+  // Rebuild optimistic playlist details for changes that were queued offline
+  // and survived a reload: playlists created offline plus queued additions
+  // and renames layered over the cached snapshot.
+  useEffect(() => {
+    if (seededPlaylistOverridesRef.current) return
+
+    const hasStructuralChanges =
+      seededPendingState.createdPlaylists.length > 0 ||
+      Object.keys(seededPendingState.playlistAdditions).length > 0 ||
+      Object.keys(seededPendingState.playlistUpdates).length > 0
+
+    if (!hasStructuralChanges) {
+      seededPlaylistOverridesRef.current = true
+      return
+    }
+
+    if (songsState.status === 'loading') return
+    if (songsState.status !== 'authenticated' && !offlineSnapshotHydrated) {
+      return
+    }
+
+    seededPlaylistOverridesRef.current = true
+
+    // The flush may already have synced some of these ops (fast reconnect on
+    // an online reload); only seed what is still queued so a remapped local
+    // playlist is not resurrected under its stale local id.
+    const queuedCreateIds = new Set<string>()
+    const queuedPlaylistIds = new Set<string>()
+
+    for (const op of pendingMutationsRef.current) {
+      if ('playlistId' in op) {
+        queuedPlaylistIds.add(op.playlistId)
+
+        if (op.kind === 'playlist-create') {
+          queuedCreateIds.add(op.playlistId)
+        }
+      }
+    }
+
+    const songById = new Map(activeServerSongs.map((song) => [song.id, song]))
+    const snapshotDetails = offlineLibrarySnapshot?.playlistDetails ?? []
+    const nowIso = new Date().toISOString()
+    const seededDetails = new Map<string, ServerPlaylistDetail>()
+
+    for (const created of seededPendingState.createdPlaylists) {
+      if (!queuedCreateIds.has(created.playlistId)) continue
+
+      seededDetails.set(created.playlistId, {
+        color: null,
+        createdAt: nowIso,
+        description: created.description,
+        id: created.playlistId,
+        name: created.name,
+        songCount: 0,
+        songs: [],
+        updatedAt: nowIso,
+        userId: user?.id,
+      })
+    }
+
+    for (const [playlistId, songIds] of Object.entries(
+      seededPendingState.playlistAdditions,
+    )) {
+      if (!queuedPlaylistIds.has(playlistId)) continue
+
+      const base =
+        seededDetails.get(playlistId) ??
+        snapshotDetails.find((playlist) => playlist.id === playlistId)
+
+      if (!base) continue
+
+      const songs = [...base.songs]
+
+      for (const songId of songIds) {
+        const song = songById.get(songId)
+
+        if (!song || songs.some((entry) => entry.id === songId)) continue
+
+        songs.push({ ...song, addedAt: nowIso, position: songs.length })
+      }
+
+      seededDetails.set(playlistId, {
+        ...base,
+        songCount: songs.length,
+        songs,
+      })
+    }
+
+    for (const [playlistId, update] of Object.entries(
+      seededPendingState.playlistUpdates,
+    )) {
+      if (!queuedPlaylistIds.has(playlistId)) continue
+
+      const base =
+        seededDetails.get(playlistId) ??
+        snapshotDetails.find((playlist) => playlist.id === playlistId)
+
+      if (!base) continue
+
+      seededDetails.set(playlistId, {
+        ...base,
+        description: update.description,
+        name: update.name,
+      })
+    }
+
+    if (seededDetails.size === 0) return
+
+    setPlaylistDetailOverrides((current) => {
+      const next = { ...current }
+
+      for (const [playlistId, detail] of seededDetails) {
+        next[playlistId] = next[playlistId] ?? detail
+      }
+
+      return next
+    })
+  }, [
+    activeServerSongs,
+    offlineLibrarySnapshot,
+    offlineSnapshotHydrated,
+    seededPendingState,
+    songsState.status,
+    user?.id,
+  ])
+
   useEffect(() => {
     if (
       songsState.status !== 'authenticated' ||
@@ -1331,19 +1572,35 @@ function AuthenticatedMusicApp() {
     const audio = audioRef.current
     if (!audio) return
 
-    const onTime = () => setProgress(audio.currentTime)
-    const onLoaded = () => setDuration(audio.duration || currentSong?.duration || 0)
-    const onEnded = () => {
-      if (repeatModeRef.current === 'one') {
-        const a = audioRef.current
-        if (a) {
-          a.currentTime = 0
-          a.play().catch(() => undefined)
-        }
-        return
+    let lastPositionStateSecond = -1
+    const syncPositionState = () => {
+      const session = getNavigatorMediaSession()
+      if (session) {
+        updateMediaSessionPositionState(session, {
+          duration: audio.duration,
+          position: audio.currentTime,
+        })
       }
-      playNextRef.current()
     }
+    const onTime = () => {
+      playbackProgressStore.set({ position: audio.currentTime })
+      // The lock screen only needs ~1s accuracy; timeupdate fires ~4x/s.
+      const second = Math.floor(audio.currentTime)
+      if (second !== lastPositionStateSecond) {
+        lastPositionStateSecond = second
+        syncPositionState()
+      }
+    }
+    const onLoaded = () => {
+      // Fall back to the song-metadata duration already in the store
+      // (written when the load started) until the element knows better.
+      playbackProgressStore.set({
+        duration: audio.duration || playbackProgressStore.get().duration,
+      })
+      syncPositionState()
+    }
+    const onEnded = () => handleTrackEndedRef.current()
+    const onError = () => recoverFromAudioErrorRef.current()
     const onPlay = () => setIsPlaying(true)
     const onPause = () => setIsPlaying(false)
 
@@ -1351,6 +1608,7 @@ function AuthenticatedMusicApp() {
     audio.addEventListener('loadedmetadata', onLoaded)
     audio.addEventListener('durationchange', onLoaded)
     audio.addEventListener('ended', onEnded)
+    audio.addEventListener('error', onError)
     audio.addEventListener('play', onPlay)
     audio.addEventListener('pause', onPause)
 
@@ -1359,10 +1617,11 @@ function AuthenticatedMusicApp() {
       audio.removeEventListener('loadedmetadata', onLoaded)
       audio.removeEventListener('durationchange', onLoaded)
       audio.removeEventListener('ended', onEnded)
+      audio.removeEventListener('error', onError)
       audio.removeEventListener('play', onPlay)
       audio.removeEventListener('pause', onPause)
     }
-  }, [currentSong?.duration])
+  }, [])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -1385,8 +1644,86 @@ function AuthenticatedMusicApp() {
   }, [repeatMode])
 
   useEffect(() => {
+    const session = getNavigatorMediaSession()
+    if (session) {
+      updateMediaSessionPlaybackState(session, isPlaying)
+    }
+  }, [isPlaying])
+
+  // Lock-screen / notification metadata. Besides the controls themselves,
+  // an active media session is what convinces mobile OSes to keep a
+  // backgrounded PWA's audio alive between tracks.
+  useEffect(() => {
+    const session = getNavigatorMediaSession()
+    if (!session || typeof MediaMetadata === 'undefined') return
+
+    applyMediaSessionMetadata(
+      session,
+      currentSong
+        ? {
+            album: currentSong.album,
+            artist: currentSong.artist,
+            artworkUrl: currentSong.coverImageUrl,
+            title: currentSong.title,
+          }
+        : null,
+      (init) => new MediaMetadata(init),
+    )
+  }, [currentSong])
+
+  useEffect(() => {
+    const session = getNavigatorMediaSession()
+    if (!session) return
+
+    return registerMediaSessionHandlers(session, {
+      onNext: () => playNextRef.current(),
+      onPause: () => audioRef.current?.pause(),
+      onPlay: () => {
+        audioRef.current?.play().catch(() => undefined)
+      },
+      onPrev: () => playPrevRef.current(),
+      onSeek: (seconds) => {
+        const audio = audioRef.current
+        if (!audio) return
+        audio.currentTime = seconds
+        playbackProgressStore.set({ position: seconds })
+      },
+    })
+  }, [])
+
+  // Coming back to the app after the OS suspended us mid-track: if the UI
+  // still believes we are playing but the element stalled, nudge it.
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return
+      const audio = audioRef.current
+      if (!audio || !audio.src) return
+      if (isPlayingRef.current && audio.paused && !audio.ended) {
+        audio.play().catch(() => setIsPlaying(false))
+      }
+    }
+
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [])
+
+  useEffect(() => {
     const audio = audioRef.current
     if (!audio) return
+
+    // Each load is a fresh chance for the once-per-song error recovery.
+    audioErrorRecoverySongIdRef.current = null
+
+    if (currentSong && syncLoadedSongIdRef.current === currentSong.id) {
+      // The ended-handler already swapped the element to this song
+      // synchronously (background auto-advance). Reloading it here would
+      // interrupt playback and reintroduce the async gap the swap avoids.
+      syncLoadedSongIdRef.current = null
+      return
+    }
+    syncLoadedSongIdRef.current = null
 
     const loadId = mediaLoadIdRef.current + 1
     mediaLoadIdRef.current = loadId
@@ -1395,32 +1732,36 @@ function AuthenticatedMusicApp() {
       audio.pause()
       audio.removeAttribute('src')
       audio.load()
-      setProgress(0)
-      setDuration(0)
+      playbackProgressStore.reset()
       return
     }
 
     let disposed = false
-    let objectUrl: string | null = null
     const songToLoad = currentSong
     const shouldAutoplay = isPlaying
 
     const loadSong = async () => {
-      setProgress(0)
-      setDuration(songToLoad.duration || 0)
+      playbackProgressStore.set({
+        duration: songToLoad.duration || 0,
+        position: 0,
+      })
       audio.pause()
       audio.removeAttribute('src')
       audio.load()
 
       try {
-        const offlineBlob = await getOfflineAudioBlob(songToLoad)
+        // The cache owns offline object URLs (pruned when the song leaves
+        // the current/up-next window), so this path and the synchronous
+        // auto-advance path share one source-resolution mechanism.
+        await trackSourceCache.preload(songToLoad)
 
         if (disposed || mediaLoadIdRef.current !== loadId) return
 
-        if (offlineBlob) {
-          objectUrl = URL.createObjectURL(offlineBlob)
+        const offlineSource = trackSourceCache.getSync(songToLoad)
+
+        if (offlineSource.kind === 'offline') {
           audio.removeAttribute('crossorigin')
-          audio.src = objectUrl
+          audio.src = offlineSource.url
         } else {
           setOfflineAudio((states) =>
             states[songToLoad.id]?.status === 'downloaded'
@@ -1463,7 +1804,6 @@ function AuthenticatedMusicApp() {
 
     return () => {
       disposed = true
-      if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
     // The song id is the only thing that should reload the media element.
     // Play/pause uses the existing element so controls do not restart tracks.
@@ -1497,12 +1837,12 @@ function AuthenticatedMusicApp() {
       if (from !== undefined) {
         setPlayingFromLabel(from)
       }
-      updatePlaybackState({
+      syncPlaybackState({
         positionMs: 0,
         repeatMode,
         shuffleEnabled,
         songId: song.id,
-      }).catch(() => undefined)
+      })
 
       if (isCurrentSong) {
         const audio = audioRef.current
@@ -1516,7 +1856,7 @@ function AuthenticatedMusicApp() {
         }
       }
     },
-    [currentSongId, repeatMode, shuffleEnabled],
+    [currentSongId, repeatMode, shuffleEnabled, syncPlaybackState],
   )
 
   const togglePlay = useCallback(() => {
@@ -1549,28 +1889,29 @@ function AuthenticatedMusicApp() {
     [currentSongId, playSong, togglePlay],
   )
 
+  // The list playback advances through: the explicit queue, else the library.
+  const activePlaybackList = useMemo(
+    () => (queue.length > 0 ? queue : userSongs),
+    [queue, userSongs],
+  )
+
   const playNext = useCallback(() => {
-    const list = queue.length > 0 ? queue : userSongs
-    if (list.length === 0) return
-    const idx = list.findIndex((song) => song.id === currentSongId)
-    if (idx === -1) return
-    const isLast = idx === list.length - 1
-    if (isLast && repeatMode === 'off') {
+    const result = selectNextTrack(activePlaybackList, currentSongId, repeatMode)
+
+    if (result.action === 'stop') {
       // Stop at the end of the queue when repeat is off.
       audioRef.current?.pause()
       return
     }
-    const next = list[(idx + 1) % list.length]
-    if (next) playSong(next, list, undefined, { preserveQueueOrder: true })
-  }, [currentSongId, playSong, queue, repeatMode, userSongs])
-
-  useEffect(() => {
-    playNextRef.current = playNext
-  }, [playNext])
+    if (result.action === 'play') {
+      playSong(result.song, activePlaybackList, undefined, {
+        preserveQueueOrder: true,
+      })
+    }
+  }, [activePlaybackList, currentSongId, playSong, repeatMode])
 
   const playPrev = useCallback(() => {
-    const list = queue.length > 0 ? queue : userSongs
-    if (list.length === 0) return
+    if (activePlaybackList.length === 0) return
     const audio = audioRef.current
 
     if (audio && audio.currentTime > 3) {
@@ -1578,10 +1919,171 @@ function AuthenticatedMusicApp() {
       return
     }
 
-    const idx = list.findIndex((song) => song.id === currentSongId)
-    const prev = list[(idx - 1 + list.length) % list.length]
-    if (prev) playSong(prev, list, undefined, { preserveQueueOrder: true })
-  }, [currentSongId, playSong, queue, userSongs])
+    const result = selectPrevTrack(activePlaybackList, currentSongId)
+    if (result.action === 'play') {
+      playSong(result.song, activePlaybackList, undefined, {
+        preserveQueueOrder: true,
+      })
+    }
+  }, [activePlaybackList, currentSongId, playSong])
+
+  // Points the audio element at `song` and starts it without a single
+  // await. Mobile browsers only allow a backgrounded PWA to continue to
+  // the next track if the source swap and play() happen synchronously
+  // inside the `ended` event — any IndexedDB read or fetch in between
+  // and the OS revokes the audio session until the app is reopened.
+  const startSongSynchronously = useCallback(
+    (song: Song) => {
+      const audio = audioRef.current
+      if (!audio) return false
+
+      const source = trackSourceCache.getSync(song)
+      const loadId = mediaLoadIdRef.current + 1
+      mediaLoadIdRef.current = loadId
+      syncLoadedSongIdRef.current = song.id
+
+      if (source.kind === 'offline') {
+        audio.removeAttribute('crossorigin')
+      } else {
+        audio.crossOrigin = 'use-credentials'
+      }
+      audio.src = source.url
+      playbackProgressStore.set({ duration: song.duration || 0, position: 0 })
+      audio.play().catch(() => {
+        if (mediaLoadIdRef.current === loadId) {
+          // The fast path failed — clear the skip marker so the async
+          // load effect can attempt a full load on the next commit.
+          syncLoadedSongIdRef.current = null
+          setIsPlaying(false)
+        }
+      })
+
+      if (source.kind === 'stream') {
+        // Parity with the async load path, without an await before
+        // play(): reset stale offline state and register the server
+        // cache intent for this stream.
+        setOfflineAudio((states) =>
+          states[song.id]?.status === 'downloaded'
+            ? { ...states, [song.id]: { status: 'idle' } }
+            : states,
+        )
+        requestSongCacheIntent(song.id).catch(() => undefined)
+      }
+
+      return true
+    },
+    [trackSourceCache],
+  )
+
+  const handleTrackEnded = useCallback(() => {
+    if (repeatModeRef.current === 'one') {
+      const audio = audioRef.current
+      if (audio) {
+        audio.currentTime = 0
+        audio.play().catch(() => undefined)
+      }
+      return
+    }
+
+    const result = selectNextTrack(
+      activePlaybackList,
+      currentSongId,
+      repeatModeRef.current,
+    )
+
+    if (result.action !== 'play') {
+      audioRef.current?.pause()
+      setIsPlaying(false)
+      return
+    }
+
+    startSongSynchronously(result.song)
+    playSong(result.song, activePlaybackList, undefined, {
+      preserveQueueOrder: true,
+    })
+    if (result.song.id === currentSongId) {
+      // Same-song advance (single-track repeat "all"): currentSongId does
+      // not change, so the load effect never consumes the skip marker.
+      syncLoadedSongIdRef.current = null
+    }
+  }, [
+    activePlaybackList,
+    currentSongId,
+    playSong,
+    startSongSynchronously,
+  ])
+
+  // If a stream source fails (offline device, expired session, flaky
+  // network), fall back to the locally saved copy once per song load.
+  const recoverFromAudioError = useCallback(() => {
+    const song = currentSong
+    const audio = audioRef.current
+    if (!song || !audio || !audio.src) return
+    if (audioErrorRecoverySongIdRef.current === song.id) {
+      setIsPlaying(false)
+      return
+    }
+    audioErrorRecoverySongIdRef.current = song.id
+    const observedLoadId = mediaLoadIdRef.current
+
+    const resume = async () => {
+      await trackSourceCache.preload(song)
+      // Abort if another load claimed the element while we were reading
+      // the offline copy (user skipped to a different track).
+      if (mediaLoadIdRef.current !== observedLoadId || !audioRef.current) {
+        return
+      }
+      const source = trackSourceCache.getSync(song)
+      if (source.kind !== 'offline') {
+        setIsPlaying(false)
+        return
+      }
+      // Claim the element so the load effect's in-flight catch fallback
+      // cannot race this swap with a second src assignment.
+      const loadId = observedLoadId + 1
+      mediaLoadIdRef.current = loadId
+      const element = audioRef.current
+      element.removeAttribute('crossorigin')
+      element.src = source.url
+      element.play().catch(() => {
+        if (mediaLoadIdRef.current === loadId) {
+          setIsPlaying(false)
+        }
+      })
+    }
+
+    resume().catch(() => setIsPlaying(false))
+  }, [currentSong, trackSourceCache])
+
+  // Latest-callback refs: stable event listeners (audio events, media
+  // session, visibilitychange) call through these to reach fresh closures.
+  useEffect(() => {
+    playNextRef.current = playNext
+    playPrevRef.current = playPrev
+    handleTrackEndedRef.current = handleTrackEnded
+    recoverFromAudioErrorRef.current = recoverFromAudioError
+    isPlayingRef.current = isPlaying
+  })
+
+  // Keep the upcoming track's offline copy resolved so the ended-handler
+  // can swap sources synchronously, and drop object URLs we outgrew.
+  useEffect(() => {
+    const upNext = selectNextTrack(activePlaybackList, currentSongId, 'all')
+    const keepIds: string[] = []
+
+    if (currentSongId) keepIds.push(currentSongId)
+    if (upNext.action === 'play') {
+      keepIds.push(upNext.song.id)
+      trackSourceCache.preload(upNext.song)
+    }
+
+    trackSourceCache.prune(keepIds)
+  }, [activePlaybackList, currentSongId, trackSourceCache])
+
+  useEffect(
+    () => () => trackSourceCache.dispose(),
+    [trackSourceCache],
+  )
 
   const toggleShuffle = useCallback(() => {
     setShuffleEnabled((current) => {
@@ -1638,7 +2140,7 @@ function AuthenticatedMusicApp() {
     const audio = audioRef.current
     if (!audio) return
     audio.currentTime = value
-    setProgress(value)
+    playbackProgressStore.set({ position: value })
   }, [])
 
   const refreshLibrary = useCallback(() => {
@@ -1684,12 +2186,129 @@ function AuthenticatedMusicApp() {
     [],
   )
 
+  const flushOfflineMutations = useCallback(async () => {
+    if (flushingPendingMutationsRef.current) return
+
+    const snapshot = pendingMutationsRef.current
+
+    if (snapshot.length === 0) return
+
+    flushingPendingMutationsRef.current = true
+
+    try {
+      const result = await flushPendingMutations(snapshot, {
+        addSongToPlaylist,
+        createPlaylist,
+        deletePlaylist,
+        deleteSong,
+        likeSong,
+        removeSongFromPlaylist,
+        unlikeSong,
+        updatePlaybackState,
+        updatePlaylist,
+      })
+      const snapshotIds = new Set(snapshot.map((op) => op.id))
+
+      setPendingMutations((current) => {
+        // Mutations enqueued while the flush was in flight survive it.
+        let enqueuedDuringFlush = current.filter(
+          (op) => !snapshotIds.has(op.id),
+        )
+
+        for (const remap of result.remapped) {
+          enqueuedDuringFlush = remapPlaylistId(
+            enqueuedDuringFlush,
+            remap.localId,
+            remap.playlistId,
+          )
+        }
+
+        return [...result.remaining, ...enqueuedDuringFlush]
+      })
+
+      if (result.remapped.length > 0) {
+        // Playlists created offline now exist on the server: move their
+        // local overrides (and an open collection view) to the server ids.
+        setPlaylistDetailOverrides((current) => {
+          const next = { ...current }
+
+          for (const remap of result.remapped) {
+            const detail = next[remap.localId]
+
+            delete next[remap.localId]
+
+            if (detail) {
+              next[remap.playlistId] = { ...detail, id: remap.playlistId }
+            }
+          }
+
+          return next
+        })
+        setCollection((current) => {
+          if (current?.kind !== 'playlist') return current
+
+          const remap = result.remapped.find(
+            (item) => item.localId === current.id,
+          )
+
+          return remap ? { id: remap.playlistId, kind: 'playlist' } : current
+        })
+      }
+
+      if (result.blocked === 'auth' && !syncAuthNoticeShownRef.current) {
+        syncAuthNoticeShownRef.current = true
+        toast({
+          title: 'Sign in to finish syncing',
+          description:
+            'Changes made offline are saved on this device and will sync after you sign in again.',
+          variant: 'destructive',
+        })
+      }
+
+      if (result.applied > 0) {
+        syncAuthNoticeShownRef.current = false
+        refreshLibrary()
+
+        const syncedLibraryChanges = snapshot.some(
+          (op) => op.kind !== 'playback-state',
+        )
+
+        if (
+          syncedLibraryChanges &&
+          result.blocked === null &&
+          result.remaining.length === 0
+        ) {
+          toast({
+            title: 'Offline changes synced',
+            description: 'Changes made offline are now saved to your library.',
+          })
+        }
+      }
+    } finally {
+      flushingPendingMutationsRef.current = false
+    }
+  }, [refreshLibrary])
+
+  useEffect(() => {
+    if (!isOnline || pendingMutations.length === 0) return
+
+    void flushOfflineMutations()
+
+    const retryTimer = window.setInterval(() => {
+      void flushOfflineMutations()
+    }, OFFLINE_SYNC_RETRY_INTERVAL_MS)
+
+    return () => window.clearInterval(retryTimer)
+  }, [flushOfflineMutations, isOnline, pendingMutations.length])
+
   useEffect(() => {
     const wasOnline = wasOnlineRef.current
 
     wasOnlineRef.current = isOnline
 
-    if (!wasOnline && isOnline) {
+    if (!wasOnline && isOnline && pendingMutationsRef.current.length === 0) {
+      // With pending offline changes the flush refreshes after it syncs;
+      // refreshing here too would briefly show pre-sync server state.
       refreshLibrary()
     }
   }, [isOnline, refreshLibrary])
@@ -1749,14 +2368,13 @@ function AuthenticatedMusicApp() {
         audio?.load()
         setCurrentSongId(null)
         setIsPlaying(false)
-        setProgress(0)
-        setDuration(0)
-        updatePlaybackState({
+        playbackProgressStore.reset()
+        syncPlaybackState({
           positionMs: 0,
           repeatMode: 'off',
           shuffleEnabled: false,
           songId: null,
-        }).catch(() => undefined)
+        })
       }
 
       setLibrarySync({
@@ -1766,7 +2384,7 @@ function AuthenticatedMusicApp() {
         total: 0,
       })
     },
-    [currentSongId, reloadOfflineServerSongs],
+    [currentSongId, reloadOfflineServerSongs, syncPlaybackState],
   )
 
   useEffect(() => {
@@ -1896,10 +2514,25 @@ function AuthenticatedMusicApp() {
     [reloadOfflineServerSongs, requireOnlineAction],
   )
 
+  const deleteSongLocally = useCallback(
+    (song: Song) => {
+      enqueuePendingMutation({ kind: 'song-delete', songId: song.id })
+      removeSongsFromDeviceState([song.id])
+      toast({
+        title: 'Removed from your library',
+        description:
+          'Any local offline copy was removed; the server copy will be removed when you reconnect.',
+      })
+    },
+    [enqueuePendingMutation, removeSongsFromDeviceState],
+  )
+
   const deleteSongFromLibrary = useCallback(
     async (song: Song) => {
       if (deletingSongId) return
-      if (!requireOnlineAction('Reconnect to remove songs from your library.')) {
+
+      if (!isOnline) {
+        deleteSongLocally(song)
         return
       }
 
@@ -1931,21 +2564,28 @@ function AuthenticatedMusicApp() {
           description: 'Any local offline copy was removed too.',
         })
       } catch (error) {
+        locallyHandledSongRemovalIdsRef.current.delete(song.id)
+
+        if (isOfflineSyncError(error)) {
+          deleteSongLocally(song)
+          return
+        }
+
         toast({
           title: 'Could not remove song',
           description:
             error instanceof Error ? error.message : 'Try again in a moment.',
           variant: 'destructive',
         })
-        locallyHandledSongRemovalIdsRef.current.delete(song.id)
       } finally {
         setDeletingSongId(null)
       }
     },
     [
+      deleteSongLocally,
       deletingSongId,
+      isOnline,
       removeSongsFromDeviceState,
-      requireOnlineAction,
     ],
   )
 
@@ -1960,18 +2600,37 @@ function AuthenticatedMusicApp() {
   const toggleSongLike = useCallback(
     async (song: Song) => {
       if (!song.serverSong || likingSongId) return
-      if (!requireOnlineAction('Reconnect to update Liked Songs.')) return
 
       const wasLiked = songLiked(song)
       const nextLiked = !wasLiked
+      const applyLiked = (liked: boolean) => {
+        setLikedOverrides((current) => ({ ...current, [song.id]: liked }))
+        setQueue((current) =>
+          current.map((item) =>
+            item.id === song.id ? applyLikedToSong(item, liked) : item,
+          ),
+        )
+      }
+      const queueForSync = () => {
+        enqueuePendingMutation({
+          kind: 'song-like',
+          liked: nextLiked,
+          songId: song.id,
+        })
+        toast({
+          title: nextLiked ? 'Added to Liked Songs' : 'Removed from Liked Songs',
+          description: `"${song.title}" is saved on this device and will sync when you reconnect.`,
+        })
+      }
+
+      applyLiked(nextLiked)
+
+      if (!isOnline) {
+        queueForSync()
+        return
+      }
 
       setLikingSongId(song.id)
-      setLikedOverrides((current) => ({ ...current, [song.id]: nextLiked }))
-      setQueue((current) =>
-        current.map((item) =>
-          item.id === song.id ? applyLikedToSong(item, nextLiked) : item,
-        ),
-      )
 
       try {
         const result = nextLiked
@@ -1979,12 +2638,7 @@ function AuthenticatedMusicApp() {
           : await unlikeSong(song.id)
 
         if (result.status === 'anonymous') {
-          setLikedOverrides((current) => ({ ...current, [song.id]: wasLiked }))
-          setQueue((current) =>
-            current.map((item) =>
-              item.id === song.id ? applyLikedToSong(item, wasLiked) : item,
-            ),
-          )
+          applyLiked(wasLiked)
           toast({
             title: 'Sign in again',
             description: 'Your session expired before the song could be updated.',
@@ -2010,12 +2664,12 @@ function AuthenticatedMusicApp() {
           } your Liked Songs.`,
         })
       } catch (error) {
-        setLikedOverrides((current) => ({ ...current, [song.id]: wasLiked }))
-        setQueue((current) =>
-          current.map((item) =>
-            item.id === song.id ? applyLikedToSong(item, wasLiked) : item,
-          ),
-        )
+        if (isOfflineSyncError(error)) {
+          queueForSync()
+          return
+        }
+
+        applyLiked(wasLiked)
         toast({
           title: 'Could not update Liked Songs',
           description:
@@ -2026,7 +2680,7 @@ function AuthenticatedMusicApp() {
         setLikingSongId(null)
       }
     },
-    [likingSongId, removeSongsFromDeviceState, requireOnlineAction],
+    [enqueuePendingMutation, isOnline, likingSongId, removeSongsFromDeviceState],
   )
 
   const toggleSongOffline = useCallback(async (song: Song) => {
@@ -3406,9 +4060,65 @@ function AuthenticatedMusicApp() {
     [playSong, userSongs],
   )
 
+  const createPlaylistLocally = useCallback(
+    (input: { name: string; description: string | null }) => {
+      const playlistId = createLocalPlaylistId()
+      const nowIso = new Date().toISOString()
+      const songToAdd = pendingSongForPlaylist
+      const songEntry = songToAdd?.serverSong
+        ? [{ ...songToAdd.serverSong, addedAt: nowIso, position: 0 }]
+        : []
+
+      cachePlaylistDetail({
+        color: null,
+        createdAt: nowIso,
+        description: input.description,
+        id: playlistId,
+        name: input.name,
+        songCount: songEntry.length,
+        songs: songEntry,
+        updatedAt: nowIso,
+        userId: user?.id,
+      })
+      enqueuePendingMutation({
+        description: input.description,
+        kind: 'playlist-create',
+        name: input.name,
+        playlistId,
+      })
+
+      if (songToAdd?.serverSong) {
+        enqueuePendingMutation({
+          kind: 'playlist-add-song',
+          playlistId,
+          songId: songToAdd.id,
+        })
+      }
+
+      setPendingSongForPlaylist(null)
+      toast({
+        title: 'Playlist created',
+        description: songToAdd
+          ? `${input.name} with "${songToAdd.title}" is saved on this device and will sync when you reconnect.`
+          : `${input.name} is saved on this device and will sync when you reconnect.`,
+      })
+      setCollection({ id: playlistId, kind: 'playlist' })
+      setView('library')
+    },
+    [
+      cachePlaylistDetail,
+      enqueuePendingMutation,
+      pendingSongForPlaylist,
+      user?.id,
+    ],
+  )
+
   const handleCreatePlaylistSubmit = useCallback(
     async (input: { name: string; description: string | null }) => {
-      if (!requireOnlineAction('Reconnect to create playlists.')) return
+      if (!isOnline) {
+        createPlaylistLocally(input)
+        return
+      }
 
       try {
         const result = await createPlaylist(input)
@@ -3461,6 +4171,11 @@ function AuthenticatedMusicApp() {
         setCollection({ kind: 'playlist', id: newPlaylist.id })
         setView('library')
       } catch (error) {
+        if (isOfflineSyncError(error)) {
+          createPlaylistLocally(input)
+          return
+        }
+
         toast({
           title: 'Could not create playlist',
           description:
@@ -3470,12 +4185,103 @@ function AuthenticatedMusicApp() {
         throw error
       }
     },
-    [cachePlaylistDetail, pendingSongForPlaylist, requireOnlineAction],
+    [
+      cachePlaylistDetail,
+      createPlaylistLocally,
+      isOnline,
+      pendingSongForPlaylist,
+    ],
+  )
+
+  // Applies an add locally when we have a detail that is already what the
+  // user sees (an override, or the snapshot in offline-only mode). Otherwise
+  // the queued mutation alone carries the change to the server later.
+  const applyLocalPlaylistAddition = useCallback(
+    (playlistId: string, song: Song) => {
+      const serverSong = song.serverSong
+
+      if (!serverSong) return 'unsupported' as const
+
+      const detail =
+        playlistDetailOverrides[playlistId] ??
+        (offlineOnlyMode
+          ? offlineLibrarySnapshot?.playlistDetails.find(
+              (playlist) => playlist.id === playlistId,
+            )
+          : undefined)
+
+      if (!detail) return 'queued' as const
+
+      const removedSongIds = new Set(playlistSongRemovals[playlistId] ?? [])
+      const baseSongs = detail.songs.filter(
+        (entry) => !removedSongIds.has(entry.id),
+      )
+
+      if (baseSongs.some((entry) => entry.id === song.id)) {
+        return 'duplicate' as const
+      }
+
+      const addedAt = new Date().toISOString()
+
+      cachePlaylistDetail({
+        ...detail,
+        songCount: baseSongs.length + 1,
+        songs: [
+          ...baseSongs,
+          { ...serverSong, addedAt, position: baseSongs.length },
+        ],
+        updatedAt: addedAt,
+      })
+
+      return 'applied' as const
+    },
+    [
+      cachePlaylistDetail,
+      offlineLibrarySnapshot,
+      offlineOnlyMode,
+      playlistDetailOverrides,
+      playlistSongRemovals,
+    ],
+  )
+
+  const queuePlaylistAddition = useCallback(
+    (song: Song, playlistId: string) => {
+      if (!song.serverSong) return
+
+      const playlistName =
+        playlists.find((playlist) => playlist.id === playlistId)?.name ??
+        'playlist'
+      const outcome = applyLocalPlaylistAddition(playlistId, song)
+
+      if (outcome === 'duplicate') {
+        toast({
+          title: 'Already in playlist',
+          description: `"${song.title}" is already in ${playlistName}.`,
+        })
+        return
+      }
+
+      enqueuePendingMutation({
+        kind: 'playlist-add-song',
+        playlistId,
+        songId: song.id,
+      })
+      toast({
+        title: 'Added to playlist',
+        description: `"${song.title}" will sync to ${playlistName} when you reconnect.`,
+      })
+    },
+    [applyLocalPlaylistAddition, enqueuePendingMutation, playlists],
   )
 
   const handleAddSongToPlaylist = useCallback(
     async (song: Song, playlistId: string) => {
-      if (!requireOnlineAction('Reconnect to update playlists.')) return
+      // Playlists created offline live only on this device until the queue
+      // syncs, so additions to them must queue behind the pending create.
+      if (!isOnline || isLocalPlaylistId(playlistId)) {
+        queuePlaylistAddition(song, playlistId)
+        return
+      }
 
       try {
         const result = await addSongToPlaylist(playlistId, song.id)
@@ -3519,6 +4325,11 @@ function AuthenticatedMusicApp() {
           description: `"${song.title}" added to ${playlistName}.`,
         })
       } catch (error) {
+        if (isOfflineSyncError(error)) {
+          queuePlaylistAddition(song, playlistId)
+          return
+        }
+
         toast({
           title: 'Could not add to playlist',
           description:
@@ -3527,12 +4338,31 @@ function AuthenticatedMusicApp() {
         })
       }
     },
-    [cachePlaylistDetail, playlists, requireOnlineAction],
+    [cachePlaylistDetail, isOnline, playlists, queuePlaylistAddition],
+  )
+
+  const queuePlaylistRemoval = useCallback(
+    (playlistId: string, song: Song) => {
+      hideSongFromPlaylist(playlistId, song.id)
+      enqueuePendingMutation({
+        kind: 'playlist-remove-song',
+        playlistId,
+        songId: song.id,
+      })
+      toast({
+        title: 'Removed from playlist',
+        description: `"${song.title}" will be removed on the server when you reconnect.`,
+      })
+    },
+    [enqueuePendingMutation, hideSongFromPlaylist],
   )
 
   const handleRemoveSongFromPlaylist = useCallback(
     async (playlistId: string, song: Song) => {
-      if (!requireOnlineAction('Reconnect to update playlists.')) return
+      if (!isOnline || isLocalPlaylistId(playlistId)) {
+        queuePlaylistRemoval(playlistId, song)
+        return
+      }
 
       try {
         const result = await removeSongFromPlaylist(playlistId, song.id)
@@ -3561,6 +4391,11 @@ function AuthenticatedMusicApp() {
           description: `"${song.title}" was removed.`,
         })
       } catch (error) {
+        if (isOfflineSyncError(error)) {
+          queuePlaylistRemoval(playlistId, song)
+          return
+        }
+
         toast({
           title: 'Could not remove from playlist',
           description:
@@ -3569,14 +4404,40 @@ function AuthenticatedMusicApp() {
         })
       }
     },
-    [hideSongFromPlaylist, requireOnlineAction],
+    [hideSongFromPlaylist, isOnline, queuePlaylistRemoval],
+  )
+
+  const updatePlaylistLocally = useCallback(
+    (target: ServerPlaylistDetail, input: { name: string; description: string | null }) => {
+      cachePlaylistDetail({
+        ...target,
+        description: input.description,
+        name: input.name,
+        updatedAt: new Date().toISOString(),
+      })
+      enqueuePendingMutation({
+        description: input.description,
+        kind: 'playlist-update',
+        name: input.name,
+        playlistId: target.id,
+      })
+      toast({
+        title: 'Playlist updated',
+        description: `${input.name} is saved on this device and will sync when you reconnect.`,
+      })
+    },
+    [cachePlaylistDetail, enqueuePendingMutation],
   )
 
   const handleEditPlaylistSubmit = useCallback(
     async (input: { name: string; description: string | null }) => {
       const target = editingPlaylist
       if (!target) return
-      if (!requireOnlineAction('Reconnect to edit playlists.')) return
+
+      if (!isOnline || isLocalPlaylistId(target.id)) {
+        updatePlaylistLocally(target, input)
+        return
+      }
 
       try {
         const result = await updatePlaylist(target.id, input)
@@ -3601,6 +4462,11 @@ function AuthenticatedMusicApp() {
           cachePlaylistDetail(result.playlist)
         }
       } catch (error) {
+        if (isOfflineSyncError(error)) {
+          updatePlaylistLocally(target, input)
+          return
+        }
+
         toast({
           title: 'Could not save changes',
           description:
@@ -3610,12 +4476,56 @@ function AuthenticatedMusicApp() {
         throw error
       }
     },
-    [cachePlaylistDetail, editingPlaylist, requireOnlineAction],
+    [cachePlaylistDetail, editingPlaylist, isOnline, updatePlaylistLocally],
+  )
+
+  const removePlaylistFromLocalState = useCallback((playlistId: string) => {
+    setLocallyDeletedPlaylistIds((current) => {
+      const next = new Set(current)
+      next.add(playlistId)
+      return next
+    })
+    setPlaylistDetailOverrides((current) => {
+      if (!(playlistId in current)) return current
+
+      const next = { ...current }
+      delete next[playlistId]
+      return next
+    })
+    setPlaylistSongRemovals((current) => {
+      if (!(playlistId in current)) return current
+
+      const next = { ...current }
+      delete next[playlistId]
+      return next
+    })
+    setCollection((current) =>
+      current?.kind === 'playlist' && current.id === playlistId
+        ? null
+        : current,
+    )
+  }, [])
+
+  const deletePlaylistLocally = useCallback(
+    (playlist: ServerPlaylist) => {
+      enqueuePendingMutation({ kind: 'playlist-delete', playlistId: playlist.id })
+      removePlaylistFromLocalState(playlist.id)
+      toast({
+        title: 'Playlist deleted',
+        description: isLocalPlaylistId(playlist.id)
+          ? `${playlist.name} was removed.`
+          : `${playlist.name} will be removed on the server when you reconnect.`,
+      })
+    },
+    [enqueuePendingMutation, removePlaylistFromLocalState],
   )
 
   const handleDeletePlaylist = useCallback(
     async (playlist: ServerPlaylist) => {
-      if (!requireOnlineAction('Reconnect to delete playlists.')) return
+      if (!isOnline || isLocalPlaylistId(playlist.id)) {
+        deletePlaylistLocally(playlist)
+        return
+      }
 
       try {
         const result = await deletePlaylist(playlist.id)
@@ -3633,31 +4543,13 @@ function AuthenticatedMusicApp() {
           title: 'Playlist deleted',
           description: `${playlist.name} was removed.`,
         })
-        setLocallyDeletedPlaylistIds((current) => {
-          const next = new Set(current)
-          next.add(playlist.id)
-          return next
-        })
-        setPlaylistDetailOverrides((current) => {
-          if (!(playlist.id in current)) return current
-
-          const next = { ...current }
-          delete next[playlist.id]
-          return next
-        })
-        setPlaylistSongRemovals((current) => {
-          if (!(playlist.id in current)) return current
-
-          const next = { ...current }
-          delete next[playlist.id]
-          return next
-        })
-        setCollection((current) =>
-          current?.kind === 'playlist' && current.id === playlist.id
-            ? null
-            : current,
-        )
+        removePlaylistFromLocalState(playlist.id)
       } catch (error) {
+        if (isOfflineSyncError(error)) {
+          deletePlaylistLocally(playlist)
+          return
+        }
+
         toast({
           title: 'Could not delete playlist',
           description:
@@ -3666,22 +4558,18 @@ function AuthenticatedMusicApp() {
         })
       }
     },
-    [requireOnlineAction],
+    [deletePlaylistLocally, isOnline, removePlaylistFromLocalState],
   )
 
   const openCreatePlaylist = useCallback(() => {
-    if (!requireOnlineAction('Reconnect to create playlists.')) return
-
     setPendingSongForPlaylist(null)
     setCreatePlaylistOpen(true)
-  }, [requireOnlineAction])
+  }, [])
 
   const openCreatePlaylistWithSong = useCallback((song: Song) => {
-    if (!requireOnlineAction('Reconnect to create playlists.')) return
-
     setPendingSongForPlaylist(song)
     setCreatePlaylistOpen(true)
-  }, [requireOnlineAction])
+  }, [])
 
   const openEditPlaylist = useCallback((playlist: ServerPlaylistDetail) => {
     setEditingPlaylist(playlist)
@@ -3752,117 +4640,128 @@ function AuthenticatedMusicApp() {
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto no-scrollbar">
-            {collection ? (
-              <CollectionView
-                collection={collection}
-                songs={userSongs}
-                summary={likedAwareSummary}
-                playlists={playlists}
-                playlistDetails={playlistDetails}
-                playlistSongRemovals={playlistSongRemovals}
-                hiddenSongIds={locallyDeletedSongIds}
-                currentSongId={currentSongId}
-                isPlaying={isPlaying}
-                offlineAudio={offlineAudio}
-                revision={revision}
-                onBack={() => setCollection(null)}
-                onPlay={(song, nextQueue) =>
-                  playSong(song, nextQueue, derivePlayingFromLabel())
-                }
-                onPlayAll={(songs, shuffle) =>
-                  playCollection(songs, shuffle, derivePlayingFromLabel())
-                }
-                onToggleCollectionOffline={toggleCollectionOffline}
-                onToggleSongLike={toggleSongLike}
-                onToggleSongOffline={toggleSongOffline}
-                onDeleteSong={deleteSongFromLibrary}
-                onAddSongToPlaylist={handleAddSongToPlaylist}
-                onCreatePlaylistWithSong={openCreatePlaylistWithSong}
-                onRemoveSongFromPlaylist={handleRemoveSongFromPlaylist}
-                onEditPlaylist={openEditPlaylist}
-                onDeletePlaylist={handleDeletePlaylist}
-                deletingSongId={deletingSongId}
-                likingSongId={likingSongId}
-              />
-            ) : view === 'home' ? (
-              <HomeView
-                songs={userSongs}
-                libraryStatus={libraryStatus}
-                playlists={playlists}
-                summary={likedAwareSummary}
-                onPlay={(song) =>
-                  playSong(
-                    song,
-                    [song, ...userSongs.filter((item) => item.id !== song.id)],
-                    { kind: 'home' },
-                  )
-                }
-                onImportClick={openAddMusic}
-                onOpenCollection={openCollection}
-              />
-            ) : view === 'library' ? (
-              <LibraryView
-                songs={userSongs}
-                libraryStatus={libraryStatus}
-                playlists={playlists}
-                likedCount={likedAwareSummary.counts.likedSongs}
-                currentSongId={currentSongId}
-                isPlaying={isPlaying}
-                offlineAudio={offlineAudio}
-                onPlay={(song) =>
-                  playSong(
-                    song,
-                    [song, ...userSongs.filter((item) => item.id !== song.id)],
-                    { kind: 'library' },
-                  )
-                }
-                onToggleSongLike={toggleSongLike}
-                onToggleSongOffline={toggleSongOffline}
-                onDeleteSong={deleteSongFromLibrary}
-                onAddSongToPlaylist={handleAddSongToPlaylist}
-                onCreatePlaylistWithSong={openCreatePlaylistWithSong}
-                onCreatePlaylistClick={openCreatePlaylist}
-                onDeletePlaylist={handleDeletePlaylist}
-                deletingSongId={deletingSongId}
-                likingSongId={likingSongId}
-                onImportClick={openAddMusic}
-                onOpenCollection={openCollection}
-                revealSong={revealSongInLibrary}
-              />
-            ) : view === 'settings' ? (
-              <SettingsView
-                offlineAudio={offlineAudio}
-                songs={userSongs}
-                syncState={librarySync}
-                onSignedOut={() => setView('home')}
-                onSyncLibraryOffline={syncLibraryToDevice}
-                onOpenAdmin={user?.isAdmin ? goToView : undefined}
-              />
-            ) : view === 'admin' && user?.isAdmin ? (
-              <AdminView songs={userSongs} onTracksWiped={handleTracksWiped} />
-            ) : (
-              <SearchView
-                songs={userSongs}
-                playlists={playlists}
-                currentSongId={currentSongId}
-                isPlaying={isPlaying}
-                offlineAudio={offlineAudio}
-                libraryStatus={libraryStatus}
-                revision={revision}
-                onPlay={(song, nextQueue) =>
-                  playSong(song, nextQueue, { kind: 'search' })
-                }
-                onToggleSongLike={toggleSongLike}
-                onToggleSongOffline={toggleSongOffline}
-                onDeleteSong={deleteSongFromLibrary}
-                onAddSongToPlaylist={handleAddSongToPlaylist}
-                onCreatePlaylistWithSong={openCreatePlaylistWithSong}
-                deletingSongId={deletingSongId}
-                likingSongId={likingSongId}
-                onOpenCollection={openCollection}
-                onImportClick={openAddMusic}
-              />
-            )}
+            <div
+              key={
+                collection
+                  ? `collection:${collection.kind}:${collection.id}`
+                  : view
+              }
+              className="ov-view-enter"
+            >
+              {collection ? (
+                <CollectionView
+                  collection={collection}
+                  songs={userSongs}
+                  summary={likedAwareSummary}
+                  playlists={playlists}
+                  playlistDetails={playlistDetails}
+                  playlistSongRemovals={playlistSongRemovals}
+                  hiddenSongIds={locallyDeletedSongIds}
+                  currentSongId={currentSongId}
+                  isPlaying={isPlaying}
+                  offlineAudio={offlineAudio}
+                  revision={revision}
+                  onBack={() => setCollection(null)}
+                  onPlay={(song, nextQueue) =>
+                    playSong(song, nextQueue, derivePlayingFromLabel())
+                  }
+                  onPlayAll={(songs, shuffle) =>
+                    playCollection(songs, shuffle, derivePlayingFromLabel())
+                  }
+                  onToggleCollectionOffline={toggleCollectionOffline}
+                  onToggleSongLike={toggleSongLike}
+                  onToggleSongOffline={toggleSongOffline}
+                  onDeleteSong={deleteSongFromLibrary}
+                  onAddSongToPlaylist={handleAddSongToPlaylist}
+                  onCreatePlaylistWithSong={openCreatePlaylistWithSong}
+                  onRemoveSongFromPlaylist={handleRemoveSongFromPlaylist}
+                  onEditPlaylist={openEditPlaylist}
+                  onDeletePlaylist={handleDeletePlaylist}
+                  deletingSongId={deletingSongId}
+                  likingSongId={likingSongId}
+                />
+              ) : view === 'home' ? (
+                <HomeView
+                  songs={userSongs}
+                  libraryStatus={libraryStatus}
+                  playlists={playlists}
+                  summary={likedAwareSummary}
+                  onPlay={(song) =>
+                    playSong(
+                      song,
+                      [song, ...userSongs.filter((item) => item.id !== song.id)],
+                      { kind: 'home' },
+                    )
+                  }
+                  onImportClick={openAddMusic}
+                  onOpenCollection={openCollection}
+                />
+              ) : view === 'library' ? (
+                <LibraryView
+                  songs={userSongs}
+                  libraryStatus={libraryStatus}
+                  playlists={playlists}
+                  likedCount={likedAwareSummary.counts.likedSongs}
+                  currentSongId={currentSongId}
+                  isPlaying={isPlaying}
+                  offlineAudio={offlineAudio}
+                  onPlay={(song) =>
+                    playSong(
+                      song,
+                      [song, ...userSongs.filter((item) => item.id !== song.id)],
+                      { kind: 'library' },
+                    )
+                  }
+                  onToggleSongLike={toggleSongLike}
+                  onToggleSongOffline={toggleSongOffline}
+                  onDeleteSong={deleteSongFromLibrary}
+                  onAddSongToPlaylist={handleAddSongToPlaylist}
+                  onCreatePlaylistWithSong={openCreatePlaylistWithSong}
+                  onCreatePlaylistClick={openCreatePlaylist}
+                  onDeletePlaylist={handleDeletePlaylist}
+                  deletingSongId={deletingSongId}
+                  likingSongId={likingSongId}
+                  onImportClick={openAddMusic}
+                  onOpenCollection={openCollection}
+                  revealSong={revealSongInLibrary}
+                />
+              ) : view === 'settings' ? (
+                <SettingsView
+                  offlineAudio={offlineAudio}
+                  pendingSyncCount={pendingSyncCount}
+                  songs={userSongs}
+                  syncState={librarySync}
+                  onSignedOut={() => setView('home')}
+                  onSyncLibraryOffline={syncLibraryToDevice}
+                  onSyncPendingChanges={() => void flushOfflineMutations()}
+                  onOpenAdmin={user?.isAdmin ? goToView : undefined}
+                />
+              ) : view === 'admin' && user?.isAdmin ? (
+                <AdminView songs={userSongs} onTracksWiped={handleTracksWiped} />
+              ) : (
+                <SearchView
+                  songs={userSongs}
+                  playlists={playlists}
+                  currentSongId={currentSongId}
+                  isPlaying={isPlaying}
+                  offlineAudio={offlineAudio}
+                  libraryStatus={libraryStatus}
+                  revision={revision}
+                  onPlay={(song, nextQueue) =>
+                    playSong(song, nextQueue, { kind: 'search' })
+                  }
+                  onToggleSongLike={toggleSongLike}
+                  onToggleSongOffline={toggleSongOffline}
+                  onDeleteSong={deleteSongFromLibrary}
+                  onAddSongToPlaylist={handleAddSongToPlaylist}
+                  onCreatePlaylistWithSong={openCreatePlaylistWithSong}
+                  deletingSongId={deletingSongId}
+                  likingSongId={likingSongId}
+                  onOpenCollection={openCollection}
+                  onImportClick={openAddMusic}
+                />
+              )}
+            </div>
           </div>
         </main>
       </div>
@@ -3871,8 +4770,6 @@ function AuthenticatedMusicApp() {
         <PlayerBar
           song={currentSong}
           isPlaying={isPlaying}
-          progress={progress}
-          duration={duration}
           volume={volume}
           muted={muted}
           shuffleEnabled={shuffleEnabled}
@@ -3902,8 +4799,6 @@ function AuthenticatedMusicApp() {
         open={showNowPlaying}
         song={currentSong}
         isPlaying={isPlaying}
-        progress={progress}
-        duration={duration}
         shuffleEnabled={shuffleEnabled}
         repeatMode={repeatMode}
         playingFromLabel={playingFromLabel}

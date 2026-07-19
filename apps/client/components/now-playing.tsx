@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, type PointerEvent } from 'react'
+import { useRef, type CSSProperties, type PointerEvent } from 'react'
 import {
   ChevronDown,
   Heart,
@@ -31,6 +31,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import { usePlaybackProgress } from '@/lib/playback/progress-store'
 import type { PlayingFromLabel } from '@/components/music-app'
 
 type RepeatMode = 'off' | 'all' | 'one'
@@ -49,8 +50,6 @@ type NowPlayingProps = {
   open: boolean
   song: Song | null
   isPlaying: boolean
-  progress: number
-  duration: number
   shuffleEnabled: boolean
   repeatMode: RepeatMode
   playingFromLabel: PlayingFromLabel | null
@@ -108,8 +107,6 @@ export function NowPlaying(props: NowPlayingProps) {
     open,
     song,
     isPlaying,
-    progress,
-    duration,
     shuffleEnabled,
     repeatMode,
     playingFromLabel,
@@ -207,9 +204,10 @@ export function NowPlaying(props: NowPlayingProps) {
       <div
         className={cn(
           'fixed inset-0 z-50 md:hidden',
-          'transition-transform duration-300 ease-out',
+          'transition-transform duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]',
           open ? 'translate-y-0' : 'translate-y-full pointer-events-none',
         )}
+        data-np-open={open}
         aria-hidden={!open}
         role="dialog"
         aria-label="Now playing"
@@ -280,21 +278,32 @@ export function NowPlaying(props: NowPlayingProps) {
           </div>
 
           {/* Album art */}
-          <div className="relative flex flex-1 items-center justify-center px-8">
-            <CoverArt
-              colorClass={song.coverColor}
-              imageUrl={song.coverImageUrl}
-              title={song.title}
-              size="full"
-              rounded="2xl"
-              className="max-h-[60vh] w-full max-w-sm shadow-2xl shadow-black/50"
-            />
+          <div
+            className="ov-np-item relative flex flex-1 items-center justify-center px-8"
+            style={{ '--np-delay': '60ms' } as CSSProperties}
+          >
+            <div
+              className="ov-art-scale w-full max-w-sm"
+              data-paused={!isPlaying}
+            >
+              <CoverArt
+                colorClass={song.coverColor}
+                imageUrl={song.coverImageUrl}
+                title={song.title}
+                size="full"
+                rounded="2xl"
+                className="max-h-[60vh] w-full shadow-2xl shadow-black/50"
+              />
+            </div>
           </div>
 
           {/* Bottom controls */}
           <div className="safe-x-6 safe-bottom-4 relative">
-            <div className="mb-4 flex items-end justify-between gap-3">
-              <div className="min-w-0 flex-1">
+            <div
+              className="ov-np-item mb-4 flex items-end justify-between gap-3"
+              style={{ '--np-delay': '120ms' } as CSSProperties}
+            >
+              <div key={song.id} className="ov-track-in min-w-0 flex-1">
                 <div className="truncate text-2xl font-bold tracking-tight">
                   {song.title}
                 </div>
@@ -327,18 +336,18 @@ export function NowPlaying(props: NowPlayingProps) {
             </div>
 
             {/* Progress */}
-            <FullSlider
-              value={progress}
-              max={duration || 1}
-              onChange={onSeek}
-            />
-            <div className="mt-1 flex justify-between text-[11px] tabular-nums text-foreground/70">
-              <span>{formatTime(progress)}</span>
-              <span>{formatTime(duration)}</span>
+            <div
+              className="ov-np-item"
+              style={{ '--np-delay': '180ms' } as CSSProperties}
+            >
+              <NowPlayingProgress onSeek={onSeek} />
             </div>
 
             {/* Controls */}
-            <div className="mt-5 flex items-center justify-between">
+            <div
+              className="ov-np-item mt-5 flex items-center justify-between"
+              style={{ '--np-delay': '240ms' } as CSSProperties}
+            >
               <button
                 type="button"
                 onClick={onToggleShuffle}
@@ -362,7 +371,7 @@ export function NowPlaying(props: NowPlayingProps) {
               <button
                 type="button"
                 onClick={onPrev}
-                className="text-foreground transition-transform active:scale-95"
+                className="ov-press text-foreground"
                 aria-label="Previous"
               >
                 <SkipBack className="h-8 w-8" fill="currentColor" />
@@ -370,7 +379,7 @@ export function NowPlaying(props: NowPlayingProps) {
               <button
                 type="button"
                 onClick={onTogglePlay}
-                className="flex h-16 w-16 items-center justify-center rounded-full bg-foreground text-background shadow-2xl shadow-black/40 transition-transform active:scale-95"
+                className="ov-press flex h-16 w-16 items-center justify-center rounded-full bg-foreground text-background shadow-2xl shadow-black/40"
                 aria-label={isPlaying ? 'Pause' : 'Play'}
               >
                 {isPlaying ? (
@@ -382,7 +391,7 @@ export function NowPlaying(props: NowPlayingProps) {
               <button
                 type="button"
                 onClick={onNext}
-                className="text-foreground transition-transform active:scale-95"
+                className="ov-press text-foreground"
                 aria-label="Next"
               >
                 <SkipForward className="h-8 w-8" fill="currentColor" />
@@ -409,7 +418,10 @@ export function NowPlaying(props: NowPlayingProps) {
             </div>
 
             {/* Queue button */}
-            <div className="mt-4 flex justify-center">
+            <div
+              className="ov-np-item mt-4 flex justify-center"
+              style={{ '--np-delay': '300ms' } as CSSProperties}
+            >
               <button
                 type="button"
                 onClick={onShowQueue}
@@ -439,6 +451,23 @@ export function NowPlaying(props: NowPlayingProps) {
         }}
         onRemove={onRemoveFromQueue}
       />
+    </>
+  )
+}
+
+// Isolated so the ~4x/sec progress ticks only re-render this slice —
+// the overlay stays mounted (translated off-screen) even when closed,
+// and must not repaint its whole tree on every timeupdate.
+function NowPlayingProgress({ onSeek }: { onSeek: (value: number) => void }) {
+  const { duration, position: progress } = usePlaybackProgress()
+
+  return (
+    <>
+      <FullSlider value={progress} max={duration || 1} onChange={onSeek} />
+      <div className="mt-1 flex justify-between text-[11px] tabular-nums text-foreground/70">
+        <span>{formatTime(progress)}</span>
+        <span>{formatTime(duration)}</span>
+      </div>
     </>
   )
 }

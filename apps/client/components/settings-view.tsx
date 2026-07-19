@@ -4,6 +4,7 @@ import type { ReactNode } from 'react'
 import {
   ChevronRight,
   CheckCircle2,
+  CloudUpload,
   DownloadCloud,
   HardDrive,
   Loader2,
@@ -30,19 +31,23 @@ export type LibraryDeviceSyncState = {
 
 type SettingsViewProps = {
   offlineAudio: OfflineAudioStateMap
+  pendingSyncCount?: number
   songs: Song[]
   syncState: LibraryDeviceSyncState
   onSyncLibraryOffline: () => void
+  onSyncPendingChanges?: () => void
   onSignedOut: () => void
   onOpenAdmin?: (view: View) => void
 }
 
 export function SettingsView({
   offlineAudio,
+  pendingSyncCount = 0,
   songs,
   syncState,
   onSignedOut,
   onSyncLibraryOffline,
+  onSyncPendingChanges,
   onOpenAdmin,
 }: SettingsViewProps) {
   const { setUser, user } = useAuth()
@@ -152,6 +157,37 @@ export function SettingsView({
             )
           }
         />
+
+        {pendingSyncCount > 0 && (
+          <SettingsCard
+            icon={<CloudUpload className="h-4 w-4" />}
+            title="Waiting to sync"
+            subtitle={`${pendingSyncCount} ${
+              pendingSyncCount === 1 ? 'change' : 'changes'
+            } made offline ${
+              isOnline
+                ? 'syncing to the server.'
+                : 'will sync when you reconnect.'
+            }`}
+            action={
+              isOnline && onSyncPendingChanges ? (
+                <Button
+                  type="button"
+                  onClick={onSyncPendingChanges}
+                  className="h-9 rounded-full bg-foreground px-4 text-background hover:bg-foreground/90"
+                >
+                  <CloudUpload className="mr-2 h-4 w-4" />
+                  Sync now
+                </Button>
+              ) : (
+                <div className="flex h-9 items-center gap-2 rounded-full bg-card px-4 text-sm text-muted-foreground">
+                  <WifiOff className="h-4 w-4" />
+                  Offline
+                </div>
+              )
+            }
+          />
+        )}
 
         <SettingsCard
           icon={<HardDrive className="h-4 w-4" />}

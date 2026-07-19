@@ -5,8 +5,17 @@ WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates ffmpeg procps python3 \
+  && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg procps python3 \
   && rm -rf /var/lib/apt/lists/*
+
+# youtube-dl-exec's postinstall resolves yt-dlp through the GitHub API,
+# which rate-limits shared CI/builder IPs. Skip it and install the binary
+# from the release-download URL (a CDN redirect, not the API).
+ENV YOUTUBE_DL_SKIP_DOWNLOAD=true
+ENV YOUTUBE_DL_DIR=/usr/local/bin
+RUN curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+    -o /usr/local/bin/yt-dlp \
+  && chmod +x /usr/local/bin/yt-dlp
 
 COPY package.json package-lock.json tsconfig.json tsconfig.base.json ./
 COPY apps/api/package.json apps/api/package.json

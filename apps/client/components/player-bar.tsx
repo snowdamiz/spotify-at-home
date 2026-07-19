@@ -16,14 +16,13 @@ import {
 import { CoverArt } from '@/components/cover-art'
 import { cn } from '@/lib/utils'
 import { formatTime, type Song } from '@/lib/music-types'
+import { usePlaybackProgress } from '@/lib/playback/progress-store'
 
 type RepeatMode = 'off' | 'all' | 'one'
 
 type PlayerBarProps = {
   song: Song | null
   isPlaying: boolean
-  progress: number
-  duration: number
   volume: number
   muted: boolean
   shuffleEnabled: boolean
@@ -46,8 +45,6 @@ export function PlayerBar(props: PlayerBarProps) {
   const {
     song,
     isPlaying,
-    progress,
-    duration,
     volume,
     muted,
     shuffleEnabled,
@@ -65,6 +62,8 @@ export function PlayerBar(props: PlayerBarProps) {
     onShowQueue,
     isLikePending = false,
   } = props
+
+  const { duration, position: progress } = usePlaybackProgress()
 
   if (!song) {
     return null
@@ -93,7 +92,7 @@ export function PlayerBar(props: PlayerBarProps) {
             rounded="md"
             className="h-11 w-11"
           />
-          <div className="min-w-0 flex-1">
+          <div key={song.id} className="ov-track-in min-w-0 flex-1">
             <div className="truncate text-sm font-medium tracking-tight">
               {song.title}
             </div>
@@ -125,7 +124,7 @@ export function PlayerBar(props: PlayerBarProps) {
         <button
           type="button"
           onClick={onTogglePlay}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-foreground transition-transform active:scale-95"
+          className="ov-press flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-foreground"
           aria-label={isPlaying ? 'Pause' : 'Play'}
         >
           {isPlaying ? (
@@ -138,7 +137,7 @@ export function PlayerBar(props: PlayerBarProps) {
       {/* Mini progress bar (mobile) */}
       <div className="md:hidden h-0.5 w-full bg-border/60">
         <div
-          className="h-full bg-foreground/80 transition-[width]"
+          className="h-full bg-foreground/80 transition-[width] duration-200 ease-linear"
           style={{ width: `${duration ? (progress / duration) * 100 : 0}%` }}
         />
       </div>
@@ -207,7 +206,7 @@ export function PlayerBar(props: PlayerBarProps) {
             <button
               type="button"
               onClick={onPrev}
-              className="text-muted-foreground transition-colors hover:text-foreground"
+              className="ov-press text-muted-foreground hover:text-foreground"
               aria-label="Previous"
             >
               <SkipBack className="h-5 w-5" fill="currentColor" />
@@ -215,7 +214,7 @@ export function PlayerBar(props: PlayerBarProps) {
             <button
               type="button"
               onClick={onTogglePlay}
-              className="flex h-9 w-9 items-center justify-center rounded-full bg-foreground text-background shadow-md transition-transform hover:scale-105 active:scale-100"
+              className="ov-press flex h-9 w-9 items-center justify-center rounded-full bg-foreground text-background shadow-md hover:scale-105"
               aria-label={isPlaying ? 'Pause' : 'Play'}
             >
               {isPlaying ? (
@@ -227,7 +226,7 @@ export function PlayerBar(props: PlayerBarProps) {
             <button
               type="button"
               onClick={onNext}
-              className="text-muted-foreground transition-colors hover:text-foreground"
+              className="ov-press text-muted-foreground hover:text-foreground"
               aria-label="Next"
             >
               <SkipForward className="h-5 w-5" fill="currentColor" />

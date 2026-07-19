@@ -41,10 +41,12 @@ export function CoverArt({
   icon,
 }: CoverArtProps) {
   const [imageFailed, setImageFailed] = useState(false)
+  const [imageLoaded, setImageLoaded] = useState(false)
   const showImage = Boolean(imageUrl && !imageFailed)
 
   useEffect(() => {
     setImageFailed(false)
+    setImageLoaded(false)
   }, [imageUrl])
 
   // We deliberately don't render two-letter initials anymore — every cover
@@ -67,10 +69,18 @@ export function CoverArt({
         <img
           alt=""
           src={imageUrl ?? undefined}
-          className="absolute inset-0 h-full w-full object-cover"
+          ref={(img) => {
+            // Cached images can be complete before onLoad is wired up.
+            if (img?.complete && img.naturalWidth > 0) setImageLoaded(true)
+          }}
+          className={cn(
+            'absolute inset-0 h-full w-full object-cover transition-opacity duration-300',
+            imageLoaded ? 'opacity-100' : 'opacity-0',
+          )}
           draggable={false}
           loading="lazy"
           referrerPolicy="no-referrer"
+          onLoad={() => setImageLoaded(true)}
           onError={() => setImageFailed(true)}
         />
       ) : (

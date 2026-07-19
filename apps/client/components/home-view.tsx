@@ -57,7 +57,7 @@ export function HomeView({
       {recent.length > 0 && (
         <section>
           <SectionHeader title="Recently added" />
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+          <div className="ov-stagger grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
             {recent.map((song) => (
               <button
                 key={song.id}
@@ -94,7 +94,7 @@ export function HomeView({
       {/* Made for you */}
       <section>
         <SectionHeader title="Your collections" />
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+        <div className="ov-stagger grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
           <button
             onClick={() => onOpenCollection({ kind: 'system', id: 'liked-songs' })}
             className="ov-card group rounded-xl p-3 text-left"

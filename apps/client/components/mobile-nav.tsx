@@ -44,11 +44,11 @@ export function MobileNav({ view, setView }: MobileNavProps) {
                 <span
                   aria-hidden
                   className={cn(
-                    'absolute top-0 h-[2px] w-8 rounded-full bg-primary transition-opacity',
-                    active ? 'opacity-100' : 'opacity-0',
+                    'absolute top-0 h-[2px] w-8 rounded-full bg-primary transition-all duration-300',
+                    active ? 'scale-x-100 opacity-100' : 'scale-x-0 opacity-0',
                   )}
                 />
-                {item.icon}
+                <span className={cn(active && 'ov-icon-pop')}>{item.icon}</span>
                 {item.label}
               </button>
             </li>

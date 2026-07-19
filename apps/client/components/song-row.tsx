@@ -124,7 +124,21 @@ export function SongRow({
             )}
           >
             {isActive && isPlaying ? (
-              <Pause className="h-5 w-5 text-foreground" fill="currentColor" />
+              <>
+                {/* Dancing bars while playing; pause icon appears on hover */}
+                <span
+                  aria-hidden
+                  className="ov-eq text-primary group-hover:hidden"
+                >
+                  <span />
+                  <span />
+                  <span />
+                </span>
+                <Pause
+                  className="hidden h-5 w-5 text-foreground group-hover:block"
+                  fill="currentColor"
+                />
+              </>
             ) : (
               <Play className="h-5 w-5 translate-x-px text-foreground" fill="currentColor" />
             )}

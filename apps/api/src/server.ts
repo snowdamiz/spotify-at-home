@@ -13,7 +13,9 @@ if (process.env.BROADSIDE_DATABASE_PATH) {
   process.env.BROADSIDE_DATABASE_PATH = resolve(apiRoot, "../..", "data", "broadside.sqlite");
 }
 
-const port = Number(process.env.PORT ?? 3001);
+// Default matches the port every other default assumes (README, Dockerfile,
+// fly.toml, and the client's /api rewrite all point at 3101).
+const port = Number(process.env.PORT ?? 3101);
 const host = process.env.HOST ?? "0.0.0.0";
 const app = createApiApp();
 
