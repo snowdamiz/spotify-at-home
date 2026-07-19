@@ -626,6 +626,25 @@ export class SQLiteCsvImportRepository {
       );
   }
 
+  // A dismissed row is skipped without a song: it stops needing attention
+  // and is never reused as an already-imported duplicate.
+  markItemDismissed(input: { userId: string; itemId: string; now?: Date }) {
+    this.db
+      .prepare(
+        `
+          UPDATE csv_import_items
+          SET status = 'skipped',
+              song_id = NULL,
+              youtube_source_id = NULL,
+              error_code = NULL,
+              error_message = NULL,
+              updated_at = ?
+          WHERE user_id = ? AND id = ?
+        `
+      )
+      .run(toSqlDate(input.now ?? new Date()), input.userId, input.itemId);
+  }
+
   markItemFailed(input: {
     userId: string;
     itemId: string;

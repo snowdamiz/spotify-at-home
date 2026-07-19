@@ -1728,6 +1728,91 @@ describe("CSV metadata imports", () => {
     expect(roadMix).toMatchObject({ songCount: 1 });
   });
 
+  it("skips a low-confidence CSV row when the user dismisses the pick", async () => {
+    const youtubeProvider: YouTubeDiscoveryClient = {
+      normalizeUrl: vi.fn(),
+      search: vi.fn(async (_query, importPolicyMode) => ({
+        nextPageToken: null,
+        results: [
+          youtubeResult({
+            creator: "Talk Channel",
+            durationMs: 3600000,
+            importPolicyMode,
+            sourceId: "wrongPodcast01",
+            title: "Completely Different Podcast Episode"
+          })
+        ]
+      }))
+    };
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app } = createTestApp({
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const files = [
+      csvFile("road_mix.csv", [
+        ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"]
+      ])
+    ];
+
+    const batch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+    const status = await app.inject({
+      method: "GET",
+      url: `/api/csv-imports/batches/${batch.json().batch.id}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    const failedItem = batch.json().items?.[0] ?? status.json().items[0];
+
+    expect(failedItem).toMatchObject({
+      status: "failed",
+      userMatchRequired: true
+    });
+
+    const dismissed = await app.inject({
+      method: "POST",
+      url: `/api/csv-imports/batches/${batch.json().batch.id}/items/${failedItem.id}/dismiss`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(dismissed.statusCode).toBe(200);
+    expect(dismissed.json()).toMatchObject({
+      batch: {
+        completedItems: 1,
+        failedItems: 0,
+        status: "completed"
+      },
+      item: {
+        songId: null,
+        status: "skipped",
+        userMatchRequired: false
+      }
+    });
+
+    // Nothing was imported and the batch no longer needs attention.
+    const songs = await app.inject({
+      method: "GET",
+      url: "/api/songs",
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(songs.json().songs).toEqual([]);
+    expect(youtubeImportAdapter.resolve).not.toHaveBeenCalled();
+
+    const active = await app.inject({
+      method: "GET",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(active.json().batches).toEqual([]);
+  });
+
   it("cancels an in-progress CSV import batch and skips remaining pending items", async () => {
     const searchStarted = deferred();
     const releaseSearch = deferred();

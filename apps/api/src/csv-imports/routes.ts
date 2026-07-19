@@ -170,6 +170,24 @@ export function registerCsvImportRoutes(app: FastifyInstance, options: CsvImport
     youtubeImportAdapter,
     youtubeProvider
   });
+  // refreshBatchCounts reports `running` whenever rows remain outstanding,
+  // but after a dismissal or a finished manual import nothing may actually
+  // be processing; restore the paused state so clients do not poll forever.
+  const settleBatchStatus = (userId: string, batchId: string) => {
+    const refreshed = options.csvImportRepository.refreshBatchCounts({ batchId, userId });
+
+    if (refreshed?.status !== "running" || worker.isActive(batchId)) {
+      return refreshed;
+    }
+
+    const hasRunningItems = options.csvImportRepository
+      .listImportItemsForBatch({ batchId, userId })
+      .some((entry) => entry.status === "running");
+
+    return hasRunningItems
+      ? refreshed
+      : options.csvImportRepository.markBatchFailedRetainingPending({ batchId, userId });
+  };
   const interruptedImports = options.csvImportRepository.pauseInterruptedRunningImports();
 
   if (interruptedImports.batchesPaused > 0 || interruptedImports.itemsReset > 0) {
@@ -554,7 +572,7 @@ export function registerCsvImportRoutes(app: FastifyInstance, options: CsvImport
           userId: user.id,
           youtubeSourceId: result.youtubeSourceId
         });
-        options.csvImportRepository.refreshBatchCounts({ batchId, userId: user.id });
+        settleBatchStatus(user.id, batchId);
         options.libraryEvents?.emitLibraryChanged(user.id, {
           csvImportBatchId: batchId,
           csvImportItemId: item.id,
@@ -568,7 +586,7 @@ export function registerCsvImportRoutes(app: FastifyInstance, options: CsvImport
           itemId: item.id,
           userId: user.id
         });
-        options.csvImportRepository.refreshBatchCounts({ batchId, userId: user.id });
+        settleBatchStatus(user.id, batchId);
         emitCsvImportLog("warn", {
           csvImportBatchId: batchId,
           csvImportItemId: item.id,
@@ -592,6 +610,65 @@ export function registerCsvImportRoutes(app: FastifyInstance, options: CsvImport
         .listImportItemsForBatch({ batchId, userId: user.id })
         .map(serializeImportItem)
     });
+  });
+
+  app.post("/api/csv-imports/batches/:id/items/:itemId/dismiss", async (request, reply) => {
+    const user = await authenticate(request, reply, options.authService);
+
+    if (!user) {
+      return;
+    }
+
+    const params = request.params as { id?: string; itemId?: string };
+    const batchId = String(params.id ?? "");
+    const itemId = String(params.itemId ?? "");
+    const batch = options.csvImportRepository.findImportBatchForUser({
+      batchId,
+      userId: user.id
+    });
+
+    if (!batch) {
+      return sendCsvImportError(reply, "csv_import_batch_not_found", "Import batch not found.", 404);
+    }
+
+    const item = options.csvImportRepository.findImportItemForUser({
+      batchId,
+      itemId,
+      userId: user.id
+    });
+
+    if (!item) {
+      return sendCsvImportError(reply, "csv_import_item_not_found", "Import item not found.", 404);
+    }
+
+    if (item.status === "running") {
+      return sendCsvImportError(
+        reply,
+        "csv_import_item_running",
+        "This CSV item is importing and cannot be skipped.",
+        409
+      );
+    }
+
+    if (item.status !== "completed" && item.status !== "skipped") {
+      options.csvImportRepository.markItemDismissed({ itemId: item.id, userId: user.id });
+    }
+
+    const refreshedBatch = settleBatchStatus(user.id, batchId);
+
+    return {
+      batch: serializeImportBatch(refreshedBatch ?? batch),
+      item: serializeImportItem(
+        options.csvImportRepository.findImportItemForUser({
+          batchId,
+          itemId: item.id,
+          userId: user.id
+        }) ?? item
+      ),
+      items: options.csvImportRepository
+        .listImportItemsForBatch({ batchId, userId: user.id })
+        .map(serializeImportItem)
+    };
   });
 }
 

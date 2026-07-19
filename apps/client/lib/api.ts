@@ -786,6 +786,46 @@ export async function importCsvImportItemDiscovery(input: {
   return { ...payload, status: 'authenticated' as const }
 }
 
+export async function dismissCsvImportItem(input: {
+  batchId: string
+  itemId: string
+}) {
+  const response = await apiFetch(
+    apiUrl(
+      `/api/csv-imports/batches/${encodeURIComponent(
+        input.batchId,
+      )}/items/${encodeURIComponent(input.itemId)}/dismiss`,
+    ),
+    {
+      credentials: 'include',
+      method: 'POST',
+    },
+  )
+
+  if (response.status === 401) {
+    return { batch: null, item: null, items: [], status: 'anonymous' as const }
+  }
+
+  if (response.status === 404) {
+    return { batch: null, item: null, items: [], status: 'not-found' as const }
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      (await readApiErrorMessage(response)) ??
+        `CSV row skip failed with status ${response.status}`,
+    )
+  }
+
+  const payload = (await response.json()) as {
+    batch: CsvImportBatch
+    item: CsvImportItem
+    items: CsvImportItem[]
+  }
+
+  return { ...payload, status: 'authenticated' as const }
+}
+
 export async function searchLibrary(
   query: string,
   options: { cursor?: string | null; limit?: number } = {},

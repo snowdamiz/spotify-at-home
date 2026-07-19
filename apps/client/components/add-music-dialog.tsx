@@ -69,6 +69,7 @@ type AddMusicDialogProps = {
   manualMatchItem?: CsvImportItem | null
   onCancelImport?: (download: Download) => void | Promise<void>
   onClearManualMatch?: () => void
+  onDismissManualMatch?: () => void
   onCsvFilesSelected: (files: File[]) => void | Promise<void>
   onFilesSelected: (files: FileList | File[]) => void
   onImportCsvMatch?: (
@@ -100,6 +101,7 @@ export function AddMusicDialog({
   manualMatchItem,
   onCancelImport,
   onClearManualMatch,
+  onDismissManualMatch,
   onCsvFilesSelected,
   onFilesSelected,
   onImportCsvMatch,
@@ -302,6 +304,7 @@ export function AddMusicDialog({
                 onImport={handleImport}
                 canImportExternal={canImportExternal}
                 onClearManualMatch={onClearManualMatch}
+                onDismissManualMatch={onDismissManualMatch}
               />
             ) : tab === 'csv' ? (
               <CsvPanel onImport={onCsvFilesSelected} />
@@ -386,6 +389,7 @@ type SearchPanelProps = {
   onImport: (result: ExternalDiscoveryResult) => void | Promise<void>
   canImportExternal: (result: ExternalDiscoveryResult) => boolean
   onClearManualMatch?: () => void
+  onDismissManualMatch?: () => void
 }
 
 function SearchPanel({
@@ -404,6 +408,7 @@ function SearchPanel({
   onImport,
   canImportExternal,
   onClearManualMatch,
+  onDismissManualMatch,
 }: SearchPanelProps) {
   const quickAddResults = externalResults.filter(isQuickAddResult)
   const alreadyInLibraryResults = externalResults.filter(
@@ -494,14 +499,15 @@ function SearchPanel({
               {manualMatchItem.artist ?? manualMatchItem.playlistName}
             </div>
           </div>
-          {onClearManualMatch && (
+          {(onDismissManualMatch || onClearManualMatch) && (
             <Button
               type="button"
               variant="ghost"
               size="icon"
               className="h-8 w-8 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
-              onClick={onClearManualMatch}
-              aria-label="Clear CSV match"
+              onClick={onDismissManualMatch ?? onClearManualMatch}
+              aria-label="Skip this CSV row"
+              title="Skip this row"
             >
               <X className="h-4 w-4" />
             </Button>

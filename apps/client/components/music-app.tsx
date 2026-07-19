@@ -35,6 +35,7 @@ import {
   deletePlaylist,
   deleteSong,
   discoverYouTubeUrl,
+  dismissCsvImportItem,
   fetchActiveCsvImportBatches,
   fetchCsvImportBatch,
   fetchExternalImportJob,
@@ -3794,6 +3795,114 @@ function AuthenticatedMusicApp() {
     setExternalResults([])
   }, [])
 
+  // The explicit X on a pick: the row is skipped on the server so it stops
+  // counting as "needs your pick" (closing the dialog merely postpones it).
+  const dismissCsvManualMatch = useCallback(async () => {
+    const target = csvManualMatchTarget
+
+    if (!target) return
+    if (!requireOnlineAction('Reconnect to skip CSV rows.')) return
+
+    promptedCsvManualMatchIdsRef.current.add(target.item.id)
+
+    let result: Awaited<ReturnType<typeof dismissCsvImportItem>>
+
+    try {
+      result = await dismissCsvImportItem({
+        batchId: target.item.batchId,
+        itemId: target.item.id,
+      })
+    } catch (error) {
+      toast({
+        title: 'Could not skip row',
+        description:
+          error instanceof Error ? error.message : 'Try again in a moment.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    if (result.status !== 'authenticated' || !result.batch) {
+      toast({
+        title: 'Could not skip row',
+        description: 'Sign in again and try once more.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    const resultBatch = result.batch
+    const download = downloads.find((item) => item.id === target.downloadId)
+    const items = csvImportItemsForBatch(
+      download?.csvImportItems,
+      resultBatch.id,
+      result.items,
+    )
+    const batches = [
+      ...(download?.csvImportBatches?.filter(
+        (batch) => batch.id !== resultBatch.id,
+      ) ?? []),
+      resultBatch,
+    ]
+    const summary = summarizeCsvImportStates(
+      batches.map((batch) => ({
+        batch,
+        items: items.filter((csvItem) => csvItem.batchId === batch.id),
+      })),
+    )
+
+    setDownloads((prev) =>
+      prev.map((item) =>
+        item.id === target.downloadId
+          ? {
+              ...item,
+              artist: csvImportStatusText(summary),
+              csvImportBatches: batches,
+              csvImportItems: items,
+              message: csvImportMessage(summary),
+              progress: csvImportProgress(summary, item.progress),
+              status: csvImportDownloadStatus(summary),
+            }
+          : item,
+      ),
+    )
+
+    const nextManualMatchItem = nextCsvManualMatchItem(
+      batches.map((batch) => ({
+        batch,
+        items: items.filter((csvItem) => csvItem.batchId === batch.id),
+      })),
+      promptedCsvManualMatchIdsRef.current,
+      target.item.id,
+    )
+
+    if (nextManualMatchItem) {
+      promptedCsvManualMatchIdsRef.current.add(nextManualMatchItem.id)
+      promptCsvManualMatch(target.downloadId, nextManualMatchItem)
+    } else {
+      setCsvManualMatchTarget(null)
+      setExternalResults([])
+    }
+
+    if (shouldDismissCsvImportDownload(summary)) {
+      window.setTimeout(() => {
+        setDownloads((prev) =>
+          prev.filter((item) => item.id !== target.downloadId),
+        )
+      }, 5000)
+    }
+
+    toast({
+      title: 'Row skipped',
+      description: `"${target.item.title}" won't be imported.`,
+    })
+  }, [
+    csvManualMatchTarget,
+    downloads,
+    promptCsvManualMatch,
+    requireOnlineAction,
+  ])
+
   const onImportCsvMatch = useCallback(
     async (item: CsvImportItem, result: ExternalDiscoveryResult) => {
       if (!requireOnlineAction('Reconnect to import CSV matches.')) return
@@ -4864,6 +4973,9 @@ function AuthenticatedMusicApp() {
         manualMatchItem={csvManualMatchTarget?.item ?? null}
         onCancelImport={cancelCsvImport}
         onClearManualMatch={clearCsvManualMatch}
+        onDismissManualMatch={() => {
+          void dismissCsvManualMatch()
+        }}
         onCsvFilesSelected={onCsvFilesSelected}
         onFilesSelected={onFilesSelected}
         onImportCsvMatch={onImportCsvMatch}

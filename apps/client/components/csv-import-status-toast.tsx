@@ -276,6 +276,8 @@ function CsvImportToastItem({
                 </Button>
               )}
 
+              {/* Only the next couple of picks are shown; resolving or
+                  skipping one surfaces the next, and "Open" lists them all. */}
               {reviewItems.slice(0, 2).map((item) => (
                 <Button
                   key={item.id}
@@ -292,16 +294,6 @@ function CsvImportToastItem({
                   </span>
                 </Button>
               ))}
-
-              {reviewItems.length > 2 && (
-                <button
-                  type="button"
-                  onClick={() => onMatchCsvImportItem?.(download, reviewItems[2])}
-                  className="inline-flex h-8 items-center rounded-full border border-white/[0.12] px-3 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
-                >
-                  +{reviewItems.length - 2} more
-                </button>
-              )}
             </div>
           )}
         </div>
