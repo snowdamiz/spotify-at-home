@@ -4988,6 +4988,7 @@ function AuthenticatedMusicApp() {
       />
 
       <CsvImportStatusToast
+        activeManualMatchItemId={csvManualMatchTarget?.item.id ?? null}
         avoidPlayerBar={Boolean(currentSong)}
         downloads={downloads}
         hidden={addOpen || isCsvImportToastDismissed}

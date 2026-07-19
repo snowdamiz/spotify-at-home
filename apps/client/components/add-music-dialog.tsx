@@ -323,6 +323,7 @@ export function AddMusicDialog({
             {downloads.length > 0 && (
               <ImportsList
                 downloads={downloads}
+                manualMatchItem={manualMatchItem}
                 onCancelImport={onCancelImport}
                 onMatchCsvImportItem={onMatchCsvImportItem}
                 onRetryCsvImport={onRetryCsvImport}
@@ -1039,11 +1040,13 @@ function UploadPanel({
 
 function ImportsList({
   downloads,
+  manualMatchItem,
   onCancelImport,
   onMatchCsvImportItem,
   onRetryCsvImport,
 }: {
   downloads: Download[]
+  manualMatchItem?: CsvImportItem | null
   onCancelImport?: (download: Download) => void | Promise<void>
   onMatchCsvImportItem?: (download: Download, item: CsvImportItem) => void
   onRetryCsvImport?: (download: Download) => void | Promise<void>
@@ -1242,13 +1245,17 @@ function ImportsList({
                             : `Retry ${retryableCount}`}
                         </Button>
                       )}
+                      {/* Filled = the pick currently open in the search
+                          panel; everything else stays outlined. */}
                       {reviewableItems.slice(0, 3).map((item) => (
                         <Button
                           key={item.id}
                           type="button"
                           size="sm"
                           variant={
-                            item.userMatchRequired ? 'default' : 'outline'
+                            item.id === manualMatchItem?.id
+                              ? 'default'
+                              : 'outline'
                           }
                           className="h-8 max-w-full rounded-full px-3 text-xs"
                           onClick={() => onMatchCsvImportItem?.(d, item)}

@@ -20,6 +20,7 @@ import {
 import { cn } from '@/lib/utils'
 
 type CsvImportStatusToastProps = {
+  activeManualMatchItemId?: string | null
   avoidPlayerBar?: boolean
   downloads: Download[]
   hidden?: boolean
@@ -31,6 +32,7 @@ type CsvImportStatusToastProps = {
 }
 
 export function CsvImportStatusToast({
+  activeManualMatchItemId = null,
   avoidPlayerBar = false,
   downloads,
   hidden = false,
@@ -113,6 +115,7 @@ export function CsvImportStatusToast({
             {visibleDownloads.map((download) => (
               <CsvImportToastItem
                 key={download.id}
+                activeManualMatchItemId={activeManualMatchItemId}
                 download={download}
                 onCancelImport={onCancelImport}
                 onMatchCsvImportItem={onMatchCsvImportItem}
@@ -137,11 +140,13 @@ export function CsvImportStatusToast({
 }
 
 function CsvImportToastItem({
+  activeManualMatchItemId,
   download,
   onCancelImport,
   onMatchCsvImportItem,
   onRetryCsvImport,
 }: {
+  activeManualMatchItemId: string | null
   download: Download
   onCancelImport?: (download: Download) => void | Promise<void>
   onMatchCsvImportItem?: (download: Download, item: CsvImportItem) => void
@@ -283,7 +288,9 @@ function CsvImportToastItem({
                   key={item.id}
                   type="button"
                   size="sm"
-                  variant={item.userMatchRequired ? 'default' : 'outline'}
+                  variant={
+                    item.id === activeManualMatchItemId ? 'default' : 'outline'
+                  }
                   className="h-8 max-w-full rounded-full px-3 text-xs"
                   onClick={() => onMatchCsvImportItem?.(download, item)}
                 >
