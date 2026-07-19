@@ -1805,6 +1805,156 @@ describe("CSV metadata imports", () => {
     expect(youtubeProvider.search).toHaveBeenCalledTimes(1);
   });
 
+  it("skips already-imported rows when a canceled CSV import is uploaded again", async () => {
+    // Items process in random-id order, so gate the first search of whichever
+    // track comes second: with one worker that means the first track has fully
+    // imported by the time the gate opens.
+    const secondTrackSearchStarted = deferred();
+    const releaseSecondTrackSearch = deferred();
+    let firstSearchedTrack: string | null = null;
+    let gatedSecondTrack = false;
+    const youtubeProvider: YouTubeDiscoveryClient = {
+      normalizeUrl: vi.fn(),
+      search: vi.fn(async (query, importPolicyMode) => {
+        const isMoon = query.toLowerCase().includes("moon");
+        const track = isMoon ? "moon" : "road";
+
+        firstSearchedTrack ??= track;
+
+        if (track !== firstSearchedTrack && !gatedSecondTrack) {
+          gatedSecondTrack = true;
+          secondTrackSearchStarted.resolve();
+          await releaseSecondTrackSearch.promise;
+        }
+
+        return {
+          nextPageToken: null,
+          results: [
+            youtubeResult({
+              creator: isMoon ? "Ada Channel" : "Grace Channel",
+              durationMs: isMoon ? 180000 : 210000,
+              importPolicyMode,
+              sourceId: isMoon ? "youtubeMoon01" : "youtubeRoad01",
+              title: isMoon ? "Moon Song Official Audio" : "Road Song Official Audio"
+            })
+          ]
+        };
+      })
+    };
+    const youtubeImportAdapter = createYouTubeImportAdapter();
+    const { app } = createTestApp({
+      csvImportConcurrency: 1,
+      processImportsInline: false,
+      youtubeImportAdapter,
+      youtubeProvider
+    });
+    const token = await signIn(app);
+    const files = [
+      csvFile("road_trip.csv", [
+        ["spotify:track:moon", "Moon Song", "spotify:artist:ada", "Ada", "spotify:album:lunar", "Lunar", "spotify:artist:ada", "Ada", "2026-01-01", "https://i.scdn.co/image/moon", "1", "1", "180000", "", "false", "50", "USMOON000001", "", "2026-01-02T00:00:00Z"],
+        ["spotify:track:road", "Road Song", "spotify:artist:grace", "Grace", "spotify:album:drive", "Drive", "spotify:artist:grace", "Grace", "2026-01-01", "https://i.scdn.co/image/road", "1", "2", "210000", "", "false", "40", "USROAD000001", "", "2026-01-03T00:00:00Z"]
+      ])
+    ];
+    const waitForBatchStatus = async (batchId: string, statuses: string[]) => {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/csv-imports/batches/${batchId}`,
+          headers: { authorization: `Bearer ${token}` }
+        });
+
+        if (statuses.includes(response.json().batch?.status)) {
+          return response.json() as {
+            batch: { completedItems: number; failedItems: number; status: string };
+            items: Array<{ songId: string | null; status: string; title: string }>;
+          };
+        }
+
+        await wait(25);
+      }
+
+      throw new Error("Timed out waiting for CSV import batch status.");
+    };
+
+    const firstBatch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(firstBatch.statusCode).toBe(202);
+    await secondTrackSearchStarted.promise;
+
+    const canceled = await app.inject({
+      method: "POST",
+      url: `/api/csv-imports/batches/${firstBatch.json().batch.id}/cancel`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(canceled.statusCode).toBe(200);
+    expect(canceled.json().batch).toMatchObject({
+      completedItems: 1,
+      failedItems: 1,
+      status: "failed"
+    });
+
+    releaseSecondTrackSearch.resolve();
+    await wait(50);
+
+    const secondBatch = await app.inject({
+      method: "POST",
+      url: "/api/csv-imports/batches",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { files }
+    });
+
+    expect(secondBatch.statusCode).toBe(202);
+
+    const finished = await waitForBatchStatus(secondBatch.json().batch.id, [
+      "completed",
+      "failed"
+    ]);
+
+    expect(finished.batch).toMatchObject({
+      completedItems: 2,
+      failedItems: 0,
+      status: "completed"
+    });
+    // The row that completed before the cancel is skipped (reused); the
+    // canceled row imports fresh. Which is which depends on processing order.
+    expect(finished.items.map((item) => item.status).sort()).toEqual([
+      "completed",
+      "skipped"
+    ]);
+    expect(
+      finished.items.every((item) => typeof item.songId === "string")
+    ).toBe(true);
+    // Each track downloaded exactly once across both runs: the completed
+    // first row is reused, never re-searched or re-downloaded.
+    expect(youtubeImportAdapter.resolve).toHaveBeenCalledTimes(2);
+    expect(youtubeProvider.search).toHaveBeenCalledTimes(3);
+
+    const songs = await app.inject({
+      method: "GET",
+      url: "/api/songs",
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(songs.json().songs).toHaveLength(2);
+
+    const playlists = await app.inject({
+      method: "GET",
+      url: "/api/playlists",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    const roadTrip = playlists.json().playlists.find(
+      (playlist: { name: string }) => playlist.name === "Road Trip"
+    );
+
+    expect(roadTrip).toMatchObject({ songCount: 2 });
+  });
+
   function createTestApp(input: {
     audioProcessor?: AudioImportProcessor;
     csvImportConcurrency?: number;

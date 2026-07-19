@@ -64,6 +64,7 @@ export interface CsvImportRoutesOptions {
   audioProcessor?: AudioImportProcessor;
   csvImportConcurrency?: number;
   csvImportLoadBackoffDelayMs?: number;
+  csvImportLoadBackoffMaxWaitMs?: number;
   csvImportLoadBackoffThreshold?: number;
   csvYouTubeSearchIntervalMs?: number;
   importPolicyConfig?: ImportPolicyRuntimeConfig;
@@ -81,6 +82,8 @@ const DEFAULT_CSV_IMPORT_BODY_LIMIT_BYTES = 25 * 1024 * 1024;
 const DEFAULT_CSV_IMPORT_CONCURRENCY = 3;
 const DEFAULT_CSV_UPLOAD_CHUNK_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
 const DEFAULT_CSV_IMPORT_LOAD_BACKOFF_DELAY_MS = 2500;
+const DEFAULT_CSV_IMPORT_LOAD_BACKOFF_MAX_WAIT_MS = 30_000;
+const CSV_IMPORT_FAILURE_SETTLE_DELAY_MS = 250;
 const DEFAULT_CSV_YOUTUBE_SEARCH_INTERVAL_MS = 500;
 const DEFAULT_RECOVERABLE_FAILURE_PAUSE_THRESHOLD = 3;
 const DEFAULT_RECOVERABLE_SEARCH_ATTEMPTS = 2;
@@ -132,6 +135,11 @@ export function registerCsvImportRoutes(app: FastifyInstance, options: CsvImport
       options.csvImportLoadBackoffDelayMs ??
         integerFromEnv(process.env.BROADSIDE_CSV_IMPORT_LOAD_BACKOFF_DELAY_MS),
       DEFAULT_CSV_IMPORT_LOAD_BACKOFF_DELAY_MS
+    ),
+    csvImportLoadBackoffMaxWaitMs: normalizeNonNegativeInteger(
+      options.csvImportLoadBackoffMaxWaitMs ??
+        integerFromEnv(process.env.BROADSIDE_CSV_IMPORT_LOAD_BACKOFF_MAX_WAIT_MS),
+      DEFAULT_CSV_IMPORT_LOAD_BACKOFF_MAX_WAIT_MS
     ),
     csvImportLoadBackoffThreshold: normalizePositiveNumber(
       options.csvImportLoadBackoffThreshold ??
@@ -595,6 +603,7 @@ class CsvImportQueue {
       audioStorage: AudioStorage;
       csvImportConcurrency: number;
       csvImportLoadBackoffDelayMs: number;
+      csvImportLoadBackoffMaxWaitMs: number;
       csvImportLoadBackoffThreshold: number;
       csvImportRepository: SQLiteCsvImportRepository;
       csvYouTubeSearchIntervalMs: number;
@@ -721,6 +730,15 @@ class CsvImportQueue {
     const nextPendingItem = () => pendingItems[nextPendingItemIndex++];
     const workers = Array.from({ length: workerCount }, async (_, workerIndex) => {
       while (shouldContinue()) {
+        if (consecutiveRecoverableSearchFailures > 0 && activeItemCount > 0) {
+          // Hold off on new rows until in-flight ones settle so a transient
+          // search failure can either clear or reach the pause threshold.
+          // Waiting (rather than exiting) keeps the worker pool at full
+          // strength for the rest of the batch once the failure clears.
+          await wait(CSV_IMPORT_FAILURE_SETTLE_DELAY_MS);
+          continue;
+        }
+
         await this.waitForCsvImportCapacity({
           batchId,
           shouldContinue,
@@ -728,10 +746,6 @@ class CsvImportQueue {
         });
 
         if (!shouldContinue()) {
-          return;
-        }
-
-        if (consecutiveRecoverableSearchFailures > 0 && activeItemCount > 0) {
           return;
         }
 
@@ -1165,11 +1179,30 @@ class CsvImportQueue {
     }
 
     let loggedBackoff = false;
+    let backedOffMs = 0;
 
     while (input.shouldContinue()) {
       const load = csvImportSystemLoad();
 
       if (!load || load.pressure <= this.options.csvImportLoadBackoffThreshold) {
+        return;
+      }
+
+      // The 1-minute load average decays slowly and never drops below the
+      // threshold on busy shared-CPU hosts, so an unbounded backoff starves
+      // the import. Cap the wait and make progress anyway; the cap itself
+      // still paces the pipeline under sustained load.
+      if (backedOffMs >= this.options.csvImportLoadBackoffMaxWaitMs) {
+        emitCsvImportLog("warn", {
+          availableParallelism: load.availableParallelism,
+          backedOffMs,
+          csvImportBatchId: input.batchId,
+          event: "csv_import_worker_load_backoff_limit_reached",
+          loadAverage1m: roundMetric(load.loadAverage1m),
+          loadPressure: roundMetric(load.pressure),
+          threshold: this.options.csvImportLoadBackoffThreshold,
+          userId: input.userId
+        });
         return;
       }
 
@@ -1188,6 +1221,7 @@ class CsvImportQueue {
       }
 
       await wait(this.options.csvImportLoadBackoffDelayMs);
+      backedOffMs += this.options.csvImportLoadBackoffDelayMs;
     }
   }
 }
